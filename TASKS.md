@@ -250,3 +250,95 @@ its own `/sumo/` references and scenario when we reach it:
 At rung 8+ decide explicitly the junction determinism policy (match-SUMO-order vs
 deterministic-tie-break-by-id); see DESIGN.md "parallelization". Sublane/laneless mode is a
 whole separate phase layered on top — no task here should preclude it (see the four seams).
+
+---
+
+## Extended roadmap — deferred features (characterized, not yet briefed)
+
+Two distinct groups. **Group A** continues the SUMO-parity ladder: same golden-FCD validation, same
+"port from `/sumo/`, match to 1e-3" bar, each its own scenario + golden. **Group B** is a direction
+shift — reacting to *live external inputs that are not in an offline SUMO run* — so golden-FCD parity
+does NOT directly apply; it needs a different validation model (see the Group B framing note). Both
+groups are additive to the architecture (the multi-constraint reducer + the four seams + the command
+buffer absorb them); neither is a rewrite. Order within each group respects the dependencies noted.
+
+### Group A — completes the lane-based SUMO-parity core
+
+- **A1. Multi-vClass vType resolver** (prerequisite; low-risk, high-value). `VTypeDefaults` today
+  resolves ONLY `vClass="passenger"` and throws otherwise. Extend it to the other vClass default
+  tables (truck, bus, coach, delivery, bicycle, motorcycle, emergency, …). Port straight from the
+  vendored `SUMOVTypeParameter.cpp` switch branches already read for rung 1: `getDefaultAccel`,
+  `getDefaultDecel`, `getDefaultEmergencyDecel`, `getDefaultImperfection`, `getVehicleStopOffset`,
+  and `SUMOVehicleClass.cpp::getDefaultVehicleLength` (e.g. truck accel 1.3 / decel 4 / length 7.1;
+  bus 1.2 / 4 / 12; bicycle 1.2 / 3 / 1.6; each vClass its own maxSpeed). Validate by adding a
+  scenario per vClass and extending `ParameterCrossCheckTests` (it already iterates every scenario's
+  `golden.vtype.json`). Unblocks every non-passenger scenario, including A3 and trucks/buses.
+- **A2. Overtaking (speed-gain lane change).** The other main branch of LC2013's `_wantsChange`
+  (the one rung 8b did NOT port — rung 8b was keep-right only). A vehicle held up by a slower leader
+  accumulates `mySpeedGainProbability` from the potential speed advantage and changes left when it
+  crosses `myChangeProbThresholdLeft`; keep-right (rung 8b) brings it back after passing. Ref:
+  `MSLCM_LC2013.cpp` `_wantsChange` speed-gain block + `mySpeedGainProbability` accumulation.
+  **Requires the target-lane safety veto** — the neighbor leader/follower gap check
+  (`MSLCM_LC2013::checkChangeBeforeCommitting` / the `blocked` logic) that rung 8b never exercised
+  (it changed lanes on an empty road). So this is the first LC rung with *traffic on the target lane*
+  and needs the `LaneNeighborQuery` extended to return the adjacent lane's leader AND follower.
+  Scenario: a 2-lane road, a slow leader (maxSpeed capped, as rung 4's leader) with a fast follower
+  that overtakes then returns. Note: on a SINGLE lane, "no overtaking" is already CORRECT (rung 4's
+  follower correctly settles behind the slow leader forever) — this rung is strictly a multi-lane
+  addition. De-risk the decision via TraCI `getParameter(..., "laneChangeModel.speedGainProbability"/
+  "speedGainLP")` exactly as rung 8b used `keepRightP`.
+- **A3. Priority / emergency vehicles.** Depends on A1 (emergency is a vClass) AND on 9b + A2 (the
+  yield/foe + LC-safety machinery). Two behaviors: (i) the emergency vehicle's own privileges
+  (`jmIgnoreFoeProb`, ignoring red/foes — `MSVehicle::ignoreFoe`/`ignoreRed`); (ii) OTHER vehicles
+  giving way (moving aside / not blocking). This is an advanced layer built on the junction + LC foe
+  logic; do it only after 9b and A2 exist. Note: "priority *road*" right-of-way (major vs minor at a
+  junction) is a different thing and is rung 9b, not this.
+
+### Group B — beyond parity: live external-obstacle reactivity
+
+**Framing (read before briefing any B task).** These react to obstacles injected from OUTSIDE the
+simulation — a non-SUMO vehicle, a pedestrian, a robot, a real-world detection — that are NOT present
+in the fixed offline SUMO run the goldens come from. Consequences:
+- The golden-FCD parity harness does **not** directly validate them (there is no SUMO golden for "an
+  external object appeared at t=12"). Validate with **behavioral / property tests** (e.g. "the
+  vehicle's front never overlaps the obstacle", "it resumes within N s of the obstacle clearing",
+  "it never routes onto a closed edge") plus, WHERE a SUMO analog exists (dynamic rerouting via
+  `MSDevice_Routing`/`<rerouter>`, or a stopped blocker), a targeted parity scenario.
+- This makes the engine a **live simulator with external inputs**, not only an offline parity
+  reproducer. `IEngine` needs an input surface to inject/update/remove external obstacles between
+  steps (a small API: `AddObstacle(laneId, pos, length, ...)`, cleared/updated per step). Keep it
+  behind the same plan/execute discipline: obstacles are read start-of-step, like any neighbor.
+- It also partly leaves strict SUMO parity as the bar — record that explicitly per task, and keep
+  these features **gated/optional** so they never perturb the parity scenarios (same inert-when-
+  absent guard pattern as rungs 8b/10).
+
+- **B1. External-obstacle ingestion + "stop before blocker".** An external object at (lane, pos,
+  length) becomes a constraint in the existing multi-constraint reducer — treat it as a virtual
+  leader (speed 0) or a stop line: reuse `KraussModel.FollowSpeed`/`StopSpeed` (already built). The
+  vehicle decelerates and holds behind it; resumes when it clears. Lowest-risk B task — it is almost
+  entirely reuse. Validation: property tests (no overlap; correct steady gap = the Krauss gap behind
+  a stopped leader, which IS parity-checkable against a SUMO stopped-vehicle scenario).
+- **B2. Network routing layer** (prerequisite for B3/B4; genuinely new infrastructure). Today routes
+  are fixed edge lists parsed from `.rou.xml`; there is no pathfinding. Add an edge-graph shortest-
+  path router (Dijkstra/A* over the network's edge connectivity, edge cost = length/speed, honoring
+  `<connection>` turn permissions). SUMO analog: `MSDevice_Routing` + `DijkstraRouter`. NOTE:
+  DESIGN.md says the project does not reimplement *routing import* — that is about consuming
+  `netconvert`/demand; a live *re-router* for reaction is different and is genuinely new, so flag it
+  as a deliberate scope addition. Validate the router alone (shortest path on a known small graph)
+  before wiring it to reroute triggers.
+- **B3. Reroute-around on prolonged blockage.** When an external obstacle (B1) blocks the vehicle's
+  path for longer than a threshold, recompute a route (B2) that avoids the blocked edge/lane and
+  switch to it (route replacement flushed through the command buffer at step end — same seam-4
+  structural-mutation discipline as a lane change). SUMO analog: rerouting devices reacting to a
+  closed edge (`<rerouter>` / `rerouteTraveltime`). Validation: behavioral (vehicle leaves the
+  blocked edge within the threshold and reaches its destination via a valid alternate path); parity
+  only against a matched SUMO `<rerouter>` scenario if one is constructed.
+- **B4. U-turn when no route around exists.** When B3 finds no alternate route (dead-end / fully
+  blocked), the vehicle reverses direction — a new structural maneuver (turn onto the opposing edge
+  if one exists, else stop). This is the most exotic: it needs the opposing edge / bidi-lane
+  topology and a reversal move (SUMO has `<neigh>`/opposite-direction driving and `--allow-uturn`;
+  ref `MSVehicle::checkReversal` and opposite-lane handling — but faithful parity here is a stretch,
+  so scope it as behavior-first). Do last; depends on B2/B3.
+
+**Suggested order overall:** A1 (quick, unblocks much) → 9b (RUNG9B.md) → A2 → B1 → B2 → B3 → A3 →
+B4. A1 and B1 are the two cheapest high-value items and are independent of the hard 9b work.

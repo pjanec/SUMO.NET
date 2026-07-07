@@ -254,3 +254,30 @@ following → safe-stop math → insertion → platoon → LC2013 → junction �
 parameter cross-check pass. Each rung is one committed, green, checkout-and-continue state.
 Sublane/laneless is a separate phase layered on the validated lane-based core, enabled by the
 four seams above.
+
+## Two futures on different axes (parity extension vs. live reactivity)
+
+Everything above validates against a *fixed, offline* SUMO run: goldens are frozen FCD, and the
+bar is 1e-3 trajectory parity. Two future directions extend the project, on orthogonal axes — keep
+them conceptually separate (see TASKS.md "Extended roadmap" for the task breakdown):
+
+- **Parity extension (same bar).** More of SUMO's lane-based model: multi-vClass vType resolution,
+  overtaking (the speed-gain half of LC2013 + the target-lane safety veto), priority/emergency
+  vehicles, and unsignalized junction yielding (rung 9b, see `RUNG9B.md`). These stay under
+  golden-FCD parity — port from `/sumo/`, match the golden. Sublane/laneless is a further phase on
+  this same axis.
+
+- **Live external-input reactivity (a different bar).** Using the engine as a *live* simulator that
+  reacts to obstacles injected from outside SUMO — a non-SUMO vehicle, a pedestrian, a real-world
+  detection: stop before a blocker, reroute around it if blocked too long, u-turn if there is no way
+  around. This is a real departure: those inputs are **not** in any offline SUMO run, so golden-FCD
+  parity does not directly validate them. Validate instead with **behavioral / property tests**
+  (no-overlap, resume-within-N-seconds, never-route-onto-a-closed-edge), reserving parity for the
+  sub-behaviors that DO have a SUMO analog (a stopped blocker; `MSDevice_Routing`/`<rerouter>`
+  dynamic rerouting). It also adds genuinely new infrastructure — an external-obstacle input surface
+  on `IEngine`, and a live **routing layer** (edge-graph shortest path) that the offline-route
+  project deliberately did not need. The architecture already accommodates the reactive parts: an
+  external obstacle is just one more source feeding the multi-constraint reducer (seam 1), and a
+  reroute/u-turn is a structural mutation flushed through the command buffer (seam 4). Keep every
+  live-reactivity feature **optional and inert-when-absent** so it never perturbs the parity
+  scenarios that remain the correctness anchor.
