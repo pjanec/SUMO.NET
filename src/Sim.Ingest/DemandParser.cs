@@ -37,7 +37,11 @@ public static class DemandParser
                 MinGap: ParseNullableDouble(vTypeEl, "minGap"),
                 Length: ParseNullableDouble(vTypeEl, "length"),
                 EmergencyDecel: ParseNullableDouble(vTypeEl, "emergencyDecel"),
-                SpeedFactor: ParseNullableDouble(vTypeEl, "speedFactor"));
+                SpeedFactor: ParseNullableDouble(vTypeEl, "speedFactor"),
+                // Rung A3: a vType ATTRIBUTE, not a <param> child -- SUMO's getJMParam reads the
+                // attribute map (SUMOVTypeParameter's map of junction-model params populated
+                // straight from the <vType>'s own XML attributes for jm* names).
+                JmDriveAfterRedTime: ParseNullableDouble(vTypeEl, "jmDriveAfterRedTime"));
 
             vTypes.Add(vType);
             vTypesById[vType.Id] = vType;

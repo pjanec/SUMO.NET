@@ -24,7 +24,12 @@ public sealed record ResolvedVType(
     double Tau,
     double SpeedFactor,
     double Width,
-    double Height);
+    double Height,
+    // Rung A3: sumo/src/microsim/MSVehicle.cpp:7266 ignoreRed's jmDriveAfterRedTime junction-
+    // model param. NOT a per-vClass default-table value (see RawDefaults below) -- it is a
+    // per-vType override that defaults to -1 ("never ignore red") for every vClass alike,
+    // threaded straight from the raw vType the same way Sigma is.
+    double JmDriveAfterRedTime);
 
 public static class VTypeDefaults
 {
@@ -179,6 +184,10 @@ public static class VTypeDefaults
             Width: raw.Width,
             // Per-vclass height default (SUMOVTypeParameter.cpp constructor default 1.5, or the
             // vclass-specific override in VClassDefaultValues).
-            Height: raw.Height);
+            Height: raw.Height,
+            // MSVehicle.cpp:7266 getJMParam(SUMO_ATTR_JM_DRIVE_AFTER_RED_TIME, -1) -- not a
+            // per-vClass table value (see field comment on ResolvedVType); overridable via
+            // rou.xml's jmDriveAfterRedTime="..." (rung A3's emergency vType sets "1000").
+            JmDriveAfterRedTime: vType.JmDriveAfterRedTime ?? -1.0);
     }
 }

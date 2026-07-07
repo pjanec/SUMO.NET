@@ -20,7 +20,12 @@ public sealed record VType(
     double? MinGap = null,
     double? Length = null,
     double? EmergencyDecel = null,
-    double? SpeedFactor = null);
+    double? SpeedFactor = null,
+    // Rung A3: sumo/src/microsim/MSVehicle.cpp:7266 ignoreRed's
+    // getJMParam(SUMO_ATTR_JM_DRIVE_AFTER_RED_TIME, -1) -- a vType-level (not <param> child)
+    // junction-model attribute; null here (no override present) resolves to SUMO's -1 default
+    // in VTypeDefaults.Resolve ("never ignore red").
+    double? JmDriveAfterRedTime = null);
 
 public sealed record Route(
     string Id,

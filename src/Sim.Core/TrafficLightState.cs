@@ -49,6 +49,42 @@ public static class TrafficLightState
         return tlLogic.Phases[^1].State[linkIndex];
     }
 
+    // Rung A3: how long the CURRENT phase (the one containing `position`, per GetLinkState's own
+    // `(time - offset) mod cycle` walk) has been active. Ported for MSVehicle::ignoreRed's
+    // `redDuration = STEPS2TIME(currentTimeStep - link->getLastStateChange())` (MSVehicle.cpp:
+    // 7292) -- for a 'static' program with no runtime overrides, the phase boundary IS the last
+    // state-change instant for every link whose character actually changes there, so re-walking
+    // cumulative phase durations from the top of the cycle (rather than tracking per-link
+    // myLastSwitch, as MSLink actually does) agrees exactly, same simplification GetLinkState
+    // already makes. Not per-linkIndex: within this scope every phase transition changes every
+    // link's state together (no back-to-back phases share a character for the same link), so
+    // "time since this phase started" and "time since this link's state last changed" coincide.
+    public static double GetPhaseElapsed(TlLogic tlLogic, double time)
+    {
+        var cycleLength = tlLogic.CycleLength;
+        var position = (time - tlLogic.Offset) % cycleLength;
+        if (position < 0)
+        {
+            // Defensive only, mirrors GetLinkState's own note above.
+            position += cycleLength;
+        }
+
+        var cumulative = 0.0;
+        foreach (var phase in tlLogic.Phases)
+        {
+            var phaseStart = cumulative;
+            cumulative += phase.Duration;
+            if (position < cumulative)
+            {
+                return position - phaseStart;
+            }
+        }
+
+        // Mirrors GetLinkState's own FP-rounding fallback at the cycle boundary: treat it as the
+        // last phase having just completed its full duration.
+        return tlLogic.Phases[^1].Duration;
+    }
+
     // 'r' (red) and 'y' (yellow) both close the link (MSLink::haveRed()/haveYellow(), checked
     // together as `yellowOrRed` in MSVehicle.cpp's planMoveInternal, ~line 2630) -- no yellow
     // phase exists in this scenario, but the check is written to match the source's actual

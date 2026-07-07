@@ -319,12 +319,21 @@ buffer absorb them); neither is a rewrite. Order within each group respects the 
   follower correctly settles behind the slow leader forever) — this rung is strictly a multi-lane
   addition. De-risk the decision via TraCI `getParameter(..., "laneChangeModel.speedGainProbability"/
   "speedGainLP")` exactly as rung 8b used `keepRightP`.
-- **A3. Priority / emergency vehicles.** Depends on A1 (emergency is a vClass) AND on 9b + A2 (the
-  yield/foe + LC-safety machinery). Two behaviors: (i) the emergency vehicle's own privileges
-  (`jmIgnoreFoeProb`, ignoring red/foes — `MSVehicle::ignoreFoe`/`ignoreRed`); (ii) OTHER vehicles
-  giving way (moving aside / not blocking). This is an advanced layer built on the junction + LC foe
-  logic; do it only after 9b and A2 exist. Note: "priority *road*" right-of-way (major vs minor at a
-  junction) is a different thing and is rung 9b, not this.
+- **A3. Priority / emergency vehicles. PARTIALLY DONE (ignore-red slice).** Two behaviors were in
+  scope: (i) the emergency vehicle's own privileges (ignoring red/foes); (ii) OTHER vehicles giving
+  way. **DONE: (i) ignore-RED** — `scenarios/16-emergency-red` + golden: an emergency vehicle with the
+  junction-model ATTRIBUTE `jmDriveAfterRedTime="1000"` drives straight through junction J's RED
+  light at free-flow, ported from `MSVehicle::ignoreRed` (the `jmDriveAfterRedTime > redDuration`
+  arm). `VType`/`ResolvedVType` gained `JmDriveAfterRedTime` (default -1 = never ignore, so INERT for
+  every other vType — rung 10 byte-identical); `TrafficLightState.GetPhaseElapsed` gives `redDuration`;
+  `RedLightConstraint` returns +inf when the vehicle ignores red. Also the first real-SUMO validation
+  of A1's emergency vClass table (ParameterCrossCheck on scenario 16). `RungA3ParityTests` green;
+  `dotnet test` = 61. Gated ACCEPT. **DEFERRED (each its own future rung + scenario):** the `!canBrake`
+  ignore-red arm; **ignore-FOE** at junctions — note `jmIgnoreJunctionFoeProb` only bypasses the
+  on-junction link-leader path (`checkLinkLeader`), NOT 9b's `opened()`/approaching stop-line yield,
+  so a real "emergency ignores a priority foe" needs the `opened()`-level ignore too; and behavior
+  **(ii) give-way** (other vehicles moving aside — the LC blue-light layer). "priority *road*"
+  right-of-way is rung 9b, not this.
 
 ### Group B — beyond parity: live external-obstacle reactivity
 

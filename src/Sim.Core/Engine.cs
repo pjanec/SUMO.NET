@@ -567,6 +567,22 @@ public sealed class Engine : IEngine
             return double.PositiveInfinity;
         }
 
+        // Rung A3: MSVehicle::ignoreRed (MSVehicle.cpp:7266). Scope: only the jm-privilege arm
+        // (`ignoreRedTime > redDuration`) is ported -- the sibling `!canBrake` arm ("run the red
+        // because you physically cannot stop in time") is NOT exercised by rung 10 (its passenger
+        // can always brake) or by this scenario (the emergency vehicle ignores red via the jm
+        // arm, not because it can't stop), so it is deliberately left out, consistent with rung
+        // 10's existing RedLightConstraint. Also out of scope here: the yellow-arm and the
+        // myInfluencer/TraCI early-return, neither reachable in this scenario. With the default
+        // JmDriveAfterRedTime = -1 (VTypeDefaults.Resolve), `-1 > redDuration` (redDuration >= 0
+        // always) is always false, so this is a no-op for every scenario that doesn't set
+        // jmDriveAfterRedTime -- rung 10 stays byte-identical.
+        var redDuration = TrafficLightState.GetPhaseElapsed(tlLogic, evalTime);
+        if (v.VType.JmDriveAfterRedTime > redDuration)
+        {
+            return double.PositiveInfinity;
+        }
+
         var seen = lane.Length - v.Kinematics.Pos;
 
         // stopDecel (MSVehicle.cpp:2645): yellowOrRed => MAX2(MIN2(gTLSYellowMinDecel,
