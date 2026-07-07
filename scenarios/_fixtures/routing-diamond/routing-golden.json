@@ -1,0 +1,10 @@
+{
+  "_comment": "SUMO duarouter (DijkstraRouter, default travel-time effort) golden route choices for the routing-diamond net. B2's NetworkRouter must reproduce these. Top path (AB/BD, len 505.07 each) beats bottom (AC/CD, len 634.63 each); all edges share speed 13.89 so min-time = min-length.",
+  "sumo_version": "1.20.0",
+  "tool": "duarouter -n net.net.xml --route-files <trip>",
+  "routes": {
+    "SA->DE": ["SA", "AB", "BD", "DE"],
+    "SA->CD": ["SA", "AC", "CD"],
+    "AB->DE": ["AB", "BD", "DE"]
+  }
+}

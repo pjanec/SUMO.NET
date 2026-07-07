@@ -354,14 +354,16 @@ in the fixed offline SUMO run the goldens come from. Consequences:
   cross-checked against the committed SUMO analog `scenarios/13-stopped-leader` (real stopped leader →
   follower front 242.499). Fixture: `scenarios/14-external-obstacle` (single follower, NO golden).
   `dotnet test` = 48 green. Gated ACCEPT.
-- **B2. Network routing layer** (prerequisite for B3/B4; genuinely new infrastructure). Today routes
-  are fixed edge lists parsed from `.rou.xml`; there is no pathfinding. Add an edge-graph shortest-
-  path router (Dijkstra/A* over the network's edge connectivity, edge cost = length/speed, honoring
-  `<connection>` turn permissions). SUMO analog: `MSDevice_Routing` + `DijkstraRouter`. NOTE:
-  DESIGN.md says the project does not reimplement *routing import* — that is about consuming
-  `netconvert`/demand; a live *re-router* for reaction is different and is genuinely new, so flag it
-  as a deliberate scope addition. Validate the router alone (shortest path on a known small graph)
-  before wiring it to reroute triggers.
+- **B2. Network routing layer. DONE.** `Sim.Ingest.NetworkRouter(NetworkModel)` + `Route(fromEdge,
+  toEdge)` — Dijkstra over the edge-connectivity graph (arc A→B iff a `<connection from=A to=B>`
+  between two normal edges exists = SUMO's turn-permission graph; internal `:`-edges excluded), edge
+  cost = `length / max-lane-speed` (free-flow travel time, SUMO's `DijkstraRouter`/`MSDevice_Routing`
+  default effort), deterministic (dist, then edge-id) tie-break, `[from]` for from==to, `null` for
+  unknown/internal/unreachable. Purely additive (no engine/parity code touched). Validated by
+  `RungB2RouterTests` against a committed SUMO `duarouter` golden
+  (`scenarios/_fixtures/routing-diamond/`: top path AB/BD beats bottom AC/CD; golden routes
+  `SA→DE`/`SA→CD`/`AB→DE` reproduced exactly) + trivial/unreachable/turn-permission cases. `dotnet
+  test` = 55 green. Gated ACCEPT. Ready for B3 to consume (`Sim.Core` references `Sim.Ingest`).
 - **B3. Reroute-around on prolonged blockage.** When an external obstacle (B1) blocks the vehicle's
   path for longer than a threshold, recompute a route (B2) that avoids the blocked edge/lane and
   switch to it (route replacement flushed through the command buffer at step end — same seam-4
