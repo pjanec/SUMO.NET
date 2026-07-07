@@ -187,14 +187,50 @@ its own `/sumo/` references and scenario when we reach it:
    - 9a (scenario `08-junction-straight`): multi-edge routing + internal-lane traversal
      (route expands to a lane sequence via each `<connection>`'s `via`; pos carries over across
      lane boundaries). A major-road vehicle drives straight through, no yielding. Green.
-   - **9b — priority yielding — DEFERRED** (the sole remaining hard rung). Probed: the minor
-     vehicle brakes hard as the major approaches (13.89→9.433→4.933→2.033), threads through,
-     then accelerates — a gap-acceptance profile from SUMO's junction right-of-way subsystem
-     (`MSLink` ~2091 lines: `opened`/`hasApproachingFoe`/`getLeaderInfo`, request/response/foe
-     matrices, approaching-vehicle registration, arrival/leave-time gap acceptance). It does NOT
-     reduce to a clean formula and is two-vehicle coupled (both register approach times through
-     the junction). Needs a dedicated, multi-round effort. Also decide the junction-determinism
-     policy here (match-SUMO-order vs deterministic tie-break-by-id; DESIGN.md "parallelization").
+   - **9b — priority yielding — DEFERRED** (the sole remaining hard rung; deeply characterized
+     below so a future effort has a full head start). Scenario probed: major `WJ JE` (priority),
+     minor `SJ JN` (yields); the minor brakes 13.89→9.433→4.933→2.033 as the major approaches,
+     threads through just behind it, then accelerates.
+
+     **Mechanism (reverse-engineered from source).** The minor yields by treating the crossing
+     major as a virtual "link leader": `MSVehicle::checkLinkLeader` → `adaptToJunctionLeader`
+     (MSVehicle.cpp). For a crossing foe with gap≥0 it computes
+     `vsafeLeader = MAX2(followSpeed(gap=leaderInfo.second, leaderSpeed, leaderDecel),
+     MIN2(v2, vStop))` where `vStop = stopSpeed(distToCrossing − minGap)`,
+     `leaderPastCPTime = (distToCrossing − leaderInfo.second) / max(leaderSpeed, haltingSpeed)`,
+     `vFinal = MAX2(speed, 2*(distToCrossing − minGap)/leaderPastCPTime − speed)`,
+     `v2 = speed + ACCEL2SPEED((vFinal − speed)/leaderPastCPTime)`; then `v = MIN2(v, vsafeLeader)`.
+     Geometry (this net): internal lanes cross at (201.60, 198.40) — `:J_1_0` (minor,
+     x=201.60 vertical) meets `:J_2_0` (major, y=198.40 horizontal), 5.60 m into each; so
+     `distToCrossing = 201.60 − pos` for both.
+
+     **Why it is NOT a single-pass port (the blockers).** Reproducing 9.433 exactly needs, and
+     none of these exist in the engine yet:
+     1. **Junction conflict geometry** (`MSLink::myConflicts`: crossing point, `lengthBehind-
+        Crossing` for both lanes, `conflictSize`/widths, `myRadius`/`sagitta`). netconvert/NBNode
+        precomputes this at build time; it is NOT in the `.net.xml`. Must be reimplemented from
+        the internal-lane shapes/widths (the crossing point itself IS derivable from geometry, as
+        above, but the conflict widths/sagitta are more work).
+     2. **Approaching-vehicle registration** (`MSLink::setApproaching`/`getApproaching` →
+        `ApproachingVehicleInformation` with `arrivalTime`/`leaveTime`/`willPass`). Each vehicle
+        registers its planned arrival/leave at every link it approaches; the minor reads the
+        major's registration to decide. This is a genuinely two-vehicle-coupled, stateful pass —
+        a new phase between plan and execute.
+     3. **`MSLink::getLeaderInfo`** (~396 lines) — the foe-vehicle gap (`leaderInfo.second`) +
+        `distToCrossing` computation, with many special cases (contLane, sameTarget/sameSource,
+        inTheWay, pastTheCrossingPoint, indirect turns). This is where the exact gap convention
+        lives; hand-derivation did not reproduce 9.433 (got 9.39 via followSpeed(0) or 11.57 via
+        the vStop branch), i.e. the gap/priority conventions need the real getLeaderInfo, not a
+        guess.
+     4. **Priority / `isLeader`** (`MSLink::opened`, response/foe matrix, `myJunctionEntryTime`
+        ordering) to decide the major is the leader.
+
+     Recommended decomposition when tackled: (9b-i) parse the junction `<request>` response/foes
+     matrix + compute conflict geometry from internal-lane shapes; (9b-ii) add the approaching-
+     registration pass (arrivalTime/leaveTime) as new engine infrastructure; (9b-iii) port
+     getLeaderInfo's gap for the single-crossing case + adaptToJunctionLeader; iterate against the
+     golden (target 9.433/4.933/2.033). Also decide here the junction-determinism policy
+     (match-SUMO-order vs deterministic tie-break-by-id; DESIGN.md "parallelization").
 10. **Traffic light** — `<tlLogic>` state machine; red light as a stop-line constraint. **DONE**
     (scenario `09-traffic-light`; red → `stopSpeed(seen − DIST_TO_STOPLINE_EXPECT_PRIORITY 1.0)`,
     green → traverse; TL sampled at `time+dt` for the emit-before-plan ordering).
