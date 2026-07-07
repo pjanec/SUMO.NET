@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<routes xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://sumo.dlr.de/xsd/routes_file.xsd">
+    <!-- Two-lane cruise (rung 8a). One passenger vehicle (sigma=0) departs on the RIGHT lane
+         (index 0) of a 2-lane edge. It is already keeping right with no reason to change, so it
+         stays in lane e0_0 the whole run: this validates two-lane .net.xml ingest and per-lane
+         trajectory emission with the longitudinal motion identical to rung 1. The keep-right
+         lane-change decision itself is exercised by the sibling keep-right scenario (rung 8b). -->
+    <vType id="passenger0" vClass="passenger" sigma="0"/>
+    <route id="r0" edges="e0"/>
+    <vehicle id="veh0" type="passenger0" route="r0" depart="0" departPos="0" departSpeed="0" departLane="0"/>
+</routes>
