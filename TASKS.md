@@ -289,7 +289,16 @@ buffer absorb them); neither is a rewrite. Order within each group respects the 
   checks the truck free-flow trajectory. `dotnet test` = 30 green. Adding another vClass now = one
   scenario + golden; the tests extend for free. `getVehicleStopOffset` was not needed (not a
   resolved-vType field). Remaining classes for A3/etc. (each its own scenario+golden when reached).
-- **A2. Overtaking (speed-gain lane change).** The other main branch of LC2013's `_wantsChange`
+- **A2. Overtaking (speed-gain lane change). IN PROGRESS — scenario + characterization banked; one
+  open subtlety blocks the engine port.** `scenarios/12-overtake/` + golden committed (`A2 [net]`):
+  a fast follower overtakes a slow leader (`maxSpeed=5`) on a 2-lane edge — left change at t11→t12,
+  keep-right return at t19→t20. TraCI-dumped the accumulators and confirmed `thisLaneVSafe=12.253`,
+  `relativeGain≈0.118/step`, threshold `0.2`. **Open:** the raw car-following gap under-counts the
+  accumulation (needs ~2 steps, raw gap gives only 1) — SUMO uses a `getBestLanes` look-ahead leader
+  gap that must be pinned (or read via a `DEBUG_WANTS_CHANGE` SUMO build). **See `RUNGA2.md` for the
+  full per-step breakdown, the exact open item, and the A2-i/ii/iii decomposition.** Original
+  characterization below.
+- **A2 (original). Overtaking (speed-gain lane change).** The other main branch of LC2013's `_wantsChange`
   (the one rung 8b did NOT port — rung 8b was keep-right only). A vehicle held up by a slower leader
   accumulates `mySpeedGainProbability` from the potential speed advantage and changes left when it
   crosses `myChangeProbThresholdLeft`; keep-right (rung 8b) brings it back after passing. Ref:
