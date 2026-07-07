@@ -179,20 +179,37 @@ single global constant would be wrong.
 
 ## Two kinds of ground truth (parameter extraction)
 
-FCD answers "does my sim *move* like SUMO?" The `--save-state` dump answers "did I
-*initialize* the vType defaults correctly?" They are complementary, and the second is a
-debugging shortcut: a wrong passenger default shows up as trajectory drift 40 steps in, but the
-state dump catches the init error *directly*. So every scenario commits both, and a
-parameter-cross-check task (later in the ladder) diffs our resolved vType defaults against
-`golden.state.xml` as a fast fail *before* trajectory tests run — separating init bugs from
-algorithm bugs.
+FCD answers "does my sim *move* like SUMO?" The parameter dump answers "did I *initialize* the
+vType defaults correctly?" They are complementary, and the second is a debugging shortcut: a
+wrong passenger default shows up as trajectory drift 40 steps in, but a parameter dump catches
+the init error *directly*. So every scenario commits a resolved-parameter reference, and a
+parameter-cross-check task (later in the ladder) diffs our resolved vType defaults against it
+as a fast fail *before* trajectory tests run — separating init bugs from algorithm bugs.
+
+**`--save-state` does NOT expand implicit vType defaults** (verified on rung 1, SUMO 1.20.0).
+The state dump echoes only attributes *explicitly set* in `rou.xml` — for the rung-1 vType,
+just `sigma="0"`. It does **not** carry resolved `accel`/`decel`/`tau`/`minGap`/`length`/
+`maxSpeed`, so it cannot serve as the resolved-defaults reference. `golden.state.xml` is still
+committed (it captures explicit params, route/lane placement, and confirms the run), but it is
+**not** the source of resolved vType defaults.
+
+**Authoritative resolved-defaults source: the empirical libsumo/TraCI dump, committed per
+scenario as `golden.vtype.json`** (produced by `scripts/dump-vtype-defaults.py`). It loads a
+default vType, inserts a probe vehicle, and reads back the fully-resolved parameters via the
+typed `vehicletype` getters — SUMO's own defaulting after all flags apply. This was validated
+once against an independent offline source-read of the vClass defaults tables: on rung 1 the
+two methods agreed on every parameter (see `scenarios/01-single-free-flow/VTYPE_CROSSCHECK.md`),
+so the empirical dump is trusted going forward. `golden.vtype.json` records the *pure vClass
+defaults*; a scenario's explicit overrides (e.g. rung-1 `sigma=0`, `default.speeddev=0`) live
+in its own `rou.xml`/`sumocfg` and are applied on top.
 
 The extractable parameter layers, in decreasing ease: model defaults baked into the C++ model
 classes (read straight from source — the papers sometimes differ from shipped values); the
 per-`vClass` defaults table; and the implicit "what to do when a value is missing" derivation
 logic (largely sidestepped for the network by consuming post-`netconvert` `.net.xml`, but must
-be replicated for vehicle/demand defaults). Prefer the committed `golden.state.xml` as the
-authoritative resolved values, since it reflects SUMO's own defaulting after all flags apply.
+be replicated for vehicle/demand defaults). The **offline source-read** of these tables is the
+fallback reference when SUMO is unavailable; the committed `golden.vtype.json` is the primary,
+since it reflects SUMO's own resolution empirically.
 
 ## Parallelization policy (and the junction caveat)
 

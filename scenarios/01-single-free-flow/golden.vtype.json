@@ -1,0 +1,22 @@
+{
+  "_comment": "Empirically-resolved SUMO default passenger vType parameters, dumped via libsumo/TraCI. Ground truth for the vType init cross-check. vType declared only vClass='passenger' (no overrides), so every value is a pure vClass default. NOTE: the rung-1 scenario overrides sigma=0 and speeddev=0 for determinism; those overrides are in the scenario rou/cfg, not reflected here.",
+  "backend": "traci",
+  "sumo_version": "Eclipse SUMO sumo Version 1.20.0",
+  "vType": {
+    "accel": 2.6,
+    "apparentDecel": 4.5,
+    "carFollowModel": "Krauss",
+    "decel": 4.5,
+    "emergencyDecel": 9.0,
+    "height": 1.5,
+    "length": 5.0,
+    "maxSpeed": 55.55555555555556,
+    "minGap": 2.5,
+    "sigma": 0.5,
+    "speedDeviation": 0.1,
+    "speedFactor": 1.0,
+    "tau": 1.0,
+    "vClass": "passenger",
+    "width": 1.8
+  }
+}
