@@ -154,6 +154,12 @@ its own `/sumo/` references and scenario when we reach it:
    Adds leader lookup from the per-lane sorted list. Ref: `MSLane` leader/follower logic.
 5. **Approach to a stopped vehicle / dead end** — the discrete `maximumSafeStopSpeedEuler`
    overshoot-prevention math in isolation. The subtle one; nail it alone.
+   - Note from rung 4 review: the leader constraint passes `predMaxDecel = leader vType
+     `decel``. That is correct while `apparentDecel == decel` (the phase-1 default). If any
+     vType overrides `apparentDecel`, revisit whether SUMO uses `getCurrentApparentDecel()`
+     rather than `getMaxDecel()` for the leader term (`MSCFModel::maximumSafeFollowSpeed`).
+   - Also: `maximumSafeFollowSpeed`'s emergency-decel correction (`decel!=emergencyDecel`) is
+     ported but was unexercised by rung 4 — rung 5's hard stop is the first real test of it.
 6. **Insertion spacing** — departure FIFO + gap-gated insertion.
 7. **Platoon shockwave** — still `sigma=0`, deterministic; multi-vehicle propagation.
 8. **Two lanes + LC2013** — first structural change via command buffer; first real use of
