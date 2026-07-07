@@ -10,4 +10,11 @@ public struct MoveIntent
 {
     public double NewSpeed;
     public double LatOffset;
+
+    // Rung 5: the plan phase's proposed update to the front of this vehicle's own stop queue
+    // (see StopTransition/StopRuntime) -- null when there is no stop, the stop isn't reached
+    // yet, or reached-and-still-holding-with-nothing-to-change-in-bookkeeping (there is always
+    // something to write while reached, so in practice this is null only pre-reach). Applied by
+    // Engine.ExecuteMoves, never read/written elsewhere during Plan.
+    public StopTransition? StopUpdate;
 }

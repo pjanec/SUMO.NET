@@ -27,7 +27,23 @@ public sealed class Engine : IEngine
             // and any explicit overrides (e.g. rou.xml's sigma="0") come from the raw parse;
             // everything else is a resolved SUMO vClass default (VTypeDefaults.ResolvePassenger).
             var vType = VTypeDefaults.ResolvePassenger(rawVType);
-            _vehicles.Add(new VehicleRuntime { Def = def, VType = vType });
+            var runtime = new VehicleRuntime { Def = def, VType = vType };
+
+            // Rung 5: seed this vehicle's own stop queue (StopRuntime) from its immutable Def.
+            // Reached/RemainingDuration start at their defaults (false/0) -- ProcessNextStop only
+            // initializes RemainingDuration once the stop is actually reached.
+            foreach (var stopDef in def.Stops)
+            {
+                runtime.Stops.Enqueue(new StopRuntime
+                {
+                    LaneId = stopDef.LaneId,
+                    StartPos = stopDef.StartPos,
+                    EndPos = stopDef.EndPos,
+                    Duration = stopDef.Duration,
+                });
+            }
+
+            _vehicles.Add(runtime);
         }
     }
 
@@ -95,7 +111,9 @@ public sealed class Engine : IEngine
 
     // Plan phase (seam 1, parallel-safe): reads start-of-step world state (including the frozen
     // `neighbors` snapshot), writes only to the owning vehicle's own MoveIntent. No shared-state
-    // writes, even single-threaded.
+    // writes, even single-threaded -- the rung-5 stop-transition decision (see ProcessNextStop)
+    // is threaded through MoveIntent.StopUpdate rather than mutating v.Stops here, so this rule
+    // holds even though a vehicle's own stop bookkeeping "changes" every step it is stopped.
     private void PlanMovements(LaneNeighborQuery neighbors)
     {
         foreach (var v in _vehicles)
@@ -105,11 +123,7 @@ public sealed class Engine : IEngine
                 continue;
             }
 
-            v.Intent = new MoveIntent
-            {
-                NewSpeed = ComputeConstrainedSpeed(v, neighbors),
-                LatOffset = 0.0,
-            };
+            v.Intent = ComputeMoveIntent(v, neighbors);
         }
     }
 
@@ -119,12 +133,14 @@ public sealed class Engine : IEngine
     // binding entry -- junctions/leaders slot in later without restructuring this method.
     // vPos then feeds MSCFModel.cpp's finalizeSpeed (KraussModel.FinalizeSpeed) for the
     // free-flow acceleration/deceleration bounding, exactly mirroring MSVehicle's plan-phase
-    // call chain (per-constraint CF calls -> finalizeSpeed).
+    // call chain (per-constraint CF calls -> finalizeSpeed's vStop = MIN2(vPos,
+    // processNextStop(vPos))).
     //
-    // Plan/execute contract (DESIGN.md): this reads only start-of-step state off `v`, the
-    // frozen `neighbors` snapshot, and the immutable network/vType data -- no shared-state
-    // writes happen here.
-    private double ComputeConstrainedSpeed(VehicleRuntime v, LaneNeighborQuery neighbors)
+    // Plan/execute contract (DESIGN.md): this reads only start-of-step state off `v` (including
+    // the front of v.Stops, never mutated here), the frozen `neighbors` snapshot, and the
+    // immutable network/vType data -- no shared-state writes happen here; the resulting
+    // StopTransition is handed back for ExecuteMoves to apply.
+    private MoveIntent ComputeMoveIntent(VehicleRuntime v, LaneNeighborQuery neighbors)
     {
         var lane = _network!.LanesById[v.LaneId];
         var dt = _config!.StepLength;
@@ -147,11 +163,122 @@ public sealed class Engine : IEngine
             // Desired free-flow speed (MSLane::getVehicleMaxSpeed): lane speed limit adapted
             // by this vehicle's speedFactor, capped by its vType maxSpeed.
             laneVehicleMaxSpeed,
+
+            // Stop line (rung 5): MSVehicle.cpp's planMoveInternal "process stops" block
+            // (~lines 2467-2540), non-waypoint arm only. +infinity (non-binding) once reached
+            // (the source's own approach-block condition `!stop.reached || (waypoint &&
+            // keepStopping())` is simply false for a non-waypoint stop that IS reached) or when
+            // there is no stop at all.
+            StopLineConstraint(v, dt, actionStepLengthSecs),
         };
 
         var vPos = constraints.Min();
 
-        return KraussModel.FinalizeSpeed(v.Kinematics.Speed, vPos, laneVehicleMaxSpeed, v.VType, dt, actionStepLengthSecs);
+        // MSCFModel.cpp:191 finalizeSpeed: `vStop = MIN2(vPos, veh->processNextStop(vPos))`.
+        // ProcessNextStop reads only the front stop's START-OF-STEP snapshot (Reached/
+        // RemainingDuration) and returns the transition to apply at Execute -- never mutates.
+        var (processedVelocity, stopUpdate) = ProcessNextStop(v, vPos, actionStepLengthSecs);
+        var vStop = Math.Min(vPos, processedVelocity);
+
+        var newSpeed = KraussModel.FinalizeSpeed(v.Kinematics.Speed, vPos, vStop, laneVehicleMaxSpeed, v.VType, dt, actionStepLengthSecs);
+
+        return new MoveIntent
+        {
+            NewSpeed = newSpeed,
+            LatOffset = 0.0,
+            StopUpdate = stopUpdate,
+        };
+    }
+
+    // MSVehicle.cpp's planMoveInternal "process stops" block (~2467-2540), non-waypoint
+    // (stop.getSpeed()==0) arm only: newStopDist = seen + endPos - lane->getLength(), which on a
+    // single lane (seen = laneLength - pos) collapses to `endPos + NUMERICAL_EPS - pos`;
+    // stopSpeed = MAX2(cfModel.stopSpeed(this, getSpeed(), newStopDist), vMinComfortable) where
+    // vMinComfortable = cfModel.minNextSpeed(getSpeed()) (line 2191). Non-binding (+infinity)
+    // once the stop is reached (matches the source's own approach-block guard) or absent.
+    private static double StopLineConstraint(VehicleRuntime v, double dt, double actionStepLengthSecs)
+    {
+        if (v.Stops.Count == 0)
+        {
+            return double.PositiveInfinity;
+        }
+
+        var stop = v.Stops.Peek();
+        if (stop.Reached || stop.LaneId != v.LaneId)
+        {
+            return double.PositiveInfinity;
+        }
+
+        var newStopDist = stop.EndPos + KraussModel.NumericalEps - v.Kinematics.Pos;
+        var vMinComfortable = KraussModel.MinNextSpeed(v.Kinematics.Speed, v.VType, dt);
+        var stopSpeed = KraussModel.StopSpeed(newStopDist, v.Kinematics.Speed, v.VType, dt, actionStepLengthSecs);
+
+        return Math.Max(stopSpeed, vMinComfortable);
+    }
+
+    // Ported from MSVehicle::processNextStop (sumo/src/microsim/MSVehicle.cpp:1613-1897),
+    // non-waypoint (stop.getSpeed()==0) arm only, Euler branch only (the ballistic
+    // `getSpeed() - getMaxDecel()` arm is dead per phase-1 CLAUDE.md/DESIGN.md). Reads only the
+    // front stop's START-OF-STEP snapshot; returns (the value processNextStop would have
+    // returned, the StopTransition for ExecuteMoves to apply -- null if nothing changes, exactly
+    // like the source's implicit "no side effect on stop.reached" paths).
+    private static (double ReturnedVelocity, StopTransition? Transition) ProcessNextStop(
+        VehicleRuntime v,
+        double currentVelocity,
+        double actionStepLengthSecs)
+    {
+        if (v.Stops.Count == 0)
+        {
+            // MSVehicle.cpp:1614-1617: myStops.empty() -> return currentVelocity.
+            return (currentVelocity, null);
+        }
+
+        var stop = v.Stops.Peek();
+        if (stop.LaneId != v.LaneId)
+        {
+            // MSVehicle.cpp:1762's `stop.edge == myCurrEdge` guard -- not on the stop's edge/lane
+            // yet; rung 5's single-lane scenario never exercises this, guarded for safety.
+            return (currentVelocity, null);
+        }
+
+        if (stop.Reached)
+        {
+            // MSVehicle.cpp:1627-1628: stop.duration -= getActionStepLength() (every call while
+            // reached, BEFORE the keepStopping() check).
+            var remaining = stop.RemainingDuration - actionStepLengthSecs;
+
+            // MSVehicle.cpp:1578-1588 keepStopping(): non-waypoint (getSpeed()==0) simplifies to
+            // `duration > 0` (no triggered/collision/parking flags modeled in rung 5).
+            var keepStopping = remaining > 0;
+
+            if (!keepStopping)
+            {
+                // MSVehicle.cpp:1663-1679: resumeFromStopping() pops the stop; not a railway, so
+                // falls through to the function's tail `return currentVelocity;` (line 1896)
+                // unchanged -- the vehicle plans freely again from here.
+                return (currentVelocity, new StopTransition(Resume: true, Reached: false, RemainingDuration: 0.0));
+            }
+
+            // MSVehicle.cpp:1731-1739, Euler branch: still holding -> return 0.
+            return (0.0, new StopTransition(Resume: false, Reached: true, RemainingDuration: remaining));
+        }
+
+        // MSVehicle.cpp:1794-1808: reachedThreshold = stop.getReachedThreshold() - NUMERICAL_EPS;
+        // getReachedThreshold() (MSStop.cpp:64) is pars.startPos for a normal (non-opposite) lane
+        // stop.
+        var reachedThreshold = stop.StartPos - KraussModel.NumericalEps;
+        if (v.Kinematics.Pos >= reachedThreshold
+            && currentVelocity <= 0.0 + KraussModel.HaltingSpeed
+            && v.LaneId == stop.LaneId)
+        {
+            // MSVehicle.cpp:1808/1824: stop.reached = true; stop.duration = getMinDuration(time)
+            // -- no until/ended modeled, so getMinDuration is just the configured duration
+            // (MSStop.cpp:134-147's final `else` arm).
+            return (currentVelocity, new StopTransition(Resume: false, Reached: true, RemainingDuration: stop.Duration));
+        }
+
+        // MSVehicle.cpp:1896: return currentVelocity; (no change to stop.reached this step).
+        return (currentVelocity, null);
     }
 
     // MSLane::getLeader's gap formula (MSLane.cpp:2817/2841): gap = leaderBackPos -
@@ -194,6 +321,22 @@ public sealed class Engine : IEngine
             v.Kinematics.Speed = v.Intent.NewSpeed;
             v.Kinematics.Pos += v.Intent.NewSpeed * dt;
             v.Kinematics.LatOffset = v.Intent.LatOffset;
+
+            // Rung 5: apply the plan phase's proposed stop-queue update (Engine.ProcessNextStop).
+            // This is the only place v.Stops is ever mutated (CLAUDE.md rule 3).
+            if (v.Intent.StopUpdate is { } stopUpdate)
+            {
+                if (stopUpdate.Resume)
+                {
+                    v.Stops.Dequeue();
+                }
+                else
+                {
+                    var stop = v.Stops.Peek();
+                    stop.Reached = stopUpdate.Reached;
+                    stop.RemainingDuration = stopUpdate.RemainingDuration;
+                }
+            }
 
             // Vehicle arrival/removal: once the vehicle reaches the end of its route it is
             // marked Arrived and stops being planned/executed/emitted from the NEXT step

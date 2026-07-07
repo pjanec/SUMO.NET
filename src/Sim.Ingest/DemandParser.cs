@@ -58,6 +58,14 @@ public static class DemandParser
         var vehicles = new List<VehicleDef>();
         foreach (var vehicleEl in root.Elements("vehicle"))
         {
+            var stops = vehicleEl.Elements("stop")
+                .Select(stopEl => new StopDef(
+                    LaneId: RequireAttribute(stopEl, "lane"),
+                    StartPos: ParseNullableDouble(stopEl, "startPos") ?? 0.0,
+                    EndPos: ParseNullableDouble(stopEl, "endPos") ?? 0.0,
+                    Duration: ParseNullableDouble(stopEl, "duration") ?? 0.0))
+                .ToList();
+
             vehicles.Add(new VehicleDef(
                 Id: RequireAttribute(vehicleEl, "id"),
                 TypeId: vehicleEl.Attribute("type")?.Value ?? string.Empty,
@@ -65,7 +73,8 @@ public static class DemandParser
                 Depart: ParseNullableDouble(vehicleEl, "depart") ?? 0.0,
                 DepartPos: ParseNullableDouble(vehicleEl, "departPos") ?? 0.0,
                 DepartSpeed: ParseNullableDouble(vehicleEl, "departSpeed") ?? 0.0,
-                DepartLaneIndex: ParseNullableInt(vehicleEl, "departLane") ?? 0));
+                DepartLaneIndex: ParseNullableInt(vehicleEl, "departLane") ?? 0,
+                Stops: stops));
         }
 
         return new DemandModel(vTypes, vTypesById, routes, routesById, vehicles);

@@ -26,6 +26,15 @@ public sealed record Route(
     string Id,
     IReadOnlyList<string> Edges);
 
+// A scheduled <stop> child of <vehicle> (rung 5). Only the non-waypoint lane-stop subset is
+// modeled (lane/startPos/endPos/duration) -- busStop/parkingArea/triggered/until/waypoint
+// (speed>0) stops are Sim.Ingest's future-scenario surface, not this rung's.
+public sealed record StopDef(
+    string LaneId,
+    double StartPos,
+    double EndPos,
+    double Duration);
+
 public sealed record VehicleDef(
     string Id,
     string TypeId,
@@ -33,7 +42,14 @@ public sealed record VehicleDef(
     double Depart,
     double DepartPos,
     double DepartSpeed,
-    int DepartLaneIndex);
+    int DepartLaneIndex,
+    IReadOnlyList<StopDef>? Stops = null)
+{
+    // Records can't default a reference-type param to a freshly-allocated empty collection
+    // (default values must be compile-time constants), so callers that omit Stops get null;
+    // this property is what every reader actually uses.
+    public IReadOnlyList<StopDef> Stops { get; init; } = Stops ?? Array.Empty<StopDef>();
+}
 
 public sealed record DemandModel(
     IReadOnlyList<VType> VTypes,

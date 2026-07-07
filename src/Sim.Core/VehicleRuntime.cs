@@ -30,4 +30,10 @@ internal sealed class VehicleRuntime
     public double ArrivalPos;
     public Kinematics Kinematics;
     public MoveIntent Intent;
+
+    // Rung 5: this vehicle's scheduled stops (Sim.Ingest.VehicleDef.Stops), in route order.
+    // Front-of-queue only is ever consulted (MSVehicle::myStops is a deque with the same
+    // front-only access pattern) -- populated once at LoadScenario time from the immutable Def,
+    // then only ever mutated (front popped/updated) by Engine.ExecuteMoves.
+    public Queue<StopRuntime> Stops { get; } = new();
 }

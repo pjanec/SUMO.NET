@@ -38,8 +38,15 @@ public static class KraussModel
     // sumo/src/utils/common/StdDefs.h via config.h.cmake:211 -- "defines the epsilon to use on
     // general floating point comparison". CLAUDE.md rule 1: confirmed by reading the actual
     // vendored macro rather than trusting the briefing's guess of 1e-9 -- config.h.cmake:211
-    // reads `#define NUMERICAL_EPS 0.001`.
-    private const double NumericalEps = 0.001;
+    // reads `#define NUMERICAL_EPS 0.001`. Internal (not private): Engine.cs's stop-line
+    // constraint (rung 5) needs the same constant for newStopDist = endPos + NUMERICAL_EPS - pos.
+    internal const double NumericalEps = 0.001;
+
+    // sumo/src/utils/common/StdDefs.h:58 -- #define SUMO_const_haltingSpeed 0.1. Used by the
+    // rung-5 stop-reached test (MSVehicle.cpp:1805's `currentVelocity <= stop.getSpeed() +
+    // SUMO_const_haltingSpeed`) and by keepStopping's speed>=haltingSpeed check (not exercised
+    // here since our only stop is non-waypoint).
+    internal const double HaltingSpeed = 0.1;
 
     // MSCFModel.cpp:75-96 brakeGap/brakeGapEuler (Euler branch only -- ballistic is a later
     // task per CLAUDE.md/DESIGN.md). Called from maximumSafeFollowSpeed with headwayTime=0.
@@ -107,6 +114,46 @@ public static class KraussModel
     // for stopSpeed's other callers, not followSpeed's).
     public static double MaximumSafeStopSpeed(double gap, double decel, double headway, double dt) =>
         MaximumSafeStopSpeedEuler(gap, decel, headway, dt);
+
+    // MSCFModel.cpp:774-823 maximumSafeStopSpeed, relaxEmergency branch (lines 782-820) -- NOW
+    // ported for real (rung 5) since MSCFModel_Krauss.cpp's stopSpeed (the stop-line caller,
+    // NOT followSpeed's) always reaches it: stopSpeed's default `usage=CalcReason::CURRENT`
+    // gives `relaxEmergency = usage != FUTURE` = true. Euler branch only
+    // (gSemiImplicitEulerUpdate, phase 1's only integration mode).
+    public static double MaximumSafeStopSpeed(
+        double gap,
+        double decel,
+        double emergencyDecel,
+        double currentSpeed,
+        double headway,
+        double dt,
+        bool relaxEmergency)
+    {
+        var vsafe = MaximumSafeStopSpeedEuler(gap, decel, headway, dt);
+
+        if (relaxEmergency && decel != emergencyDecel)
+        {
+            var origSafeDecel = (currentSpeed - vsafe) / dt; // SPEED2ACCEL(currentSpeed - vsafe)
+            if (origSafeDecel > decel + NumericalEps)
+            {
+                // MSCFModel.cpp:803: calculateEmergencyDeceleration(gap, currentSpeed, /*predSpeed*/0., /*predMaxDecel*/1)
+                // -- calculateEmergencyDeceleration itself special-cases gap<=0 to return
+                // myEmergencyDecel (MSCFModel.cpp:1006-1008); our ported CalculateEmergencyDeceleration
+                // pushes that special case to the caller (see its own doc comment), so replicate the
+                // ternary here exactly as MaximumSafeFollowSpeed already does above.
+                var rawEmergency = gap <= 0.0
+                    ? emergencyDecel
+                    : CalculateEmergencyDeceleration(gap, currentSpeed, 0.0, 1.0);
+                var safeDecel = 1.2 * rawEmergency; // EMERGENCY_DECEL_AMPLIFIER
+                safeDecel = Math.Max(safeDecel, decel);
+                safeDecel = Math.Min(safeDecel, origSafeDecel);
+                vsafe = currentSpeed - Accel2Speed(safeDecel, dt);
+                vsafe = Math.Max(vsafe, 0.0); // Euler: MAX2(vsafe, 0.)
+            }
+        }
+
+        return vsafe;
+    }
 
     // MSCFModel.cpp:920-998 maximumSafeFollowSpeed -- the REAL formula MSCFModel_Krauss (our
     // vType's resolved carFollowModel) uses via followSpeed, NOT MSCFModel_KraussOrig1::vsafe
@@ -181,6 +228,32 @@ public static class KraussModel
         return Math.Min(vsafe, vmax);
     }
 
+    // MSCFModel_Krauss.cpp:100-107 stopSpeed, Euler branch: usage defaults to CalcReason::CURRENT
+    // at every call site the "process stops" block in planMoveInternal uses (MSVehicle.cpp:2528's
+    // `cfModel.stopSpeed(this, getSpeed(), newStopDist)`), so relaxEmergency = usage != FUTURE is
+    // always true here -- unlike followSpeed's maximumSafeFollowSpeed, which always passes
+    // relaxEmergency=false. headway is veh->getActionStepLengthSecs() (NOT myHeadwayTime/tau --
+    // this differs from followSpeed's gap-closing formula, see the briefing).
+    // applyHeadwayPerceptionError (no driver state in phase 1) is a no-op, correctly omitted.
+    public static double StopSpeed(
+        double gap,
+        double speed,
+        ResolvedVType vType,
+        double dt,
+        double actionStepLengthSecs)
+    {
+        var vsafe = MaximumSafeStopSpeed(
+            gap,
+            vType.Decel,
+            vType.EmergencyDecel,
+            currentSpeed: speed,
+            headway: actionStepLengthSecs,
+            dt: dt,
+            relaxEmergency: true);
+
+        return Math.Min(vsafe, MaxNextSpeed(speed, vType, dt));
+    }
+
     // MSLane.h getVehicleMaxSpeed (no-restriction branch): MIN2(veh->getMaxSpeed(), laneSpeed *
     // veh->getChosenSpeedFactor()). This is the "desired free-flow speed" constraint fed into
     // the leader/junction/stop-line reducer as the no-obstruction case.
@@ -191,19 +264,20 @@ public static class KraussModel
     // leader/junction/stop-line constraint collection computed by the caller; laneVehicleMaxSpeed
     // is the lane's speed limit adaptation for this vehicle (MSLane::getVehicleMaxSpeed).
     //
-    // vStop / stop-line handling (processNextStop) is not modeled yet in phase 1 -- like the
-    // leader vsafe constraint, it is a dead-but-present +infinity slot (no stops exist in rung
-    // 1's scenario) rather than removed, so wiring a stop line in later rungs is additive.
+    // vStop (MSCFModel.cpp:191: `MIN2(vPos, veh->processNextStop(vPos))`) is now a real caller-
+    // supplied input (rung 5: Engine.ProcessNextStop ports processNextStop's reached/duration
+    // state machine); the caller has already taken that MIN2 before calling in, so this method
+    // only has to consume the result -- when there is no stop it is simply vPos again (a no-op
+    // MIN, exactly like phase 1-4's dead +infinity slot).
     public static double FinalizeSpeed(
         double oldV,
         double vPos,
+        double vStop,
         double laneVehicleMaxSpeed,
         ResolvedVType vType,
         double dt,
         double actionStepLengthSecs)
     {
-        var vStop = Math.Min(vPos, double.PositiveInfinity); // processNextStop(vPos) -- no stop modeled yet
-
         var vMinEmergency = MinNextSpeedEmergency(oldV, vType, dt);
         // vMin = MIN2(minNextSpeed(oldV), MAX2(vPos, vMinEmergency))
         var vMin = Math.Min(MinNextSpeed(oldV, vType, dt), Math.Max(vPos, vMinEmergency));
