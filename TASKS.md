@@ -600,15 +600,30 @@ and determinism (no RNG/wallclock). **The gap is representation, not architectur
   hash UNCHANGED (`909605E965BFFE59`), `dotnet test` = 62 green, query is zero-alloc (bench 205.9 B/
   veh-step, no GC increase). The `TrajectorySet` emit alloc is left for D9's export seam. Baseline row
   appended.
-- **D7. The FDP-shaped seam / adapter (READINESS — NO `Fdp.Core` dependency).** Introduce a thin,
-  in-house `IWorld`/`IQuery`/`ICommandBuffer` abstraction (mirroring FDP's `World.CreateEntity`/
-  `AddComponent`/`GetComponentRW<T>`/`Query().With<T>()`/`GetCommandBuffer()` surface) that the
-  engine's systems target, with ONE backend: the in-house SoA store built in D3–D6. This is the
-  drop-in point — an `Fdp.Core`-backed implementation could be added LATER by the owner without
-  touching the systems, but this project does NOT add the `FastDataPlane` reference or write that
-  backend. Deliverable: the abstraction + the engine running through it, byte-identical, so the seam
-  is proven. (When the owner later wires `Fdp.Core`, read `Engine/Fdp.ModuleHost` + `Engine/Examples`
-  for the exact `IModule`/registration signatures.)
+- **D7. The FDP-shaped seam / adapter (READINESS — NO `Fdp.Core` dependency). DONE.**
+  `ICommandBuffer` (`ChangeLane`/`ReplaceRoute`/`Destroy`/`Flush`, the FDP `view.
+  GetCommandBuffer()` -> deferred `AddComponent`/`DestroyEntity` analog) — D5's `CommandBuffer`
+  now `: ICommandBuffer`, same four method bodies, unchanged. `IWorld` (`GetCommandBuffer()` +
+  `ActiveVehicles()`) — the FDP `World`/`View` surface scoped to what this engine needs: a way to
+  reach the command buffer and a way to reach the "active, on-road vehicle" query (D6's
+  `Query()` analog). `IQuery` is deliberately NOT a separate interface: `IWorld.ActiveVehicles()`
+  returns the concrete `ActiveVehicleQuery` struct BY VALUE (a factory method), not an `IQuery`/
+  `IEnumerable<VehicleRuntime>` — FDP's own query surface is struct-based for the same reason
+  (boxing the enumerator behind an interface would allocate every vehicle, every step, undoing
+  D4's alloc work). One in-house backend, `World` (`src/Sim.Core/World.cs`), wraps the SAME
+  `List<VehicleRuntime>`/`CommandBuffer` instance `Engine` already owned (D3–D6) — no state moved,
+  no computation added. `Engine` now holds `_world` (`IWorld`) and `_commandBuffer`
+  (`ICommandBuffer`, cached once from `_world.GetCommandBuffer()` in a new constructor so every
+  EXISTING `_commandBuffer.X(...)` call site is untouched); `ActiveVehicles()` now reads
+  `_world.ActiveVehicles()` instead of constructing `new(_vehicles)` directly. New files:
+  `ICommandBuffer.cs`, `IWorld.cs`, `World.cs`. Pure representation refactor — hash UNCHANGED
+  (`909605E965BFFE59` in both single-threaded `hashA` and parallel `hashPar`), `dotnet test` = 63
+  green, alloc/veh-step unchanged (206.1 B single / 214.4 B parallel, matching D6/D8's
+  205.9 B/~206–215 B range — no boxing, no new per-step allocation). This is the drop-in point —
+  an `Fdp.Core`-backed `IWorld` implementation could be added LATER by the owner without touching
+  any system in `Engine.cs`, but this project does NOT add the `FastDataPlane` reference or write
+  that backend. Benchmark row in BASELINE.md. (When the owner later wires `Fdp.Core`, read
+  `Engine/Fdp.ModuleHost` + `Engine/Examples` for the exact `IModule`/registration signatures.)
 - **D8. Parallelize the Simulation phase. DONE.** `Engine.UseParallelPlan` (default `false`,
   opt-in): when `true`, `PlanMovements` iterates `_vehicles` via `System.Threading.Tasks.
   Parallel.For(0, _vehicles.Count, i => {...})` (guarded per-index by the same `Inserted &&

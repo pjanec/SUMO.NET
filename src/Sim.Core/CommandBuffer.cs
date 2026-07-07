@@ -21,7 +21,12 @@ namespace Sim.Core;
 // commands, this list never grows again, so recording+flushing every step allocates nothing
 // beyond its own steady-state capacity). `Command` is a plain field struct (no boxing) with a
 // `Kind` tag and just enough payload fields to cover all three command kinds.
-internal sealed class CommandBuffer
+//
+// D7 (FastDataPlane ECS readiness -- the FDP-shaped seam / adapter): implements `ICommandBuffer`
+// so `World`/`Engine` can be written against the interface instead of this concrete class (see
+// ICommandBuffer.cs's own header comment) -- the four methods below are UNCHANGED, this is a
+// pure `: ICommandBuffer` addition, no method body differs.
+internal sealed class CommandBuffer : ICommandBuffer
 {
     private enum Kind : byte
     {

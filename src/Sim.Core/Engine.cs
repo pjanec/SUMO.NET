@@ -68,7 +68,40 @@ public sealed class Engine : IEngine
     // ExecuteMoves/DecideSpeedGainChanges) -- each phase flushes before the next phase starts
     // recording, so one shared instance is safe to reuse sequentially all step long (Flush()
     // clears it). Pure representation refactor: WHEN each mutation applies is unchanged.
-    private readonly CommandBuffer _commandBuffer = new();
+    // D7: this concrete instance is now handed to `_world` below (its sole owner conceptually,
+    // per the seam) rather than used directly by the systems -- see `_world`/`_commandBuffer`'s
+    // own comments just below for how it is reached from here on.
+    private readonly CommandBuffer _commandBufferImpl = new();
+
+    // D7 (FastDataPlane ECS readiness -- the FDP-shaped seam / adapter, TASKS.md line ~603): ONE
+    // `IWorld` instance (the in-house `World` backend, see World.cs) wrapping the SAME
+    // `_vehicles` list and `_commandBufferImpl` instance constructed above -- every engine system
+    // below is rewritten by this rung to go through `_world`/`_commandBuffer` (now
+    // `IWorld`/`ICommandBuffer`-typed) instead of touching `_vehicles`/`CommandBuffer` directly,
+    // proving the drop-in seam is real (an `Fdp.Core`-backed `IWorld` could later replace `World`
+    // without touching any call site below). Byte-identical: `World` performs no computation of
+    // its own, it only forwards to the same list/buffer this field already owned before this
+    // rung (see World.cs's own header comment).
+    // D7: field initializers run in declaration order -- `_vehicles` (top of this class) and
+    // `_commandBufferImpl` (just above) are both already constructed by the time this runs, so
+    // no explicit constructor is needed to sequence them.
+    private readonly IWorld _world;
+
+    // D7: cached once from `_world.GetCommandBuffer()` at construction -- every EXISTING
+    // `_commandBuffer.ChangeLane`/`ReplaceRoute`/`Destroy`/`Flush()` call site elsewhere in this
+    // file is therefore untouched by this rung (same field name, now `ICommandBuffer`-typed
+    // instead of `CommandBuffer`-typed; same underlying instance as `_commandBufferImpl` above).
+    private readonly ICommandBuffer _commandBuffer;
+
+    public Engine()
+    {
+        // D7: constructed here (not as a field initializer) purely for readability -- `_vehicles`
+        // and `_commandBufferImpl` are already assigned by the time the implicit base/field-
+        // initializer chain reaches this constructor body, so this is the first point both are
+        // safely available together. `World` wraps them by reference; nothing is copied.
+        _world = new World(_vehicles, _commandBufferImpl);
+        _commandBuffer = _world.GetCommandBuffer();
+    }
 
     // D6 (FastDataPlane ECS readiness -- phased systems over queries): the `Query()` analog.
     // Every hot-path system below (PlanMovements, ExecuteMoves, EmitTrajectory,
@@ -78,7 +111,12 @@ public sealed class Engine : IEngine
     // repeated inline `if (!v.Inserted || v.Arrived) continue;` guard at each call site.
     // Insertion's own not-yet-inserted candidate scan (InsertDepartingVehicles) is a DIFFERENT
     // predicate (the complement) and is left as a direct `_vehicles` walk, per the briefing.
-    private ActiveVehicleQuery ActiveVehicles() => new(_vehicles);
+    // D7: now sourced from `_world.ActiveVehicles()` (the IWorld seam's struct-returning query
+    // factory -- see IWorld.cs's header comment for why it stays a concrete struct return, not
+    // an IQuery/IEnumerable<T>, to remain zero-alloc) instead of constructing the struct
+    // directly against `_vehicles` here; `World.ActiveVehicles()` constructs the exact same
+    // `new(_vehicles)` value this method used to build itself, so this is a pure indirection.
+    private ActiveVehicleQuery ActiveVehicles() => _world.ActiveVehicles();
 
     // D8 (FastDataPlane ECS readiness -- parallelize the Simulation phase). Default OFF so every
     // existing scenario/test/benchmark path (and the FCD parity path) stays exactly as it was.

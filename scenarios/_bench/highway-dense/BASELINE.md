@@ -241,6 +241,41 @@ workload too small for the parallelism dividend to dominate scheduling cost on t
 denser scenario and/or more cores would be expected to show a larger win; that is future-rung
 territory, not this one's done-condition.
 
+## D7 (FDP-shaped seam / adapter)
+Captured on the same reference VM, same command, 500 steps, immediately after the D7 refactor:
+added `src/Sim.Core/ICommandBuffer.cs` (D5's `CommandBuffer` now `: ICommandBuffer`, same four
+method bodies), `src/Sim.Core/IWorld.cs` (`GetCommandBuffer()` + `ActiveVehicles()`, the FDP
+`View`/`Query()` surface scoped to this engine's needs — `ActiveVehicles()` returns the concrete
+`ActiveVehicleQuery` struct BY VALUE, deliberately NOT an `IQuery`/`IEnumerable<T>`, to stay
+zero-alloc), and `src/Sim.Core/World.cs` (the ONE in-house `IWorld` backend, wrapping the SAME
+`_vehicles` list / `CommandBuffer` instance `Engine` already owned — no state moved, no
+computation added). `Engine` now holds `_world` (`IWorld`) and `_commandBuffer`
+(`ICommandBuffer`, cached once in a new constructor from `_world.GetCommandBuffer()`); every
+EXISTING `_commandBuffer.ChangeLane`/`ReplaceRoute`/`Destroy`/`Flush()` call site is therefore
+untouched, and `ActiveVehicles()` now reads `_world.ActiveVehicles()` instead of constructing
+`new(_vehicles)` directly. No `Fdp.Core`/`FastDataPlane` reference added (readiness only, per the
+briefing) — this is the drop-in seam a later `Fdp.Core`-backed `IWorld` could replace without
+touching any system in `Engine.cs`:
+
+| metric | single (`UseParallelPlan=false`) | parallel (`UseParallelPlan=true`) |
+|---|---|---|
+| peak concurrent vehicles | 378 | 378 |
+| veh-steps emitted | 115,141 | 115,141 |
+| wall time | 0.397 s | — |
+| throughput | 1258.8 steps/s (0.794 ms/step) | 2090.1 steps/s (0.478 ms/step) |
+| alloc / veh-step | **206.1 B** (unchanged from D6/D8's 205.9 B) | **214.4 B** (within D8's own ~207–215 B range) |
+| GC gen0/1/2 | 3 / 3 / 1 | 1 / 1 / 0 |
+| deterministic (2 runs identical) | **True** | **True** |
+| **trajectory hash** | **`909605E965BFFE59`** (`hashA`) | **`909605E965BFFE59`** (`hashPar`, byte-identical to single-threaded) |
+
+Pure representation refactor, as expected: `World` performs no computation of its own (it only
+forwards to the same list/buffer `Engine` already owned), and `IWorld.ActiveVehicles()` returns
+the query struct BY VALUE rather than through a boxing `IQuery`/`IEnumerable<T>` interface, so
+alloc/veh-step does not move beyond D6/D8's existing noise band. `dotnet test` (63/63 green) and
+both trajectory hashes (`hashA`/`hashPar`) are unchanged from D1–D8, confirming the seam
+introduces no behavioral difference — only an extra (non-allocating) indirection between `Engine`
+and the store it already owned.
+
 ## What the numbers say (targets for D2–D8)
 - **~736 B allocated per vehicle-step** is the headline: this is the AoS `class` entities +
   `LaneNeighborQuery`'s per-step `Dictionary`/`List` (built twice/step) + the reducer's
