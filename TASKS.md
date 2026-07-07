@@ -167,7 +167,21 @@ its own `/sumo/` references and scenario when we reach it:
      the same lane, revisit (SUMO retries each pending vehicle independently).
 7. **Platoon shockwave** — still `sigma=0`, deterministic; multi-vehicle propagation.
 8. **Two lanes + LC2013** — first structural change via command buffer; first real use of
-   the multi-constraint reducer with a lateral intent. Ref: `MSLCM_LC2013`.
+   the multi-constraint reducer with a lateral intent. Ref: `MSLCM_LC2013`. **PARTIALLY DONE.**
+   - 8a (scenario `06-two-lane-cruise`): two-lane `.net.xml` ingest + per-lane emission,
+     vehicle stays right. Green, no engine change (parser already reads all `<lane>`).
+   - 8b (scenario `07-keep-right-change`): the command buffer + lateral intent (seam 4,
+     discrete instant lane-index snap) + a MINIMAL faithful slice of `MSLCM_LC2013`'s
+     keep-right block, reproducing the exact accumulator so a single empty-road vehicle
+     changes right at t=6. Right-neighbor guard leaves all single-lane rungs untouched.
+   - **Deferred LC2013 work** (each its own future rung, needs its own scenario+golden):
+     strategic (route/connectivity-forced) changes + general best-lanes (`getBestLanes`),
+     cooperative changes, speed-gain overtake (the tactical block + `mySpeedGainProbability`),
+     safety/blocker vetoes and the neighbor follower/leader gap checks (need a 2-lane
+     scenario WITH traffic), `lanechange.duration>0` continuous lateral, and multi-edge lane
+     continuity. Also: the command buffer currently applies each vehicle's lane swap inline
+     in `ExecuteMoves` (fine for one changer); revisit batching if a scenario has multiple
+     simultaneous changers competing for a gap (DESIGN.md conflict-resolution tie-break).
 9. **Priority intersection** — right-of-way matrix + link-leader yielding, feeding the
    reducer. Ref: `MSRightOfWayJunction`, `MSLink`.
 10. **Traffic light** — `<tlLogic>` state machine; red light as a stop-line constraint.
