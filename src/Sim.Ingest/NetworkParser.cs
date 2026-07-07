@@ -4,7 +4,8 @@ using System.Xml.Linq;
 namespace Sim.Ingest;
 
 // Parses the rung-1 subset of SUMO's post-netconvert .net.xml: <edge> containing one or more
-// <lane>. Tolerant of missing optional attributes (documented defaults below); required
+// <lane>, plus (rung 9a) internal (junction-interior) edges/lanes and top-level <connection>
+// elements. Tolerant of missing optional attributes (documented defaults below); required
 // attributes throw a clear error rather than silently defaulting, since a missing id/shape
 // signals a parser-subset gap, not a legitimate omission.
 public static class NetworkParser
@@ -27,13 +28,9 @@ public static class NetworkParser
 
         foreach (var edgeEl in root.Elements("edge"))
         {
-            // Internal (junction-interior) edges are out of scope for rung 1's dead-end
-            // junctions; skip them so later scenarios with junctions can reuse this parser.
-            if (edgeEl.Attribute("function")?.Value == "internal")
-            {
-                continue;
-            }
-
+            // Rung 9a: internal (junction-interior) edges are now parsed too -- a multi-edge
+            // route's lane sequence passes through them (e.g. ":J_2_0"). They have no from/to
+            // (tolerated: From/To default to "" below, same as any edge missing the attribute).
             var edgeId = RequireAttribute(edgeEl, "id");
             var from = edgeEl.Attribute("from")?.Value ?? string.Empty;
             var to = edgeEl.Attribute("to")?.Value ?? string.Empty;
@@ -58,7 +55,29 @@ public static class NetworkParser
             edgesById[edgeId] = edge;
         }
 
-        return new NetworkModel(edges, edgesById, lanesById);
+        var connections = new List<Connection>();
+        var connectionsByFromLaneTo = new Dictionary<(string, int, string), Connection>();
+
+        foreach (var connEl in root.Elements("connection"))
+        {
+            // A <connection>'s from/to are always present in netconvert output; fromLane/toLane
+            // default to "0" only for parser robustness (every connection in scope for this
+            // rung specifies them explicitly). `via` (the internal lane traversed at a
+            // junction) is absent for connections that cross no junction interior.
+            var from = RequireAttribute(connEl, "from");
+            var to = RequireAttribute(connEl, "to");
+            var fromLane = int.Parse(connEl.Attribute("fromLane")?.Value ?? "0", CultureInfo.InvariantCulture);
+            var toLane = int.Parse(connEl.Attribute("toLane")?.Value ?? "0", CultureInfo.InvariantCulture);
+            var via = connEl.Attribute("via")?.Value;
+
+            var connection = new Connection(from, fromLane, to, toLane, via);
+            connections.Add(connection);
+            // Last-wins on a duplicate key is a non-issue for this rung's straight-through,
+            // single-connection-per-(fromEdge,fromLane,toEdge) network.
+            connectionsByFromLaneTo[(from, fromLane, to)] = connection;
+        }
+
+        return new NetworkModel(edges, edgesById, lanesById, connections, connectionsByFromLaneTo);
     }
 
     private static IReadOnlyList<(double X, double Y)> ParseShape(string shape)

@@ -206,12 +206,12 @@ public sealed class Engine : IEngine
             LatOffset = 0.0,
         };
 
-        // Arrival position (route end). Rung 1's route is a single edge/lane, so summing
-        // that lane's length across the route's edges gives the position at which the
-        // vehicle has reached the end of its route and should be removed.
-        v.ArrivalPos = route.Edges
-            .Select(edgeId => _network!.EdgesById[edgeId].Lanes.First(l => l.Index == v.Def.DepartLaneIndex).Length)
-            .Sum();
+        // Rung 9a: resolve the FULL lane sequence for this vehicle's route (spanning internal/
+        // junction lanes between edges), not just the departure edge/lane. For a single-edge
+        // route this is exactly `[lane.Id]`, matching rungs 1-8 exactly (v.LaneId above already
+        // equals LaneSequence[0]).
+        v.LaneSequence = _network!.ResolveLaneSequence(route.Edges, v.Def.DepartLaneIndex);
+        v.LaneSeqIndex = 0;
 
         v.Inserted = true;
         return true;
@@ -518,15 +518,39 @@ public sealed class Engine : IEngine
                 }
             }
 
-            // Vehicle arrival/removal: once the vehicle reaches the end of its route it is
-            // marked Arrived and stops being planned/executed/emitted from the NEXT step
-            // onward (the step in which it crosses the line is still emitted beforehand, since
-            // EmitTrajectory runs at the top of the loop before Plan/Execute -- this reproduces
-            // golden.fcd.xml's presence set exactly: present through the last in-bounds step,
-            // absent afterward, with no extra "arrival" row).
-            if (v.Kinematics.Pos >= v.ArrivalPos)
+            // Rung 9a: lane-sequence traversal. Generalizes rungs 1-8's single-lane "reached the
+            // end -> arrived" check into a route that may cross several lane boundaries
+            // (including internal/junction lanes) per step -- a `while` loop rather than a
+            // single `if`, since a step could in principle span a very short lane fully (not
+            // exercised in this scenario, where each lane boundary is crossed exactly once, but
+            // matching the briefing's guard against exactly that). Carries the lane-relative
+            // remainder of Pos forward across the boundary (pos -= currentLane.Length) rather
+            // than clamping, so downstream lane pos (e.g. golden's :J_2_0 pos=9.68, JE_0
+            // pos=12.37) matches exactly. Once there is no next lane in LaneSequence, the
+            // vehicle has run off the end of its route and is marked Arrived -- stops being
+            // planned/executed/emitted from the NEXT step onward (the step in which it crosses
+            // the line is still emitted beforehand, since EmitTrajectory runs at the top of the
+            // loop before Plan/Execute -- this reproduces golden.fcd.xml's presence set exactly:
+            // present through the last in-bounds step, absent afterward, with no extra "arrival"
+            // row). For a single-edge route (LaneSequence.Count == 1) this collapses to exactly
+            // the old ArrivalPos check: the first "no next lane" hit marks Arrived immediately.
+            while (!v.Arrived)
             {
-                v.Arrived = true;
+                var currentLane = _network!.LanesById[v.LaneId];
+                if (v.Kinematics.Pos < currentLane.Length)
+                {
+                    break;
+                }
+
+                if (v.LaneSeqIndex + 1 >= v.LaneSequence.Count)
+                {
+                    v.Arrived = true;
+                    break;
+                }
+
+                v.Kinematics.Pos -= currentLane.Length;
+                v.LaneSeqIndex++;
+                v.LaneId = v.LaneSequence[v.LaneSeqIndex];
             }
 
             // Rung 8b: keep-right accumulator write-back (Engine.ComputeKeepRightDecision plans

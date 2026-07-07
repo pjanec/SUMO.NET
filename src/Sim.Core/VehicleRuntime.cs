@@ -18,16 +18,21 @@ internal sealed class VehicleRuntime
 
     public bool Inserted;
 
-    // Set once Pos reaches ArrivalPos (route end) during execute; distinct from Inserted so
-    // InsertDepartingVehicles never mistakes "arrived" for "not yet departed" and re-inserts.
+    // Set once the vehicle runs off the end of LaneSequence (route end) during execute;
+    // distinct from Inserted so InsertDepartingVehicles never mistakes "arrived" for "not yet
+    // departed" and re-inserts.
     public bool Arrived;
     public string LaneId = string.Empty;
 
-    // Route-end position, in the same lane-relative units as Kinematics.Pos. Rung 1's route is
-    // a single edge, so Pos is directly comparable to that edge's lane length; multi-edge
-    // routes will need cumulative-length or per-edge-boundary tracking, deferred until a
-    // scenario needs it.
-    public double ArrivalPos;
+    // Rung 9a: the full ordered lane-id sequence this vehicle's route resolves to (via
+    // NetworkModel.ResolveLaneSequence), e.g. ["WJ_0", ":J_2_0", "JE_0"] -- includes internal
+    // (junction) lanes between consecutive route edges. Set once at insertion; LaneSeqIndex is
+    // the index of the CURRENT lane (LaneId) within this list, advanced by ExecuteMoves as the
+    // vehicle's Pos crosses each lane's end. A single-edge route resolves to a one-element
+    // sequence, so this collapses to rung 1-8's single-lane "reached the end -> arrived"
+    // behavior exactly (CLAUDE.md-mandated regression: unchanged for single-edge routes).
+    public IReadOnlyList<string> LaneSequence { get; set; } = Array.Empty<string>();
+    public int LaneSeqIndex;
     public Kinematics Kinematics;
     public MoveIntent Intent;
 
