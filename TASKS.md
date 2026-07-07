@@ -492,3 +492,105 @@ A3) remain the byte-for-byte correctness anchor (same discipline as rungs 8b/10/
 C5/C6 (junction blocking + actuated TLs) → C7/C9 (speed spread + cooperative LC) → C8/C11 (integration
 + CF models) → C10 (sublane/continuous → navmesh bridge) → C12 (peds/PT). C1 and C2 are the two
 highest-leverage items; B5 is the one that directly serves "lane traffic respects navmesh/RVO agents."
+
+---
+
+## Group D — FastDataPlane ECS readiness (characterized, not yet briefed)
+
+**Goal.** Make the engine integrate cleanly into the project owner's own ECS library derived from
+**FastDataPlane** (`github.com/pjanec/FastDataPlane`, namespaces `Fdp.Core`/`Fdp.ModuleHost`), so a
+later **info/replication system** can consume the simulation over FDP's network layer. This is a
+representation refactor, NOT a behavior change: the **61 committed parity/behavioral tests are the
+oracle** — every D-rung must leave them byte-identical (`dotnet test` green), exactly like the
+inert-when-absent discipline used throughout.
+
+**FDP conventions to target** (from its `Docs/architectural-rules.md` + `USER-GUIDE-OVERVIEW.md`):
+- `Entity` = struct handle (`Index`:32 + `Generation`:16). Never store raw ints; gate stored handles
+  on `World.IsAlive(e)`.
+- Components = **unmanaged value structs** in fixed-size chunks (SoA); NO managed/reference fields.
+- Queries = `world.Query().With<A>().With<B>().Build()` + `GetComponentRW<T>`/`GetComponentRO<T>`.
+- Systems = phases `SystemPhase.{Input,BeforeSync,Simulation,PostSimulation,Export}`, ordered via
+  `[UpdateBefore]`/`[UpdateAfter]`; module systems (`IModule`) run **async** in `Simulation`.
+- **Zero-alloc hot path**: no LINQ/`new`/boxing in `OnUpdate`; use `foreach` queries, `stackalloc`,
+  `Span<T>`, pre-allocated `NativeArray<T>`. (Spawning is "cold path" — allocation allowed there.)
+- Structural changes via `view.GetCommandBuffer()` → `cmd.AddComponent<T>()`/`DestroyEntity()`.
+- Determinism via `GlobalTime`/`DeltaTime` (never `DateTime`/`Stopwatch`); `HasAuthority<T>` for split
+  authority; static blueprints live in `TkbDatabase`; network via `NetworkEntityMap` /
+  `INetworkIdAllocator` / `IDescriptorTranslator`.
+
+**Concept mapping (this engine → FDP):**
+| This engine | FDP concept |
+|---|---|
+| `Kinematics`, `MoveIntent` (already structs) | ECS components (unmanaged) |
+| `VehicleRuntime` (class, managed fields) | **must decompose** into component structs + `Entity` |
+| `NetworkModel`, `ResolvedVType`, `Route` (immutable) | **TKB descriptors** (static blueprints) |
+| seam-4 deferred lane swaps / reroute / insertion | `GetCommandBuffer()` (AddComponent/DestroyEntity) |
+| Insert / Emit / Plan / Execute / DecideLaneChanges / UpdateReroutes passes | `SystemPhase` systems |
+| frozen-snapshot plan (RO reads, own RW write) | async `Simulation` module systems |
+| no `System.Random` / no wallclock (already) | FDP determinism rule (`GlobalTime`) — already satisfied |
+
+**Already aligned (the hard, load-bearing parts):** deferred command-buffer discipline, phase-based
+passes, order-independent frozen-snapshot plan/execute, value-type components, immutable blueprints,
+and determinism (no RNG/wallclock). **The gap is representation, not architecture.**
+
+- **D1. Many-vehicle benchmark scenario + baseline harness.** Do FIRST — you cannot measure zero-alloc
+  / SoA / parallelism wins on today's 1–2-vehicle scenarios. A committed high-density scenario (e.g.
+  a long multi-lane road or a grid with hundreds of vehicles) + a `dotnet` benchmark (BenchmarkDotNet
+  or a simple stopwatch-free step-count harness) reporting steps/sec, allocations/step (GC), and
+  determinism (same output N runs). Behavioral (no SUMO golden needed) — it measures, it doesn't
+  assert parity. Baseline the current AoS/LINQ engine so every later D-rung shows its delta.
+- **D2. Int-handle identity (strings → dense indices). The biggest single enabler.** FDP components are
+  unmanaged — string ids cannot be component fields. Intern lane/edge/junction/vType ids to dense
+  `int` handles at ingest; `NetworkModel` exposes arrays indexed by handle (it already stores arrays);
+  `LaneSequence` becomes `int[]` (lane handles). Keep a handle↔string map for I/O only (FCD emit,
+  scenario load). Prereq for D3/D4. Pure refactor; parity tests unchanged.
+- **D3. Decompose `VehicleRuntime` into FDP-style component structs + move managed state out.** Split
+  the class into unmanaged value-type components: `KinematicsC` (=today's `Kinematics`), `IntentC`
+  (=`MoveIntent`), `RouteProgressC {laneSeqStart, laneSeqLen, laneSeqIndex}`, `LcStateC {keepRightP,
+  speedGainP}`, `RerouteStateC {blockedSeconds}`, `StopStateC`, `VTypeRef {vTypeHandle}`. The
+  **managed/variable-length** fields are the real work: `LaneSequence` → a shared `int[]` pool with a
+  per-entity `[start,len]` slice (blob-style); `Stops` (`Queue`) → a fixed-capacity inline buffer or a
+  side "buffer component"; `AvoidedEdges` (`HashSet<string>`) → a small fixed-cap set or a bitset over
+  edge handles. Provide a component-container abstraction now (see D7) so this can back onto either an
+  in-house SoA store or FDP `World` later. Parity tests are the safety net.
+- **D4. Allocation-free hot path (satisfy FDP's zero-alloc `OnUpdate` rule).** Remove per-step / per-
+  entity heap allocations and LINQ from the plan/execute/decide passes: the reducer's
+  `new List<double>` → a running `Math.Min` over an inline set of constraints; `LaneNeighborQuery`'s
+  per-step `Dictionary<string,List<>>` (built TWICE/step) → reused pre-allocated per-lane buckets or a
+  spatial hash behind the seam-1 interface; drop `.First`/`.FirstOrDefault`/`.OrderBy`/`.Min`/`.Sum`
+  from per-entity code (`Engine.cs` junction/LC/reroute paths). Verify with D1's allocations/step
+  metric (target: 0 in steady state). Parity unchanged.
+- **D5. Entity lifecycle via the command buffer.** Route insertion (`CreateEntity` + `AddComponent`s)
+  and arrival (`DestroyEntity`) through a deferred command buffer applied at a barrier point, matching
+  FDP's `GetCommandBuffer()`. Generalize the existing seam-4 buffer (lane swaps/reroute) to entity
+  create/destroy + component add/remove. Use generation-checked handles; gate stored handles on an
+  `IsAlive`-equivalent. Parity unchanged (insertion order/timing must match — the FIFO gap-gate stays).
+- **D6. Restructure the step loop into phased systems over queries.** Recast Insert/Emit/Plan(CF +
+  multi-constraint reducer)/Execute/DecideLaneChanges/UpdateReroutes as ordered systems mapped to
+  `SystemPhase` (Input=insert/emit, Simulation=plan+decide, PostSimulation=execute/structural,
+  Export=FCD emit), each iterating a `Query().With<…>()`. Preserve the plan/execute contract (plan =
+  RO reads + own RW; structural = command buffer) — it maps 1:1 onto FDP async `Simulation` modules.
+  Parity unchanged; this is the shape D7 plugs FDP into.
+- **D7. The FDP seam / adapter (the actual integration point).** Introduce a thin `IWorld`/`IQuery`/
+  `ICommandBuffer` abstraction the engine's systems target, with TWO backends: (a) the in-house SoA
+  store built in D3–D6, and (b) an **`Fdp.Core`-backed** implementation (components as FDP structs in
+  its chunks, systems as `IModule` in `SystemPhase.Simulation`, blueprints as `TkbDatabase`
+  descriptors, time via `GlobalTime`). Read `Engine/Fdp.ModuleHost` + `Engine/Examples` for the exact
+  `IModule`/system-registration signatures when building this (the overview doc doesn't pin them). Add
+  `Fdp.Core` as a dependency here. Parity tests run against BOTH backends → proof of equivalence.
+- **D8. Parallelize the Simulation phase.** With D2–D6 done, run the plan/decide systems concurrently
+  (in-house: `Parallel.For`; FDP: async `IModule` in `Simulation`). The frozen-snapshot + order-
+  independent-decision discipline already guarantees byte-identical output — this rung *proves* it
+  (same trajectory single- vs multi-threaded) and reports the throughput delta on D1's benchmark.
+- **D9. Info/replication readiness (the end goal: "integrate an info system using FastDataPlane").**
+  Expose vehicle/network state as **networked components** via `IDescriptorTranslator`
+  (ECS component ↔ network descriptor) + `NetworkEntityMap`/`INetworkIdAllocator`, and honor
+  `HasAuthority<T>` so an external info system can observe/replicate the running simulation over FDP's
+  network layer. Behavioral/property validation (a subscriber sees a faithful mirror). Depends on D7.
+
+**Suggested Group-D order:** **D1** (measure) → **D2** (int handles) → **D3** (component structs +
+move managed state out) → **D4** (zero-alloc hot path) → **D5** (entity lifecycle via command buffer)
+→ **D6** (phased systems over queries) → **D7** (FDP adapter + `Fdp.Core` backend) → **D8**
+(parallelize) → **D9** (network/info-system). D2 and D3 are the load-bearing enablers; D7 is where
+FastDataPlane actually plugs in. Every rung keeps the 61 tests byte-identical — the refactor changes
+representation and speed, never behavior.
