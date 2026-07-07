@@ -183,10 +183,31 @@ its own `/sumo/` references and scenario when we reach it:
      in `ExecuteMoves` (fine for one changer); revisit batching if a scenario has multiple
      simultaneous changers competing for a gap (DESIGN.md conflict-resolution tie-break).
 9. **Priority intersection** — right-of-way matrix + link-leader yielding, feeding the
-   reducer. Ref: `MSRightOfWayJunction`, `MSLink`.
-10. **Traffic light** — `<tlLogic>` state machine; red light as a stop-line constraint.
-11. **Parameter-extraction cross-check pass** — automated diff of C# vType defaults vs
-    `golden.state.xml` across all scenarios, run before trajectory tests as a fast fail.
+   reducer. Ref: `MSRightOfWayJunction`, `MSLink`. **PARTIALLY DONE.**
+   - 9a (scenario `08-junction-straight`): multi-edge routing + internal-lane traversal
+     (route expands to a lane sequence via each `<connection>`'s `via`; pos carries over across
+     lane boundaries). A major-road vehicle drives straight through, no yielding. Green.
+   - **9b — priority yielding — DEFERRED** (the sole remaining hard rung). Probed: the minor
+     vehicle brakes hard as the major approaches (13.89→9.433→4.933→2.033), threads through,
+     then accelerates — a gap-acceptance profile from SUMO's junction right-of-way subsystem
+     (`MSLink` ~2091 lines: `opened`/`hasApproachingFoe`/`getLeaderInfo`, request/response/foe
+     matrices, approaching-vehicle registration, arrival/leave-time gap acceptance). It does NOT
+     reduce to a clean formula and is two-vehicle coupled (both register approach times through
+     the junction). Needs a dedicated, multi-round effort. Also decide the junction-determinism
+     policy here (match-SUMO-order vs deterministic tie-break-by-id; DESIGN.md "parallelization").
+10. **Traffic light** — `<tlLogic>` state machine; red light as a stop-line constraint. **DONE**
+    (scenario `09-traffic-light`; red → `stopSpeed(seen − DIST_TO_STOPLINE_EXPECT_PRIORITY 1.0)`,
+    green → traverse; TL sampled at `time+dt` for the emit-before-plan ordering).
+    - Note from rung 10 review: `TrafficLightState.IsRedOrYellow` matches only `'r'`/`'y'`;
+      widen to `'u'` (red-yellow) and `'Y'` (yellow-major) before a scenario uses those phases.
+      Yellow "stop if you can brake, else go" decision logic is also not yet built (no yellow here).
+11. **Parameter-extraction cross-check pass** — automated diff of C# vType defaults vs the
+    committed golden across all scenarios, run before trajectory tests as a fast fail. **DONE**
+    (`ParameterCrossCheckTests`, a data-driven `[Theory]` over every scenario's
+    `golden.vtype.json` `vTypes`; subsumes the former per-scenario init cross-checks). Note: it
+    diffs against `golden.vtype.json` (the empirical libsumo/TraCI dump), NOT `golden.state.xml`,
+    because `--save-state` does not expand implicit vType defaults (see the IMMEDIATE-task finding
+    / DESIGN.md). Rung 1's pure-defaults reference stays covered by `VTypeInitCrossCheckTests`.
 
 At rung 8+ decide explicitly the junction determinism policy (match-SUMO-order vs
 deterministic-tie-break-by-id); see DESIGN.md "parallelization". Sublane/laneless mode is a
