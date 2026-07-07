@@ -290,12 +290,84 @@ public sealed class Engine : IEngine
 
         var newSpeed = KraussModel.FinalizeSpeed(v.Kinematics.Speed, vPos, vStop, laneVehicleMaxSpeed, v.VType, dt, actionStepLengthSecs);
 
+        // Rung 8b (DESIGN.md Seam 4): keep-right (Rechtsfahrgebot) lane-change decision, ported
+        // from MSLCM_LC2013::_wantsChange's keep-right block (see
+        // sumo/src/microsim/lcmodels/MSLCM_LC2013.cpp ~1721-1794). Evaluated in Plan AFTER this
+        // step's CF speed (newSpeed) is known -- the decision reads only start-of-step/this-step-
+        // planned values off `v`/`lane`/`laneVehicleMaxSpeed` and the immutable network, and
+        // writes nothing but the returned MoveIntent (CLAUDE.md rule 3).
+        var (targetLaneId, keepRightProbability) = ComputeKeepRightDecision(v, lane, laneVehicleMaxSpeed, newSpeed, dt);
+
         return new MoveIntent
         {
             NewSpeed = newSpeed,
             LatOffset = 0.0,
             StopUpdate = stopUpdate,
+            TargetLaneId = targetLaneId,
+            KeepRightProbability = keepRightProbability,
         };
+    }
+
+    // MSLCM_LC2013's keep-right sub-block ONLY (see CLAUDE.md briefing's scope note): on this
+    // empty single-edge road every neighbor term (leader/follower on the right lane) is null, so
+    // strategic/cooperative/speed-gain LC blocks all pass through as non-binding and only the
+    // keep-right accumulator drives the decision. NOT built (scoped out): strategic/cooperative/
+    // speed-gain blocks, general best-lanes (neighDist here is simply the right lane's own
+    // length, not a computed continuation distance), continuous lateral (SL2015),
+    // lanechange.duration>0, safety/blocker vetoes against neighbors (none exist here), and
+    // multi-edge route lane continuity.
+    private (string? TargetLaneId, double KeepRightProbability) ComputeKeepRightDecision(
+        VehicleRuntime v,
+        Lane lane,
+        double laneVehicleMaxSpeed,
+        double newSpeed,
+        double dt)
+    {
+        // Right neighbor = same edge, index-1 (no neighbor when already on index 0) -- this
+        // guard is exactly what leaves single-lane rungs 1/3/4/5/6/7 and 8a (vehicle on index 0)
+        // completely unaffected: the accumulator simply never advances off 0.
+        var edge = _network!.EdgesById[lane.EdgeId];
+        var rightLane = edge.Lanes.FirstOrDefault(l => l.Index == lane.Index - 1);
+        if (rightLane is null)
+        {
+            return (null, 0.0);
+        }
+
+        // actionStepLength=1 in this scenario's config (phase-1 determinism ladder).
+        const double keepRightTime = 5.0; // MSLCM_LC2013.cpp:67 KEEP_RIGHT_TIME
+        const double changeProbThresholdRight = 2.0; // ctor: (0.2/mySpeedGainRight)/mySpeedGainParam, defaults 0.1/1
+        const double keepRightParam = 1.0; // ctor default (LCA_KEEPRIGHT_PARAM)
+        var actionStepLengthSecs = _config!.ActionStepLength > 0 ? _config.ActionStepLength : dt;
+
+        var vMax = laneVehicleMaxSpeed;
+        var roadSpeedFactor = vMax / lane.Speed; // getSpeedLimit() of ego's OWN (current) lane
+
+        // Legacy behavior (myKeepRightAcceptanceTime == -1, SUMO's default): acceptanceTime scales
+        // with THIS STEP'S planned speed (newSpeed), not start-of-step speed -- verified against
+        // SUMO via TraCI at full precision per the briefing.
+        var acceptanceTime = 7.0 * roadSpeedFactor * Math.Max(1.0, newSpeed);
+
+        // Scope note: general best-lanes continuation distance is deferred -- on this single-
+        // edge dead-end route, the right lane's own length IS its full best-lanes continuation.
+        var neighDist = rightLane.Length;
+
+        var fullSpeedGap = Math.Max(0.0, neighDist - KraussModel.BrakeGap(vMax, v.VType.Decel, v.VType.Tau, dt));
+        var fullSpeedDrivingSeconds = Math.Min(acceptanceTime, fullSpeedGap / vMax);
+
+        // No leader/follower on the empty right lane here, so the neighLead/checkOverTakeRight
+        // adjustment blocks (MSLCM_LC2013.cpp:1743-1758) are non-binding and correctly omitted.
+        var deltaProb = changeProbThresholdRight * (fullSpeedDrivingSeconds / acceptanceTime) / keepRightTime;
+        var keepRightProbability = v.KeepRightProbability - (actionStepLengthSecs * deltaProb);
+
+        if (keepRightProbability * keepRightParam < -changeProbThresholdRight)
+        {
+            // MSLCM_LC2013.cpp:1789/1061-1064: fires -> lane change requested, accumulator resets
+            // to 0 on change (changed()/resetState()). No safety/blocker veto to apply -- no
+            // neighbor exists on this empty road.
+            return (rightLane.Id, 0.0);
+        }
+
+        return (null, keepRightProbability);
     }
 
     // MSVehicle.cpp's planMoveInternal "process stops" block (~2467-2540), non-waypoint
@@ -457,8 +529,21 @@ public sealed class Engine : IEngine
                 v.Arrived = true;
             }
 
-            // Structural changes (lane swaps) would flush through a command buffer here at
-            // step end. None exist yet -- rung 1 is a single straight lane.
+            // Rung 8b: keep-right accumulator write-back (Engine.ComputeKeepRightDecision plans
+            // it, only ExecuteMoves ever writes VehicleRuntime.KeepRightProbability -- CLAUDE.md
+            // rule 3). Always written (0 when there is no right neighbor, matching the source's
+            // own accumulator staying untouched/irrelevant on the rightmost lane).
+            v.KeepRightProbability = v.Intent.KeepRightProbability;
+
+            // Structural changes (lane swaps) flush through a command buffer here at step end --
+            // this is the first real use of that buffer (DESIGN.md Seam 4 / "The plan/execute
+            // contract"): lanechange.duration=0 makes this an INSTANT discrete lane-index snap,
+            // not continuous lateral movement, so Pos/Speed are carried over unchanged and
+            // LatOffset stays 0.
+            if (v.Intent.TargetLaneId is { } targetLaneId)
+            {
+                v.LaneId = targetLaneId;
+            }
         }
     }
 

@@ -17,4 +17,18 @@ public struct MoveIntent
     // something to write while reached, so in practice this is null only pre-reach). Applied by
     // Engine.ExecuteMoves, never read/written elsewhere during Plan.
     public StopTransition? StopUpdate;
+
+    // Rung 8b (LC2013 keep-right, DESIGN.md Seam 4): the plan phase's proposed structural lane
+    // change, threaded through MoveIntent exactly like StopUpdate above rather than mutating
+    // VehicleRuntime.LaneId directly -- ExecuteMoves is the only place a lane change is actually
+    // applied (via the command buffer), never Plan. Null when the keep-right decision does not
+    // fire this step (no right neighbor, or accumulator hasn't crossed threshold yet).
+    public string? TargetLaneId;
+
+    // The plan phase's updated value for VehicleRuntime.KeepRightProbability (SUMO's
+    // myKeepRightProbability), written back by ExecuteMoves alongside TargetLaneId. Only
+    // meaningful when the vehicle's current lane has a right neighbor (see Engine's guard);
+    // otherwise it is always 0, matching the fact that a vehicle on lane index 0 never
+    // accumulates a keep-right incentive.
+    public double KeepRightProbability;
 }

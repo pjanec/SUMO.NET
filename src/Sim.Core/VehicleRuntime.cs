@@ -36,4 +36,10 @@ internal sealed class VehicleRuntime
     // front-only access pattern) -- populated once at LoadScenario time from the immutable Def,
     // then only ever mutated (front popped/updated) by Engine.ExecuteMoves.
     public Queue<StopRuntime> Stops { get; } = new();
+
+    // Rung 8b: SUMO's MSLCM_LC2013::myKeepRightProbability -- a stateful per-vehicle accumulator
+    // for the keep-right (Rechtsfahrgebot) lane-change incentive. Starts at 0 (SUMO's ctor
+    // default); only ever mutated by Engine.ExecuteMoves from the plan phase's MoveIntent
+    // (CLAUDE.md rule 3 -- Plan writes only MoveIntent, never this field directly).
+    public double KeepRightProbability;
 }
