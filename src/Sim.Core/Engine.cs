@@ -50,10 +50,11 @@ public sealed class Engine : IEngine
 
             // Plan/execute contract (DESIGN.md): plan reads start-of-step state and writes
             // only MoveIntent; execute applies all intents afterward. A follower must never
-            // see a leader's updated position within the same step -- there is one vehicle
-            // today, but the two-phase split is preserved so adding a second vehicle later
-            // is a data change, not a control-flow rewrite.
-            PlanMovements();
+            // see a leader's updated position within the same step. The neighbor query is
+            // built ONCE per step, here, from the same frozen start-of-step snapshot every
+            // vehicle's plan phase reads (Seam 1: neighbor discovery behind an interface).
+            var neighbors = LaneNeighborQuery.Build(_vehicles);
+            PlanMovements(neighbors);
             ExecuteMoves(dt);
         }
 
@@ -92,9 +93,10 @@ public sealed class Engine : IEngine
         }
     }
 
-    // Plan phase (seam 1, parallel-safe): reads start-of-step world state, writes only to the
-    // owning vehicle's own MoveIntent. No shared-state writes, even single-threaded.
-    private void PlanMovements()
+    // Plan phase (seam 1, parallel-safe): reads start-of-step world state (including the frozen
+    // `neighbors` snapshot), writes only to the owning vehicle's own MoveIntent. No shared-state
+    // writes, even single-threaded.
+    private void PlanMovements(LaneNeighborQuery neighbors)
     {
         foreach (var v in _vehicles)
         {
@@ -105,23 +107,24 @@ public sealed class Engine : IEngine
 
             v.Intent = new MoveIntent
             {
-                NewSpeed = ComputeConstrainedSpeed(v),
+                NewSpeed = ComputeConstrainedSpeed(v, neighbors),
                 LatOffset = 0.0,
             };
         }
     }
 
     // Multi-constraint speed reducer (DESIGN.md seam 1): vPos is the MINIMUM over a collection
-    // of constraints (leader car-following Krauss vsafe, junction/foe, stop line, and later
-    // shadow-lane leaders), computed as a real collection/reduce even though rung 1 only has
-    // one binding entry -- junctions/leaders slot in later without restructuring this method.
+    // of constraints (leader car-following, junction/foe, stop line, and later shadow-lane
+    // leaders), computed as a real collection/reduce even when the collection has only one
+    // binding entry -- junctions/leaders slot in later without restructuring this method.
     // vPos then feeds MSCFModel.cpp's finalizeSpeed (KraussModel.FinalizeSpeed) for the
     // free-flow acceleration/deceleration bounding, exactly mirroring MSVehicle's plan-phase
     // call chain (per-constraint CF calls -> finalizeSpeed).
     //
-    // Plan/execute contract (DESIGN.md): this reads only start-of-step state off `v` and the
-    // immutable network/vType data -- no shared-state writes happen here.
-    private double ComputeConstrainedSpeed(VehicleRuntime v)
+    // Plan/execute contract (DESIGN.md): this reads only start-of-step state off `v`, the
+    // frozen `neighbors` snapshot, and the immutable network/vType data -- no shared-state
+    // writes happen here.
+    private double ComputeConstrainedSpeed(VehicleRuntime v, LaneNeighborQuery neighbors)
     {
         var lane = _network!.LanesById[v.LaneId];
         var dt = _config!.StepLength;
@@ -133,9 +136,13 @@ public sealed class Engine : IEngine
 
         var constraints = new List<double>
         {
-            // Leader car-following (MSCFModel_KraussOrig1.cpp vsafe): rung 1 has no leader, so
-            // gap=+infinity => +infinity (non-binding). Dead-but-present for rung 4+.
-            KraussModel.VSafe(gap: double.PositiveInfinity, predSpeed: 0.0, predMaxDecel: 0.0, v.VType, dt),
+            // Leader car-following (MSCFModel_Krauss.cpp followSpeed -> MSCFModel.cpp
+            // maximumSafeFollowSpeed): the REAL formula our resolved carFollowModel="Krauss"
+            // uses -- NOT MSCFModel_KraussOrig1::vsafe (removed; see rung-4 briefing, that
+            // formula is dead code once a real leader exists). No leader => +infinity
+            // (non-binding), matching a gap=+infinity KraussOrig1 vsafe call's short-circuit
+            // but via the real code path: simply contribute nothing when there is no leader.
+            LeaderFollowSpeedConstraint(v, neighbors, dt),
 
             // Desired free-flow speed (MSLane::getVehicleMaxSpeed): lane speed limit adapted
             // by this vehicle's speedFactor, capped by its vType maxSpeed.
@@ -145,6 +152,31 @@ public sealed class Engine : IEngine
         var vPos = constraints.Min();
 
         return KraussModel.FinalizeSpeed(v.Kinematics.Speed, vPos, laneVehicleMaxSpeed, v.VType, dt, actionStepLengthSecs);
+    }
+
+    // MSLane::getLeader's gap formula (MSLane.cpp:2817/2841): gap = leaderBackPos -
+    // egoMinGap - egoPos, where leaderBackPos = leaderPos - leaderLength. predMaxDecel is the
+    // leader's OWN decel (MSVehicle::getCurrentApparentDecel(), which for our phase-1 vTypes
+    // -- no apparent-decel override beyond the vType default -- equals the leader's vType
+    // decel). Returns +infinity (non-binding) when ego has no leader on its lane.
+    private static double LeaderFollowSpeedConstraint(VehicleRuntime ego, LaneNeighborQuery neighbors, double dt)
+    {
+        var leader = neighbors.GetLeader(ego);
+        if (leader is null)
+        {
+            return double.PositiveInfinity;
+        }
+
+        var leaderBackPos = leader.Kinematics.Pos - leader.VType.Length;
+        var gap = leaderBackPos - ego.VType.MinGap - ego.Kinematics.Pos;
+
+        return KraussModel.FollowSpeed(
+            egoSpeed: ego.Kinematics.Speed,
+            gap: gap,
+            predSpeed: leader.Kinematics.Speed,
+            predMaxDecel: leader.VType.Decel,
+            vType: ego.VType,
+            dt: dt);
     }
 
     // Execute phase: apply each vehicle's own MoveIntent and integrate position. Euler per
@@ -179,6 +211,13 @@ public sealed class Engine : IEngine
         }
     }
 
+    // The engine emits FULL double-precision trajectory values. The goldens are regenerated
+    // with SUMO's `--precision` raised well above the default 2 (see scripts/regen-goldens.sh
+    // and each scenario's provenance) so the committed FCD carries enough digits for the
+    // per-scenario tolerance (1e-3) to be a *real* bar. Do NOT round emitted values to match a
+    // low-precision golden: that would silently cap parity sensitivity at ~0.5*10^-precision
+    // regardless of tolerance.json, masking genuine sub-0.01 trajectory drift. Lane-relative
+    // Pos/Speed are the source of truth; x/y/angle are derived from the lane polyline.
     private void EmitTrajectory(TrajectorySet trajectory, double time)
     {
         foreach (var v in _vehicles)

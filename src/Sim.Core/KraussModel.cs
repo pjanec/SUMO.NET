@@ -35,36 +35,150 @@ public static class KraussModel
     public static double MinNextSpeedEmergency(double speed, ResolvedVType vType, double dt) =>
         Math.Max(speed - Accel2Speed(vType.EmergencyDecel, dt), 0.0);
 
-    // MSCFModel_KraussOrig1.cpp: vsafe(gap, predSpeed, predMaxDecel). This is the exact leader
-    // safe-speed formula, including the two guard cases at the top. Rung 1 has NO leader, so
-    // the caller passes gap=+infinity, which short-circuits to +infinity here (a non-binding
-    // constraint) -- this method is dead-but-present, wired for a real leader once one exists
-    // (rung 4+). predMaxDecel is accepted for call-shape parity with the source but is unused
-    // by this (KraussOrig1) vsafe formula, exactly as in the vendored C++.
-    public static double VSafe(double gap, double predSpeed, double predMaxDecel, ResolvedVType vType, double dt)
+    // sumo/src/utils/common/StdDefs.h via config.h.cmake:211 -- "defines the epsilon to use on
+    // general floating point comparison". CLAUDE.md rule 1: confirmed by reading the actual
+    // vendored macro rather than trusting the briefing's guess of 1e-9 -- config.h.cmake:211
+    // reads `#define NUMERICAL_EPS 0.001`.
+    private const double NumericalEps = 0.001;
+
+    // MSCFModel.cpp:75-96 brakeGap/brakeGapEuler (Euler branch only -- ballistic is a later
+    // task per CLAUDE.md/DESIGN.md). Called from maximumSafeFollowSpeed with headwayTime=0.
+    public static double BrakeGap(double speed, double decel, double headwayTime, double dt)
     {
-        _ = predMaxDecel; // unused by KraussOrig1::vsafe, kept for signature parity with C++
+        var speedReduction = Accel2Speed(decel, dt);
+        var steps = (int)(speed / speedReduction);
+        return Speed2Dist((steps * speed) - (speedReduction * steps * (steps + 1) / 2.0), dt) + (speed * headwayTime);
+    }
 
-        if (double.IsPositiveInfinity(gap))
-        {
-            return double.PositiveInfinity;
-        }
-
-        if (predSpeed == 0 && gap < 0.01)
+    // MSCFModel.cpp:827-851 maximumSafeStopSpeedEuler. relaxEmergency is always false at both
+    // call sites reachable from followSpeed (MSCFModel_Krauss.cpp:127 and
+    // MSCFModel.cpp:952/960's onInsertion=false, relaxEmergency=false), so the emergency-relax
+    // block in maximumSafeStopSpeed (lines 782-820) is never entered from here and is folded
+    // into this call chain via the emergency-decel correction inlined below in
+    // MaximumSafeFollowSpeed instead (source keeps it as two separate call sites: one inside
+    // maximumSafeStopSpeed's relaxEmergency branch -- unreachable here since relaxEmergency is
+    // always passed false by followSpeed's call chain -- and one inside
+    // maximumSafeFollowSpeed itself, which IS reachable and is the one ported).
+    public static double MaximumSafeStopSpeedEuler(double gap, double decel, double headway, double dt)
+    {
+        var g = gap - NumericalEps;
+        if (g < 0.0)
         {
             return 0.0;
         }
 
-        var decelAccelDist = Accel2Speed(vType.Decel, dt); // ACCEL2SPEED(myDecel)
-        if (predSpeed == 0 && gap <= decelAccelDist)
+        var b = Accel2Speed(decel, dt);
+        var t = headway >= 0 ? headway : throw new ArgumentException("headway must be >= 0 (myHeadwayTime fallback not modeled)", nameof(headway));
+        var s = dt; // TS
+
+        var n = Math.Floor(0.5 - ((t + (Math.Sqrt((s * s) + (4.0 * ((s * ((2.0 * g / b) - t)) + (t * t)))) * -0.5)) / s));
+        var h = (0.5 * n * (n - 1) * b * s) + (n * b * t);
+        var r = (g - h) / ((n * s) + t);
+        var x = (n * b) + r;
+        return x;
+    }
+
+    // MSCFModel.cpp:1002-1050 calculateEmergencyDeceleration. Not exercised by rung 4 (the
+    // follower never needs to brake harder than decel=4.5 to stay behind the capped-at-5m/s
+    // leader), ported now so rung 5+ scenarios that DO trigger it are an additive scenario
+    // change, not an algorithm change.
+    public static double CalculateEmergencyDeceleration(double gap, double egoSpeed, double predSpeed, double predMaxDecel)
+    {
+        if (gap <= 0.0)
         {
-            // workaround for #2310
-            return Math.Min(decelAccelDist, Dist2Speed(gap, dt));
+            return double.NaN; // caller must supply myEmergencyDecel in this case -- see MaximumSafeFollowSpeed
         }
 
-        var tauDecel = vType.Decel * vType.Tau; // myTauDecel = myDecel * myHeadwayTime
-        var vsafe = -tauDecel + Math.Sqrt((tauDecel * tauDecel) + (predSpeed * predSpeed) + (2.0 * vType.Decel * gap));
-        return vsafe;
+        var predBrakeDist = 0.5 * predSpeed * predSpeed / predMaxDecel;
+        var b1 = 0.5 * egoSpeed * egoSpeed / (gap + predBrakeDist);
+        if (b1 <= predMaxDecel)
+        {
+            return b1;
+        }
+
+        var b2 = 0.5 * ((egoSpeed * egoSpeed) - (predSpeed * predSpeed)) / gap;
+        return b2;
+    }
+
+    // MSCFModel.cpp:774-823 maximumSafeStopSpeed, Euler branch (gSemiImplicitEulerUpdate=true
+    // per phase-1 CLAUDE.md/DESIGN.md), called from maximumSafeFollowSpeed with
+    // relaxEmergency=false (MSCFModel.cpp:952) -- so the relax/emergency-correction block at
+    // lines 782-820 is dead here and intentionally not ported at this call site (it only runs
+    // for stopSpeed's other callers, not followSpeed's).
+    public static double MaximumSafeStopSpeed(double gap, double decel, double headway, double dt) =>
+        MaximumSafeStopSpeedEuler(gap, decel, headway, dt);
+
+    // MSCFModel.cpp:920-998 maximumSafeFollowSpeed -- the REAL formula MSCFModel_Krauss (our
+    // vType's resolved carFollowModel) uses via followSpeed, NOT MSCFModel_KraussOrig1::vsafe
+    // (removed -- see git history / CLAUDE.md's rung-4 briefing: that formula is dead code once
+    // a real leader exists). onInsertion is always false here (only MSLane insertion logic
+    // passes true; the plan-phase per-step call from MSVehicle::planMoveInternal, ported by
+    // Engine.ComputeConstrainedSpeed, always passes onInsertion=false), and gComputeLC is always
+    // false (no lane-change model in phase 1), so the `gap<0 && !gComputeLC` emergency-brake
+    // branch (line 954) and the `onInsertion` guard on the correction block (line 960) are kept
+    // literally but always take their "false" arm given phase-1 inputs.
+    public static double MaximumSafeFollowSpeed(
+        double gap,
+        double egoSpeed,
+        double predSpeed,
+        double predMaxDecel,
+        ResolvedVType vType,
+        double dt,
+        bool onInsertion = false)
+    {
+        var headway = vType.Tau; // myHeadwayTime
+
+        double x;
+        if (gap >= 0)
+        {
+            var effectiveGap = gap + BrakeGap(predSpeed, Math.Max(vType.Decel, predMaxDecel), 0.0, dt);
+            x = MaximumSafeStopSpeed(effectiveGap, vType.Decel, headway, dt);
+        }
+        else
+        {
+            // gComputeLC is always false in phase 1 -> this branch IS reachable for gap<0.
+            x = Math.Max(egoSpeed - Accel2Speed(vType.EmergencyDecel, dt), 0.0); // Euler: MAX2(x, 0.)
+        }
+
+        // Emergency-decel correction (MSCFModel.cpp:960-994): only triggers when
+        // myDecel != myEmergencyDecel (true for our resolved vType: 4.5 vs 9.0) AND the safe
+        // speed computed above implies braking harder than myDecel. Not exercised by rung 4
+        // (see CLAUDE.md briefing) but ported literally for rung 5+ readiness.
+        if (vType.Decel != vType.EmergencyDecel && !onInsertion)
+        {
+            var origSafeDecel = (egoSpeed - x) / dt; // SPEED2ACCEL(egoSpeed - x)
+            if (origSafeDecel > vType.Decel + NumericalEps)
+            {
+                var rawEmergency = gap <= 0.0
+                    ? vType.EmergencyDecel
+                    : CalculateEmergencyDeceleration(gap, egoSpeed, predSpeed, predMaxDecel);
+                var safeDecel = 1.2 * rawEmergency; // EMERGENCY_DECEL_AMPLIFIER
+                safeDecel = Math.Max(safeDecel, vType.Decel);
+                safeDecel = Math.Min(safeDecel, origSafeDecel);
+                x = Math.Max(egoSpeed - Accel2Speed(safeDecel, dt), 0.0); // Euler: MAX2(x, 0.)
+            }
+        }
+
+        return x;
+    }
+
+    // MSCFModel_Krauss.cpp:111-127 followSpeed, Euler branch only: return MIN2(vsafe, vmax);
+    // where vsafe = maximumSafeFollowSpeed(...) and vmax = maxNextSpeed(speed, veh).
+    // applyHeadwayAndSpeedDifferencePerceptionErrors (line 114) is a driver-state perception
+    // model (MSVehicle::hasDriverState()) -- no driver state exists in phase 1
+    // (CLAUDE.md/DESIGN.md), so it is unconditionally a no-op there and is correctly omitted
+    // here rather than ported as a dead branch.
+    public static double FollowSpeed(
+        double egoSpeed,
+        double gap,
+        double predSpeed,
+        double predMaxDecel,
+        ResolvedVType vType,
+        double dt)
+    {
+        var vsafe = MaximumSafeFollowSpeed(gap, egoSpeed, predSpeed, predMaxDecel, vType, dt);
+        var vmax = MaxNextSpeed(egoSpeed, vType, dt);
+        return Math.Min(vsafe, vmax);
     }
 
     // MSLane.h getVehicleMaxSpeed (no-restriction branch): MIN2(veh->getMaxSpeed(), laneSpeed *

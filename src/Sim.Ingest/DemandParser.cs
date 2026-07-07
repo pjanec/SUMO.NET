@@ -29,7 +29,15 @@ public static class DemandParser
             var vType = new VType(
                 Id: RequireAttribute(vTypeEl, "id"),
                 VClass: vTypeEl.Attribute("vClass")?.Value,
-                Sigma: ParseNullableDouble(vTypeEl, "sigma"));
+                Sigma: ParseNullableDouble(vTypeEl, "sigma"),
+                MaxSpeed: ParseNullableDouble(vTypeEl, "maxSpeed"),
+                Accel: ParseNullableDouble(vTypeEl, "accel"),
+                Decel: ParseNullableDouble(vTypeEl, "decel"),
+                Tau: ParseNullableDouble(vTypeEl, "tau"),
+                MinGap: ParseNullableDouble(vTypeEl, "minGap"),
+                Length: ParseNullableDouble(vTypeEl, "length"),
+                EmergencyDecel: ParseNullableDouble(vTypeEl, "emergencyDecel"),
+                SpeedFactor: ParseNullableDouble(vTypeEl, "speedFactor"));
 
             vTypes.Add(vType);
             vTypesById[vType.Id] = vType;

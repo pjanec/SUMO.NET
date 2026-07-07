@@ -4,10 +4,23 @@ namespace Sim.Ingest;
 // captured for VType (CLAUDE.md/DESIGN.md: --save-state itself does not expand vType defaults,
 // so this parser must not invent one either -- resolved defaulting is a separate, later
 // cross-check against golden.vtype.json, not this ingest step).
+//
+// Each field is an optional override on top of the vClass-default table (Sim.Ingest.
+// VTypeDefaults): a rou.xml <vType> only ever sets the attributes it explicitly needs (rung 4's
+// leader sets maxSpeed="5.00", both rung 4 vTypes set sigma="0"), and everything else is left to
+// the resolver's `override ?? default` per attribute -- never invented here.
 public sealed record VType(
     string Id,
     string? VClass,
-    double? Sigma);
+    double? Sigma,
+    double? MaxSpeed = null,
+    double? Accel = null,
+    double? Decel = null,
+    double? Tau = null,
+    double? MinGap = null,
+    double? Length = null,
+    double? EmergencyDecel = null,
+    double? SpeedFactor = null);
 
 public sealed record Route(
     string Id,
