@@ -1,0 +1,206 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<!-- generated on 2026-07-07 09:58:23 by Eclipse SUMO sumo Version 1.20.0
+<configuration xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://sumo.dlr.de/xsd/sumoConfiguration.xsd">
+
+    <input>
+        <net-file value="net.net.xml"/>
+        <route-files value="rou.rou.xml"/>
+    </input>
+
+    <output>
+        <precision value="6"/>
+        <fcd-output value="golden.fcd.xml"/>
+        <fcd-output.acceleration value="true"/>
+        <save-state.times value="1"/>
+        <save-state.files value="golden.state.xml"/>
+    </output>
+
+    <time>
+        <begin value="0"/>
+        <end value="60"/>
+        <step-length value="1"/>
+    </time>
+
+    <processing>
+        <step-method.ballistic value="false"/>
+        <collision.action value="none"/>
+        <time-to-teleport value="-1"/>
+        <default.action-step-length value="1"/>
+        <default.speeddev value="0"/>
+    </processing>
+
+    <report>
+        <no-step-log value="true"/>
+    </report>
+
+    <random_number>
+        <seed value="42"/>
+    </random_number>
+
+</configuration>
+-->
+
+<fcd-export xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://sumo.dlr.de/xsd/fcd_file.xsd">
+    <timestep time="0.000">
+        <vehicle id="vMajor" x="0.000000" y="198.400000" angle="90.000000" type="car" speed="0.000000" pos="0.000000" lane="WJ_0" slope="0.000000" acceleration="0.000000"/>
+        <vehicle id="vMinor" x="201.600000" y="0.000000" angle="0.000000" type="car" speed="0.000000" pos="0.000000" lane="SJ_0" slope="0.000000" acceleration="0.000000"/>
+    </timestep>
+    <timestep time="1.000">
+        <vehicle id="vMajor" x="2.600000" y="198.400000" angle="90.000000" type="car" speed="2.600000" pos="2.600000" lane="WJ_0" slope="0.000000" acceleration="2.600000"/>
+        <vehicle id="vMinor" x="201.600000" y="2.600000" angle="0.000000" type="car" speed="2.600000" pos="2.600000" lane="SJ_0" slope="0.000000" acceleration="2.600000"/>
+    </timestep>
+    <timestep time="2.000">
+        <vehicle id="vMajor" x="7.800000" y="198.400000" angle="90.000000" type="car" speed="5.200000" pos="7.800000" lane="WJ_0" slope="0.000000" acceleration="2.600000"/>
+        <vehicle id="vMinor" x="201.600000" y="7.800000" angle="0.000000" type="car" speed="5.200000" pos="7.800000" lane="SJ_0" slope="0.000000" acceleration="2.600000"/>
+    </timestep>
+    <timestep time="3.000">
+        <vehicle id="vMajor" x="15.600000" y="198.400000" angle="90.000000" type="car" speed="7.800000" pos="15.600000" lane="WJ_0" slope="0.000000" acceleration="2.600000"/>
+        <vehicle id="vMinor" x="201.600000" y="15.600000" angle="0.000000" type="car" speed="7.800000" pos="15.600000" lane="SJ_0" slope="0.000000" acceleration="2.600000"/>
+    </timestep>
+    <timestep time="4.000">
+        <vehicle id="vMajor" x="26.000000" y="198.400000" angle="90.000000" type="car" speed="10.400000" pos="26.000000" lane="WJ_0" slope="0.000000" acceleration="2.600000"/>
+        <vehicle id="vMinor" x="201.600000" y="26.000000" angle="0.000000" type="car" speed="10.400000" pos="26.000000" lane="SJ_0" slope="0.000000" acceleration="2.600000"/>
+    </timestep>
+    <timestep time="5.000">
+        <vehicle id="vMajor" x="39.000000" y="198.400000" angle="90.000000" type="car" speed="13.000000" pos="39.000000" lane="WJ_0" slope="0.000000" acceleration="2.600000"/>
+        <vehicle id="vMinor" x="201.600000" y="39.000000" angle="0.000000" type="car" speed="13.000000" pos="39.000000" lane="SJ_0" slope="0.000000" acceleration="2.600000"/>
+    </timestep>
+    <timestep time="6.000">
+        <vehicle id="vMajor" x="52.890000" y="198.400000" angle="90.000000" type="car" speed="13.890000" pos="52.890000" lane="WJ_0" slope="0.000000" acceleration="0.890000"/>
+        <vehicle id="vMinor" x="201.600000" y="52.890000" angle="0.000000" type="car" speed="13.890000" pos="52.890000" lane="SJ_0" slope="0.000000" acceleration="0.890000"/>
+    </timestep>
+    <timestep time="7.000">
+        <vehicle id="vMajor" x="66.780000" y="198.400000" angle="90.000000" type="car" speed="13.890000" pos="66.780000" lane="WJ_0" slope="0.000000" acceleration="0.000000"/>
+        <vehicle id="vMinor" x="201.600000" y="66.780000" angle="0.000000" type="car" speed="13.890000" pos="66.780000" lane="SJ_0" slope="0.000000" acceleration="0.000000"/>
+    </timestep>
+    <timestep time="8.000">
+        <vehicle id="vMajor" x="80.670000" y="198.400000" angle="90.000000" type="car" speed="13.890000" pos="80.670000" lane="WJ_0" slope="0.000000" acceleration="0.000000"/>
+        <vehicle id="vMinor" x="201.600000" y="80.670000" angle="0.000000" type="car" speed="13.890000" pos="80.670000" lane="SJ_0" slope="0.000000" acceleration="0.000000"/>
+    </timestep>
+    <timestep time="9.000">
+        <vehicle id="vMajor" x="94.560000" y="198.400000" angle="90.000000" type="car" speed="13.890000" pos="94.560000" lane="WJ_0" slope="0.000000" acceleration="0.000000"/>
+        <vehicle id="vMinor" x="201.600000" y="94.560000" angle="0.000000" type="car" speed="13.890000" pos="94.560000" lane="SJ_0" slope="0.000000" acceleration="0.000000"/>
+    </timestep>
+    <timestep time="10.000">
+        <vehicle id="vMajor" x="108.450000" y="198.400000" angle="90.000000" type="car" speed="13.890000" pos="108.450000" lane="WJ_0" slope="0.000000" acceleration="0.000000"/>
+        <vehicle id="vMinor" x="201.600000" y="108.450000" angle="0.000000" type="car" speed="13.890000" pos="108.450000" lane="SJ_0" slope="0.000000" acceleration="0.000000"/>
+    </timestep>
+    <timestep time="11.000">
+        <vehicle id="vMajor" x="122.340000" y="198.400000" angle="90.000000" type="car" speed="13.890000" pos="122.340000" lane="WJ_0" slope="0.000000" acceleration="0.000000"/>
+        <vehicle id="vMinor" x="201.600000" y="122.340000" angle="0.000000" type="car" speed="13.890000" pos="122.340000" lane="SJ_0" slope="0.000000" acceleration="0.000000"/>
+    </timestep>
+    <timestep time="12.000">
+        <vehicle id="vMajor" x="136.230000" y="198.400000" angle="90.000000" type="car" speed="13.890000" pos="136.230000" lane="WJ_0" slope="0.000000" acceleration="0.000000"/>
+        <vehicle id="vMinor" x="201.600000" y="136.230000" angle="0.000000" type="car" speed="13.890000" pos="136.230000" lane="SJ_0" slope="0.000000" acceleration="0.000000"/>
+    </timestep>
+    <timestep time="13.000">
+        <vehicle id="vMajor" x="150.120000" y="198.400000" angle="90.000000" type="car" speed="13.890000" pos="150.120000" lane="WJ_0" slope="0.000000" acceleration="0.000000"/>
+        <vehicle id="vMinor" x="201.600000" y="150.120000" angle="0.000000" type="car" speed="13.890000" pos="150.120000" lane="SJ_0" slope="0.000000" acceleration="0.000000"/>
+    </timestep>
+    <timestep time="14.000">
+        <vehicle id="vMajor" x="164.010000" y="198.400000" angle="90.000000" type="car" speed="13.890000" pos="164.010000" lane="WJ_0" slope="0.000000" acceleration="0.000000"/>
+        <vehicle id="vMinor" x="201.600000" y="164.010000" angle="0.000000" type="car" speed="13.890000" pos="164.010000" lane="SJ_0" slope="0.000000" acceleration="0.000000"/>
+    </timestep>
+    <timestep time="15.000">
+        <vehicle id="vMajor" x="177.900000" y="198.400000" angle="90.000000" type="car" speed="13.890000" pos="177.900000" lane="WJ_0" slope="0.000000" acceleration="0.000000"/>
+        <vehicle id="vMinor" x="201.600000" y="177.900000" angle="0.000000" type="car" speed="13.890000" pos="177.900000" lane="SJ_0" slope="0.000000" acceleration="0.000000"/>
+    </timestep>
+    <timestep time="16.000">
+        <vehicle id="vMajor" x="191.790000" y="198.400000" angle="90.000000" type="car" speed="13.890000" pos="191.790000" lane="WJ_0" slope="0.000000" acceleration="0.000000"/>
+        <vehicle id="vMinor" x="201.600000" y="187.333000" angle="0.000000" type="car" speed="9.433000" pos="187.333000" lane="SJ_0" slope="0.000000" acceleration="-4.457000"/>
+    </timestep>
+    <timestep time="17.000">
+        <vehicle id="vMajor" x="205.680000" y="198.400000" angle="90.000000" type="car" speed="13.890000" pos="9.680000" lane=":J_2_0" slope="0.000000" acceleration="0.000000"/>
+        <vehicle id="vMinor" x="201.600000" y="192.266000" angle="0.000000" type="car" speed="4.933000" pos="192.266000" lane="SJ_0" slope="0.000000" acceleration="-4.500000"/>
+    </timestep>
+    <timestep time="18.000">
+        <vehicle id="vMajor" x="219.570000" y="198.400000" angle="90.000000" type="car" speed="13.890000" pos="12.370000" lane="JE_0" slope="0.000000" acceleration="0.000000"/>
+        <vehicle id="vMinor" x="201.600000" y="194.299000" angle="0.000000" type="car" speed="2.033000" pos="1.499000" lane=":J_1_0" slope="0.000000" acceleration="-2.900000"/>
+    </timestep>
+    <timestep time="19.000">
+        <vehicle id="vMajor" x="233.460000" y="198.400000" angle="90.000000" type="car" speed="13.890000" pos="26.260000" lane="JE_0" slope="0.000000" acceleration="0.000000"/>
+        <vehicle id="vMinor" x="201.600000" y="198.932000" angle="0.000000" type="car" speed="4.633000" pos="6.132000" lane=":J_1_0" slope="0.000000" acceleration="2.600000"/>
+    </timestep>
+    <timestep time="20.000">
+        <vehicle id="vMajor" x="247.350000" y="198.400000" angle="90.000000" type="car" speed="13.890000" pos="40.150000" lane="JE_0" slope="0.000000" acceleration="0.000000"/>
+        <vehicle id="vMinor" x="201.600000" y="206.165000" angle="0.000000" type="car" speed="7.233000" pos="2.165000" lane="JN_0" slope="0.000000" acceleration="2.600000"/>
+    </timestep>
+    <timestep time="21.000">
+        <vehicle id="vMajor" x="261.240000" y="198.400000" angle="90.000000" type="car" speed="13.890000" pos="54.040000" lane="JE_0" slope="0.000000" acceleration="0.000000"/>
+        <vehicle id="vMinor" x="201.600000" y="215.998000" angle="0.000000" type="car" speed="9.833000" pos="11.998000" lane="JN_0" slope="0.000000" acceleration="2.600000"/>
+    </timestep>
+    <timestep time="22.000">
+        <vehicle id="vMajor" x="275.130000" y="198.400000" angle="90.000000" type="car" speed="13.890000" pos="67.930000" lane="JE_0" slope="0.000000" acceleration="0.000000"/>
+        <vehicle id="vMinor" x="201.600000" y="228.431000" angle="0.000000" type="car" speed="12.433000" pos="24.431000" lane="JN_0" slope="0.000000" acceleration="2.600000"/>
+    </timestep>
+    <timestep time="23.000">
+        <vehicle id="vMajor" x="289.020000" y="198.400000" angle="90.000000" type="car" speed="13.890000" pos="81.820000" lane="JE_0" slope="0.000000" acceleration="0.000000"/>
+        <vehicle id="vMinor" x="201.600000" y="242.321000" angle="0.000000" type="car" speed="13.890000" pos="38.321000" lane="JN_0" slope="0.000000" acceleration="1.457000"/>
+    </timestep>
+    <timestep time="24.000">
+        <vehicle id="vMajor" x="302.910000" y="198.400000" angle="90.000000" type="car" speed="13.890000" pos="95.710000" lane="JE_0" slope="0.000000" acceleration="0.000000"/>
+        <vehicle id="vMinor" x="201.600000" y="256.211000" angle="0.000000" type="car" speed="13.890000" pos="52.211000" lane="JN_0" slope="0.000000" acceleration="0.000000"/>
+    </timestep>
+    <timestep time="25.000">
+        <vehicle id="vMajor" x="316.800000" y="198.400000" angle="90.000000" type="car" speed="13.890000" pos="109.600000" lane="JE_0" slope="0.000000" acceleration="0.000000"/>
+        <vehicle id="vMinor" x="201.600000" y="270.101000" angle="0.000000" type="car" speed="13.890000" pos="66.101000" lane="JN_0" slope="0.000000" acceleration="0.000000"/>
+    </timestep>
+    <timestep time="26.000">
+        <vehicle id="vMajor" x="330.690000" y="198.400000" angle="90.000000" type="car" speed="13.890000" pos="123.490000" lane="JE_0" slope="0.000000" acceleration="0.000000"/>
+        <vehicle id="vMinor" x="201.600000" y="283.991000" angle="0.000000" type="car" speed="13.890000" pos="79.991000" lane="JN_0" slope="0.000000" acceleration="0.000000"/>
+    </timestep>
+    <timestep time="27.000">
+        <vehicle id="vMajor" x="344.580000" y="198.400000" angle="90.000000" type="car" speed="13.890000" pos="137.380000" lane="JE_0" slope="0.000000" acceleration="0.000000"/>
+        <vehicle id="vMinor" x="201.600000" y="297.881000" angle="0.000000" type="car" speed="13.890000" pos="93.881000" lane="JN_0" slope="0.000000" acceleration="0.000000"/>
+    </timestep>
+    <timestep time="28.000">
+        <vehicle id="vMajor" x="358.470000" y="198.400000" angle="90.000000" type="car" speed="13.890000" pos="151.270000" lane="JE_0" slope="0.000000" acceleration="0.000000"/>
+        <vehicle id="vMinor" x="201.600000" y="311.771000" angle="0.000000" type="car" speed="13.890000" pos="107.771000" lane="JN_0" slope="0.000000" acceleration="0.000000"/>
+    </timestep>
+    <timestep time="29.000">
+        <vehicle id="vMajor" x="372.360000" y="198.400000" angle="90.000000" type="car" speed="13.890000" pos="165.160000" lane="JE_0" slope="0.000000" acceleration="0.000000"/>
+        <vehicle id="vMinor" x="201.600000" y="325.661000" angle="0.000000" type="car" speed="13.890000" pos="121.661000" lane="JN_0" slope="0.000000" acceleration="0.000000"/>
+    </timestep>
+    <timestep time="30.000">
+        <vehicle id="vMajor" x="386.250000" y="198.400000" angle="90.000000" type="car" speed="13.890000" pos="179.050000" lane="JE_0" slope="0.000000" acceleration="0.000000"/>
+        <vehicle id="vMinor" x="201.600000" y="339.551000" angle="0.000000" type="car" speed="13.890000" pos="135.551000" lane="JN_0" slope="0.000000" acceleration="0.000000"/>
+    </timestep>
+    <timestep time="31.000">
+        <vehicle id="vMinor" x="201.600000" y="353.441000" angle="0.000000" type="car" speed="13.890000" pos="149.441000" lane="JN_0" slope="0.000000" acceleration="0.000000"/>
+    </timestep>
+    <timestep time="32.000">
+        <vehicle id="vMinor" x="201.600000" y="367.331000" angle="0.000000" type="car" speed="13.890000" pos="163.331000" lane="JN_0" slope="0.000000" acceleration="0.000000"/>
+    </timestep>
+    <timestep time="33.000">
+        <vehicle id="vMinor" x="201.600000" y="381.221000" angle="0.000000" type="car" speed="13.890000" pos="177.221000" lane="JN_0" slope="0.000000" acceleration="0.000000"/>
+    </timestep>
+    <timestep time="34.000">
+        <vehicle id="vMinor" x="201.600000" y="395.111000" angle="0.000000" type="car" speed="13.890000" pos="191.111000" lane="JN_0" slope="0.000000" acceleration="0.000000"/>
+    </timestep>
+    <timestep time="35.000"/>
+    <timestep time="36.000"/>
+    <timestep time="37.000"/>
+    <timestep time="38.000"/>
+    <timestep time="39.000"/>
+    <timestep time="40.000"/>
+    <timestep time="41.000"/>
+    <timestep time="42.000"/>
+    <timestep time="43.000"/>
+    <timestep time="44.000"/>
+    <timestep time="45.000"/>
+    <timestep time="46.000"/>
+    <timestep time="47.000"/>
+    <timestep time="48.000"/>
+    <timestep time="49.000"/>
+    <timestep time="50.000"/>
+    <timestep time="51.000"/>
+    <timestep time="52.000"/>
+    <timestep time="53.000"/>
+    <timestep time="54.000"/>
+    <timestep time="55.000"/>
+    <timestep time="56.000"/>
+    <timestep time="57.000"/>
+    <timestep time="58.000"/>
+    <timestep time="59.000"/>
+</fcd-export>

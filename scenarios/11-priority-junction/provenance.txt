@@ -1,0 +1,13 @@
+sumo_version=1.20.0
+sumo_version_reported=Eclipse SUMO sumo Version 1.20.0
+generated_utc=2026-07-07T09:58:49Z
+command=sumo -c config.sumocfg --fcd-output golden.fcd.xml --fcd-output.acceleration --precision 6 --save-state.times 1 --save-state.files golden.state.xml --no-step-log true
+state_time=1
+fcd_precision=6
+# vtype defaults: golden.vtype.json (libsumo/TraCI dump)
+# determinism: priority junction; minor (SJ->JN, link 1) yields to major (WJ->JE, link 2) per the
+#   <request> response/foes matrix. sigma=0, Euler, teleport off, collision.action=none, seed 42.
+# input file hashes (sha256):
+input=net.net.xml sha256=6121204088e37cf769e22718252aad718969d36ff7536842e0c0064ae83684cb
+input=rou.rou.xml sha256=8d6cb5e68fc75c5011aae6da87456c4ff6fdc60bedb09bda911026efe44393c7
+input=config.sumocfg sha256=53f49f1759ee97b9633681d41da2293c785033015164e2a6571e2b8feda4e06a
