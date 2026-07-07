@@ -156,3 +156,72 @@ already has `followSpeed`/`stopSpeed` (`KraussModel`); the missing inputs are `g
 (the minor's `9.433/4.933/2.033` yield profile + both vehicles' presence/lane sequence) within
 `tolerance.json` (exact, `[lane,pos,speed]`, 1e-3); `dotnet test` green with all priors; the
 determinism policy recorded in the scenario notes and DESIGN.md. Gate through parity-reviewer.
+
+---
+
+## Progress log (update as sub-steps land)
+
+### Scenario is committed as `11-priority-junction` (NOT `10-`)
+`10-` was taken by the A1 truck scenario, so the conflict junction is `scenarios/11-priority-junction/`
+(net + goldens + `provenance.txt` + `golden.vtype.json`, all committed as the `9b [net]` step). The
+golden reproduces the target profile exactly: minor `13.89 → 9.433 → 4.933 → 2.033` at t16–t18, then
+`+2.6`/step acceleration (2.033→4.633→7.233→9.833→12.433→13.89). The name-your-test target is
+`Rung9bParityTests`.
+
+### 9b-i — DONE (committed green, 39 tests)
+Junction `<request>` matrix + conflict geometry are parsed into `NetworkModel`
+(`JunctionLink`/`JunctionRequest`/`JunctionConflict`/`Junction`, plus `Junctions`/`JunctionsById`/
+`LinkByInternalLane`). `PolylineGeometry.TryIntersect` computes the crossing point + per-lane crossing
+arc-length. For this net: link 1 (`:J_1_0`, minor SJ→JN) and link 2 (`:J_2_0`, major WJ→JE) cross
+**5.60 m into each** internal lane at **(201.60, 198.40)**; `Requests[1].RespondsTo(2)` is true
+(minor yields major), `Requests[2].RespondsTo(1)` is false. Inert — no engine/scenario/golden change.
+**NOTE what 9b-i does NOT yet compute: the conflict WIDTH (`conflictSize`/`foeCrossingWidth`) and
+`sagitta`** — only the crossing point + arc-lengths. `getLeaderInfo`'s gap needs the width (see below).
+
+### The mechanism is TWO phases (reverse-engineered against the golden, no debug build needed)
+Hand-matched with the engine's own `KraussModel` — the first two yield values are reproduced **exactly**:
+- **`opened()==false` stop-line brake (while the priority major is still APPROACHING on WJ_0).**
+  The minor brakes as if stopping at the stop line (the end of its approach lane, where its internal
+  lane begins): `stopSpeed(seen − POSITION_EPS)`, with `seen = SJ_0.length − pos = 192.80 − pos` and
+  `POSITION_EPS = 0.1` (`sumo/src/config.h.cmake:214`). Verified EXACT:
+  - t15 (plan→t16): `seen=14.90`, `stopSpeed(14.80) = 9.433` ✓
+  - t16 (plan→t17): `seen=5.467`, `stopSpeed(5.367) = 4.933` ✓
+  This is a stop-line constraint into the SAME multi-constraint reducer as rung 10's traffic light,
+  just with offset `POSITION_EPS` (0.1) instead of rung 10's `DIST_TO_STOPLINE_EXPECT_PRIORITY` (1.0).
+  The brake auto-bites at t15 (before that, `stopSpeed(large) > 13.89`, so no visible slowing even
+  while yielding). `finalizeSpeed` passes it through because `vStop = MIN2(vPos, processNextStop)`, so
+  a junction `vPos` below lane speed caps `vMax` (confirmed: `finalize(oldV=13.89, vPos=9.433) = 9.433`).
+- **`adaptToJunctionLeader` (once the major is PHYSICALLY on the foe internal lane `:J_2_0`).**
+  t17 (plan→t18) gives **2.033**: the minor is released from the stop-line brake (the major, now a
+  *link leader* on the junction, supersedes the approaching-foe stop) and CREEPS onto `:J_1_0` behind
+  it (pos 192.266 → 194.299 = 1.499 into `:J_1_0`). This is `MSVehicle::adaptToJunctionLeader`
+  (`MSVehicle.cpp:3205`) fed by `MSLink::getLeaderInfo`'s gap
+  (`gap = distToCrossing − minGap − leaderBackDist2 − foeCrossingWidth`, `MSLink.cpp:1647`).
+  **2.033 was NOT reproduced by hand** because it needs `foeCrossingWidth` (the conflict WIDTH), which
+  9b-i does not compute and which is not a clean geometric derivation (RUNG9B blocker #1). After t18
+  the major's back clears and the minor is free (`+2.6`/step).
+
+### What remains (9b-ii / 9b-iii) and the sticking point
+1. **9b-ii — the yield decision (`opened()`), the reducer stop-line constraint, and the release.**
+   While a priority foe (a link whose `Requests[ego].RespondsTo(foe)` bit is set) has not cleared the
+   conflict AND is not yet a link-leader on the junction, add a stop-line constraint
+   `stopSpeed(seen − POSITION_EPS)` to the reducer (inert/`+inf` otherwise — same guard pattern as
+   rungs 8b/10). This alone yields the exact 9.433/4.933. Decide the determinism policy here. The exact
+   *arrival-time-window* form of `opened()` is only needed if a scenario's yield BOUNDARY isn't already
+   set by the stop-brake biting (as it is here) — for this scenario a simple "priority foe present and
+   not-yet-cleared" trigger suffices; a general `setApproaching`/`getApproaching` arrival-time pass is
+   the faithful version and is what a tighter scenario would require.
+2. **9b-iii — `adaptToJunctionLeader` for the on-junction transition (the `2.033`).** BLOCKED on the
+   conflict WIDTH (`conflictSize`/`foeCrossingWidth`), and `sagitta` (0 here — straight lanes, so only
+   the width matters). Options to get it: (a) extend 9b-i's geometry to compute the crossing width from
+   the internal-lane widths + meeting angle (perpendicular here → derivable, but reproduce
+   `NBRequest`/`NBNode`'s convention exactly), or (b) build SUMO with `DEBUG_PLAN_MOVE_LEADERINFO` to
+   read the exact `gap`/`fcw` — BUT the vendored `sumo/` tree is a **source-only subset (no CMakeLists,
+   no build system)**, so the debug build requires a FULL fresh clone of `eclipse-sumo` at `v1_20_0`
+   plus `libxerces-c-dev` etc. (heavy; not yet attempted). Until `foeCrossingWidth` is pinned, the
+   `2.033` step (and thus `Rung9bParityTests` `IsMatch`) cannot hit 1e-3, so 9b is NOT commit-green yet.
+
+### Environment note for the debug-build path
+`sumo/` (vendored) = `src/` + `docs/` only. `netconvert`/`sumo` binaries are available via
+`pip install eclipse-sumo==1.20.0` (already used to regen the goldens), but they are release builds
+with the `DEBUG_*` prints compiled out. Getting the prints = clone the full repo + build headless.

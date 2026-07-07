@@ -187,9 +187,16 @@ its own `/sumo/` references and scenario when we reach it:
    - 9a (scenario `08-junction-straight`): multi-edge routing + internal-lane traversal
      (route expands to a lane sequence via each `<connection>`'s `via`; pos carries over across
      lane boundaries). A major-road vehicle drives straight through, no yielding. Green.
-   - **9b — priority yielding — DEFERRED** (the sole remaining hard rung). **See `RUNG9B.md` for
-     the full cold-start plan** (mechanism, geometry, the reference scenario to rebuild, the 3-step
-     decomposition, de-risking notes, done-condition). Summary characterization below.
+   - **9b — priority yielding — IN PROGRESS.** Scenario committed as `scenarios/11-priority-junction/`
+     (not `10-`; A1 took `10-`). **9b-i DONE** (junction `<request>` + conflict geometry in
+     `NetworkModel`; crossing 5.60 m into each of `:J_1_0`/`:J_2_0`; `dotnet test` = 39 green).
+     Reverse-engineered (no debug build): the yield is TWO phases — a stop-line brake
+     `stopSpeed(seen − POSITION_EPS=0.1)` while the priority major approaches (reproduces `9.433`/`4.933`
+     EXACTLY), then `adaptToJunctionLeader` once the major is on `:J_2_0` (the `2.033`, BLOCKED on the
+     conflict WIDTH `foeCrossingWidth` that 9b-i does not yet compute). 9b-ii (reducer stop-line
+     constraint + release + determinism policy) and 9b-iii (`adaptToJunctionLeader` + conflict width)
+     remain. **See `RUNG9B.md` "Progress log" for the full per-step breakdown and the sticking point.**
+     Summary characterization below.
      Scenario probed: major `WJ JE` (priority),
      minor `SJ JN` (yields); the minor brakes 13.89→9.433→4.933→2.033 as the major approaches,
      threads through just behind it, then accelerates.
