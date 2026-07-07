@@ -264,15 +264,20 @@ buffer absorb them); neither is a rewrite. Order within each group respects the 
 
 ### Group A — completes the lane-based SUMO-parity core
 
-- **A1. Multi-vClass vType resolver** (prerequisite; low-risk, high-value). `VTypeDefaults` today
-  resolves ONLY `vClass="passenger"` and throws otherwise. Extend it to the other vClass default
-  tables (truck, bus, coach, delivery, bicycle, motorcycle, emergency, …). Port straight from the
-  vendored `SUMOVTypeParameter.cpp` switch branches already read for rung 1: `getDefaultAccel`,
-  `getDefaultDecel`, `getDefaultEmergencyDecel`, `getDefaultImperfection`, `getVehicleStopOffset`,
-  and `SUMOVehicleClass.cpp::getDefaultVehicleLength` (e.g. truck accel 1.3 / decel 4 / length 7.1;
-  bus 1.2 / 4 / 12; bicycle 1.2 / 3 / 1.6; each vClass its own maxSpeed). Validate by adding a
-  scenario per vClass and extending `ParameterCrossCheckTests` (it already iterates every scenario's
-  `golden.vtype.json`). Unblocks every non-passenger scenario, including A3 and trucks/buses.
+- **A1. Multi-vClass vType resolver** (prerequisite; low-risk, high-value). **DONE.**
+  `VTypeDefaults.Resolve` (was `ResolvePassenger`) now dispatches on `vType.VClass` over a curated
+  road-vClass table: passenger, truck, bus, coach, delivery, trailer, bicycle, motorcycle, moped,
+  emergency. Ported straight from the vendored source: `SUMOVTypeParameter.cpp`
+  `VClassDefaultValues` ctor (minGap/maxSpeed/width/height), `getDefaultAccel`/`getDefaultDecel`/
+  `getDefaultEmergencyDecel` (the `MAX2(decel, vcDecel)` form, kept derived — not hardcoded)/
+  `getDefaultImperfection`, and `SUMOVehicleClass.cpp::getDefaultVehicleLength`. Passenger path is
+  byte-identical (inert-when-absent); out-of-scope classes (rail*, tram, ship, pedestrian, …) still
+  throw `NotSupportedException`; null/empty vClass resolves to passenger per SUMO's parser default.
+  Validated by scenario `10-truck-free-flow` (truck accel 1.3 + maxSpeed 36.11 both bind; speed
+  limit 40): `ParameterCrossCheckTests` picks up its `golden.vtype.json` and `RungA1ParityTests`
+  checks the truck free-flow trajectory. `dotnet test` = 30 green. Adding another vClass now = one
+  scenario + golden; the tests extend for free. `getVehicleStopOffset` was not needed (not a
+  resolved-vType field). Remaining classes for A3/etc. (each its own scenario+golden when reached).
 - **A2. Overtaking (speed-gain lane change).** The other main branch of LC2013's `_wantsChange`
   (the one rung 8b did NOT port — rung 8b was keep-right only). A vehicle held up by a slower leader
   accumulates `mySpeedGainProbability` from the potential speed advantage and changes left when it
