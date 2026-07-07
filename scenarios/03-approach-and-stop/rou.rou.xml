@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<routes xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://sumo.dlr.de/xsd/routes_file.xsd">
+    <!-- Approach-and-stop (rung 5). One passenger vehicle, sigma=0. It accelerates to the
+         lane limit, then must brake to a complete halt at a scheduled <stop> (front at
+         endPos=200), hold for 10 s, then resume. This isolates the discrete
+         maximumSafeStopSpeedEuler overshoot-prevention math: the vehicle stops exactly at
+         endPos without passing it, using deceleration bounded by decel=4.5. -->
+    <vType id="passenger0" vClass="passenger" sigma="0"/>
+    <route id="r0" edges="e0"/>
+    <vehicle id="veh0" type="passenger0" route="r0" depart="0" departPos="0" departSpeed="0" departLane="0">
+        <stop lane="e0_0" startPos="195" endPos="200" duration="10"/>
+    </vehicle>
+</routes>
