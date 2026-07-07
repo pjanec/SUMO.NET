@@ -429,6 +429,40 @@ A3) remain the byte-for-byte correctness anchor (same discipline as rungs 8b/10/
   (extend `ExternalObstacle` with velocity/heading + a per-step update). Depends on B1 + 9b + A2.
   Inert-when-absent.
 
+  **Decomposed (like 9b) — one shared `ExternalObstacle` velocity extension, three integration points:**
+  - **B5-i. DONE. Dynamic leader/follower on a lane.** `ExternalObstacle` (Sim.Core/ExternalObstacle.cs)
+    extended with `Speed` and `MaxDecel` (both default 0.0, so every existing `AddObstacle` call site
+    is unaffected). `IEngine`/`Engine` gained `AddMovingObstacle(id, laneId, frontPos, length, speed,
+    maxDecel, startTime=-inf, endTime=+inf)` (add-or-replace by id, same keying as `AddObstacle`) and
+    `UpdateObstacle(id, frontPos, speed)` (no-op if `id` absent; preserves LaneId/Length/StartTime/
+    EndTime/MaxDecel via `record with`). `Engine.AdvanceObstacles(dt)` dead-reckons `FrontPos +=
+    Speed*dt` for every `Speed != 0` obstacle, called ONCE per step in the `[SystemPhase.Input]`
+    section of `Run(int)` — BEFORE `neighbors.Refill`/`PlanMovements` — so the Plan phase always reads
+    an already-advanced-for-this-step but otherwise FROZEN obstacle position (never mutated mid-plan);
+    `Speed==0` obstacles are skipped entirely, so AdvanceObstacles is a no-op for every B1/static
+    obstacle. `ObstacleConstraint` now passes `predSpeed: nearest.Speed`, `predMaxDecel: nearest.Speed
+    != 0 ? nearest.MaxDecel : v.VType.Decel` — the conditional is what keeps a `Speed==0` obstacle
+    byte-identical to B1: at `predSpeed=0`, `KraussModel.BrakeGap(0, ...)` is 0 regardless of the decel
+    argument, so the formula provably never uses `predMaxDecel` in that case, and it still receives the
+    same `v.VType.Decel` B1 always passed. For a moving obstacle this exactly mirrors
+    `LeaderFollowSpeedConstraint`'s real-leader call. New behavioral tests in
+    `tests/Sim.ParityTests/RungB5MovingObstacleTests.cs` (mirrors `RungB1ExternalObstacleTests`'s
+    structure/idiom, reusing `scenarios/14-external-obstacle`): (1) no-overlap-ever against a
+    per-step-reconstructed moving obstacle back position, plus late-state trailing at a positive speed
+    near the obstacle's own speed with a bounded gap; (2) resume-to-free-flow-max within a bounded step
+    count after the obstacle deactivates (`endTime`); (3) a `Speed=0` `AddMovingObstacle` reproduces
+    B1's exact stop-at-`242.499` steady state, proving the moving path degenerates exactly to B1.
+    `RungB1ExternalObstacleTests` and scenarios 13/14 verified unchanged/still green. Full suite: 67
+    green (64 baseline + 3 new Facts), 0 failed.
+  - **B5-ii. Cross-lane blocker vetoing lane changes.** Feed an active obstacle on the TARGET lane into
+    A2's `IsTargetLaneSafe`/neighbor query so a moving external agent on the neighbor lane vetoes a
+    speed-gain change. Behavioral test: ego wanting to change lanes holds its lane while an external
+    agent occupies the target-lane gap; changes once clear.
+  - **B5-iii. Junction foe the reducer yields to.** Feed an external agent approaching/occupying a
+    junction (its position + `Speed` → arrival time) into 9b's `JunctionYieldConstraint` as an
+    approaching foe, so a SUMO vehicle yields to a crossing navmesh/RVO agent. Behavioral test: ego
+    brakes at the stop line for a crossing external agent, proceeds once it has passed.
+
 ### Group C — realism beyond the deterministic phase-1 core
 
 - **C1. Statistical parity / driver imperfection (`sigma>0`). THE determinism-ladder shift; do

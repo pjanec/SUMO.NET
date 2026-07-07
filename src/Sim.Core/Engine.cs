@@ -161,9 +161,70 @@ public sealed class Engine : IEngine
         _obstacles[id] = new ExternalObstacle(id, laneId, frontPos, length, startTime, endTime);
     }
 
+    // B5-i: MOVING obstacle add-or-replace, same keyed-by-id contract as AddObstacle. Speed/
+    // MaxDecel are the only difference from AddObstacle's construction -- AdvanceObstacles (Input
+    // phase) dead-reckons FrontPos by Speed*dt every step from here on, and ObstacleConstraint
+    // feeds Speed/MaxDecel into KraussModel.FollowSpeed instead of the static predSpeed=0 case.
+    public void AddMovingObstacle(string id, string laneId, double frontPos, double length,
+        double speed, double maxDecel,
+        double startTime = double.NegativeInfinity, double endTime = double.PositiveInfinity)
+    {
+        _obstacles[id] = new ExternalObstacle(id, laneId, frontPos, length, startTime, endTime, speed, maxDecel);
+    }
+
+    // B5-i: per-step position/velocity correction from the external owner of this obstacle.
+    // Inert-when-absent (no-op if `id` was never added/was removed) -- mirrors RemoveObstacle's
+    // TryGetValue-free `Remove` idiom, just for an update instead of a delete. `record with`
+    // preserves LaneId/Length/StartTime/EndTime/MaxDecel unchanged; only FrontPos/Speed move.
+    public void UpdateObstacle(string id, double frontPos, double speed)
+    {
+        if (_obstacles.TryGetValue(id, out var obstacle))
+        {
+            _obstacles[id] = obstacle with { FrontPos = frontPos, Speed = speed };
+        }
+    }
+
     public void RemoveObstacle(string id) => _obstacles.Remove(id);
 
     public void ClearObstacles() => _obstacles.Clear();
+
+    // B5-i: dead-reckon every MOVING obstacle (Speed != 0) forward by Speed*dt, once per step, in
+    // the Input phase BEFORE PlanMovements/the neighbor-query Refill -- so the Plan phase reads a
+    // FROZEN obstacle position for this step, exactly like every other piece of start-of-step
+    // state (CLAUDE.md rule 2: plan reads start-of-step state only). This is linear extrapolation
+    // of an externally-supplied velocity (navmesh/RVO agent, live detection), NOT a SUMO
+    // car-following/motion model -- the external owner is expected to call UpdateObstacle with a
+    // fresh reading whenever it has one; dead-reckoning just fills the gap between updates.
+    // Speed==0 obstacles are skipped entirely (no record replacement), which is exactly why a
+    // static (B1) obstacle's FrontPos never changes here and the rest of the step tree sees a
+    // byte-identical world to before this rung.
+    private readonly List<string> _obstacleIdScratch = new();
+
+    private void AdvanceObstacles(double dt)
+    {
+        if (_obstacles.Count == 0)
+        {
+            return;
+        }
+
+        // Snapshot the ids first, into a reused scratch list (no per-step allocation): replacing
+        // an existing key's VALUE via the indexer below is fine mid-loop, but Dictionary still
+        // disallows enumerating _obstacles.Values/Keys directly while any entry's value changes,
+        // so we iterate a stable id copy instead.
+        _obstacleIdScratch.Clear();
+        _obstacleIdScratch.AddRange(_obstacles.Keys);
+
+        foreach (var id in _obstacleIdScratch)
+        {
+            var obstacle = _obstacles[id];
+            if (obstacle.Speed == 0.0)
+            {
+                continue;
+            }
+
+            _obstacles[id] = obstacle with { FrontPos = obstacle.FrontPos + obstacle.Speed * dt };
+        }
+    }
 
     public void LoadScenario(string netXmlPath, string rouXmlPath, string sumocfgPath)
     {
@@ -277,6 +338,14 @@ public sealed class Engine : IEngine
             // why this ordering, and why it is still a seam-4 structural mutation rather than a
             // Simulation-phase concern).
             UpdateReroutes(time, dt);
+
+            // [SystemPhase.Input] B5-i: dead-reckon MOVING external obstacles (Speed != 0) by
+            // Speed*dt. Runs BEFORE the neighbor-query Refill/PlanMovements below so the Plan
+            // phase's ObstacleConstraint reads a FROZEN, already-advanced obstacle position for
+            // this step (CLAUDE.md rule 2) -- never mutated mid-plan. Static (Speed==0, including
+            // every B1 obstacle) obstacles are untouched by this call, so this is a pure no-op
+            // for every existing obstacle-free or static-obstacle scenario/test.
+            AdvanceObstacles(dt);
 
             // [SystemPhase.Simulation] Plan/execute contract (DESIGN.md): plan reads
             // start-of-step state and writes only MoveIntent; execute applies all intents
@@ -1233,17 +1302,23 @@ public sealed class Engine : IEngine
             dt: dt);
     }
 
-    // B1: external-obstacle constraint. Treats the nearest active obstacle ahead of `v` on its
-    // current lane as a virtual stopped leader (predSpeed=0), reusing the exact same
-    // KraussModel.FollowSpeed leader-following formula LeaderFollowSpeedConstraint uses for a
-    // real vehicle leader -- so a follower approaching an obstacle brakes and settles at the same
-    // Krauss steady gap it would hold behind a stopped real vehicle (verified against scenario
-    // 13-stopped-leader's golden: follower front settles at 242.499 = obstacle back 245 - minGap
-    // 2.5 - NUMERICAL_EPS 0.001). predMaxDecel is passed as the ego's OWN decel (`v.VType.Decel`):
-    // with predSpeed=0, KraussModel.BrakeGap(0, ...) is 0 regardless of the decel argument, so
-    // this value is never actually used by the formula for a static obstacle -- it is supplied
-    // only because FollowSpeed's signature requires *some* vType-shaped decel, and the ego's own
-    // is a harmless, always-defined choice.
+    // B1/B5-i: external-obstacle constraint. Treats the nearest active obstacle ahead of `v` on
+    // its current lane as a virtual leader, reusing the exact same KraussModel.FollowSpeed
+    // leader-following formula LeaderFollowSpeedConstraint uses for a real vehicle leader -- so a
+    // follower approaching a STATIC obstacle (Speed==0, B1's only case) brakes and settles at the
+    // same Krauss steady gap it would hold behind a stopped real vehicle (verified against
+    // scenario 13-stopped-leader's golden: follower front settles at 242.499 = obstacle back 245
+    // - minGap 2.5 - NUMERICAL_EPS 0.001).
+    //
+    // predSpeed/predMaxDecel now come straight off the obstacle (B5-i), mirroring
+    // LeaderFollowSpeedConstraint's real-leader call (predSpeed: leader.Kinematics.Speed,
+    // predMaxDecel: leader.VType.Decel) exactly. predMaxDecel is conditional on Speed != 0: at
+    // predSpeed=0, KraussModel.BrakeGap(0, ...) is 0 regardless of the decel argument, so for a
+    // STATIC obstacle that argument is never actually used by the formula -- passing the ego's
+    // own decel (`v.VType.Decel`) there, exactly as B1 always did, is what keeps a Speed==0
+    // obstacle byte-identical to B1's output (nothing about the emitted trajectory can depend on
+    // an argument the formula provably ignores). For a MOVING obstacle (Speed != 0) the real
+    // obstacle.MaxDecel is used, since BrakeGap(predSpeed, ...) is no longer trivially zero.
     //
     // Timing: obstacle activity ([StartTime, EndTime)) is evaluated at the SAME `time` this whole
     // Plan phase reads every other piece of start-of-step state (v's own kinematics, the frozen
@@ -1289,8 +1364,8 @@ public sealed class Engine : IEngine
         return KraussModel.FollowSpeed(
             egoSpeed: v.Kinematics.Speed,
             gap: gap,
-            predSpeed: 0.0,
-            predMaxDecel: v.VType.Decel,
+            predSpeed: nearest.Speed,
+            predMaxDecel: nearest.Speed != 0.0 ? nearest.MaxDecel : v.VType.Decel,
             vType: v.VType,
             dt: _config!.StepLength);
     }
