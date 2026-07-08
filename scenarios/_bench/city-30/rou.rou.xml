@@ -1,0 +1,552 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<!-- generated on 2026-07-08 08:33:17 by Eclipse SUMO duarouter Version 1.20.0
+<configuration xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://sumo.dlr.de/xsd/duarouterConfiguration.xsd">
+
+    <input>
+        <net-file value="city.net.xml"/>
+        <route-files value="city.trips.xml"/>
+    </input>
+
+    <output>
+        <output-file value="city.rou.xml"/>
+        <named-routes value="true"/>
+    </output>
+
+    <report>
+        <ignore-errors value="true"/>
+    </report>
+
+    <random_number>
+        <seed value="42"/>
+    </random_number>
+
+</configuration>
+-->
+
+<routes xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://sumo.dlr.de/xsd/routes_file.xsd">
+    <vType id="DEFAULT_VEHTYPE" vClass="passenger" sigma="0"/>
+    <route id="r0" edges="B2B1 B1B0 B0A0 A0A1"/>
+    <vehicle id="0" type="DEFAULT_VEHTYPE" depart="0.00" route="r0"/>
+    <route id="r1" edges="A2B2 B2A2 A2A1"/>
+    <vehicle id="1" type="DEFAULT_VEHTYPE" depart="2.07" route="r1"/>
+    <route id="r2" edges="C0B0 B0B1 B1B2 B2C2"/>
+    <vehicle id="2" type="DEFAULT_VEHTYPE" depart="4.15" route="r2"/>
+    <route id="r3" edges="C1C2 C2B2 B2A2 A2A1 A1A0"/>
+    <vehicle id="3" type="DEFAULT_VEHTYPE" depart="6.22" route="r3"/>
+    <route id="r4" edges="B1A1 A1B1 B1B0 B0A0 A0A1"/>
+    <vehicle id="4" type="DEFAULT_VEHTYPE" depart="8.29" route="r4"/>
+    <route id="r5" edges="A2A1 A1B1 B1B2"/>
+    <vehicle id="5" type="DEFAULT_VEHTYPE" depart="10.37" route="r5"/>
+    <route id="r6" edges="A0A1 A1B1"/>
+    <vehicle id="6" type="DEFAULT_VEHTYPE" depart="12.44" route="r6"/>
+    <route id="r7" edges="B2B1 B1C1"/>
+    <vehicle id="7" type="DEFAULT_VEHTYPE" depart="14.52" route="r7"/>
+    <route id="r8" edges="A2A1 A1A2 A2B2 B2A2"/>
+    <vehicle id="8" type="DEFAULT_VEHTYPE" depart="16.59" route="r8"/>
+    <route id="r9" edges="C1B1 B1B0 B0A0 A0A1"/>
+    <vehicle id="9" type="DEFAULT_VEHTYPE" depart="18.66" route="r9"/>
+    <route id="r10" edges="C1B1 B1B2 B2C2"/>
+    <vehicle id="10" type="DEFAULT_VEHTYPE" depart="20.74" route="r10"/>
+    <route id="r11" edges="B0B1 B1A1 A1A2"/>
+    <vehicle id="11" type="DEFAULT_VEHTYPE" depart="22.81" route="r11"/>
+    <route id="r12" edges="C2B2 B2B1 B1B0 B0B1"/>
+    <vehicle id="12" type="DEFAULT_VEHTYPE" depart="24.88" route="r12"/>
+    <route id="r13" edges="A1A0"/>
+    <vehicle id="13" type="DEFAULT_VEHTYPE" depart="26.96" route="r13"/>
+    <route id="r14" edges="C1C0 C0B0 B0B1 B1B2 B2A2"/>
+    <vehicle id="14" type="DEFAULT_VEHTYPE" depart="29.03" route="r14"/>
+    <route id="r15" edges="C1B1 B1C1 C1C0 C0B0"/>
+    <vehicle id="15" type="DEFAULT_VEHTYPE" depart="31.10" route="r15"/>
+    <route id="r16" edges="B1B2 B2C2 C2C1"/>
+    <vehicle id="16" type="DEFAULT_VEHTYPE" depart="33.18" route="r16"/>
+    <route id="r17" edges="B0C0 C0C1 C1B1 B1C1"/>
+    <vehicle id="17" type="DEFAULT_VEHTYPE" depart="35.25" route="r17"/>
+    <route id="r18" edges="C1B1 B1B2 B2A2"/>
+    <vehicle id="18" type="DEFAULT_VEHTYPE" depart="37.32" route="r18"/>
+    <route id="r19" edges="C1C0 C0B0 B0B1 B1C1"/>
+    <vehicle id="19" type="DEFAULT_VEHTYPE" depart="39.40" route="r19"/>
+    <route id="r20" edges="B2C2 C2C1 C1B1 B1A1 A1A0 A0B0"/>
+    <vehicle id="20" type="DEFAULT_VEHTYPE" depart="41.47" route="r20"/>
+    <route id="r21" edges="A2A1 A1A2 A2B2"/>
+    <vehicle id="21" type="DEFAULT_VEHTYPE" depart="43.55" route="r21"/>
+    <route id="r22" edges="A0B0 B0B1 B1B2 B2A2 A2A1"/>
+    <vehicle id="22" type="DEFAULT_VEHTYPE" depart="45.62" route="r22"/>
+    <route id="r23" edges="A1A0 A0B0 B0A0 A0A1 A1A2 A2B2"/>
+    <vehicle id="23" type="DEFAULT_VEHTYPE" depart="47.69" route="r23"/>
+    <route id="r24" edges="B2B1 B1B0 B0B1"/>
+    <vehicle id="24" type="DEFAULT_VEHTYPE" depart="49.77" route="r24"/>
+    <route id="r25" edges="B0B1 B1B2 B2A2 A2A1"/>
+    <vehicle id="25" type="DEFAULT_VEHTYPE" depart="51.84" route="r25"/>
+    <route id="r26" edges="A2B2 B2C2 C2C1 C1C2 C2B2"/>
+    <vehicle id="26" type="DEFAULT_VEHTYPE" depart="53.91" route="r26"/>
+    <route id="r27" edges="B2B1 B1B2 B2A2"/>
+    <vehicle id="27" type="DEFAULT_VEHTYPE" depart="55.99" route="r27"/>
+    <route id="r28" edges="A1B1 B1C1 C1C0 C0B0"/>
+    <vehicle id="28" type="DEFAULT_VEHTYPE" depart="58.06" route="r28"/>
+    <route id="r29" edges="A1A2 A2B2 B2B1 B1B0 B0C0"/>
+    <vehicle id="29" type="DEFAULT_VEHTYPE" depart="60.13" route="r29"/>
+    <route id="r30" edges="C2C1 C1B1 B1B2 B2B1"/>
+    <vehicle id="30" type="DEFAULT_VEHTYPE" depart="62.21" route="r30"/>
+    <route id="r31" edges="B1C1 C1B1 B1B2 B2C2"/>
+    <vehicle id="31" type="DEFAULT_VEHTYPE" depart="64.28" route="r31"/>
+    <route id="r32" edges="C1C0 C0B0 B0C0 C0C1"/>
+    <vehicle id="32" type="DEFAULT_VEHTYPE" depart="66.35" route="r32"/>
+    <route id="r33" edges="A2A1 A1A0 A0B0 B0A0 A0A1"/>
+    <vehicle id="33" type="DEFAULT_VEHTYPE" depart="68.43" route="r33"/>
+    <route id="r34" edges="B0A0 A0A1 A1A2 A2B2"/>
+    <vehicle id="34" type="DEFAULT_VEHTYPE" depart="70.50" route="r34"/>
+    <route id="r35" edges="A2A1 A1B1 B1C1 C1C2 C2B2"/>
+    <vehicle id="35" type="DEFAULT_VEHTYPE" depart="72.58" route="r35"/>
+    <route id="r36" edges="C1C2 C2B2 B2B1 B1B0 B0A0"/>
+    <vehicle id="36" type="DEFAULT_VEHTYPE" depart="74.65" route="r36"/>
+    <route id="r37" edges="B2B1 B1B0 B0C0"/>
+    <vehicle id="37" type="DEFAULT_VEHTYPE" depart="76.72" route="r37"/>
+    <route id="r38" edges="C1C2 C2B2 B2B1 B1B0"/>
+    <vehicle id="38" type="DEFAULT_VEHTYPE" depart="78.80" route="r38"/>
+    <vehicle id="39" type="DEFAULT_VEHTYPE" depart="80.87" route="r1"/>
+    <route id="r39" edges="B1C1 C1B1 B1A1 A1A2 A2B2"/>
+    <vehicle id="40" type="DEFAULT_VEHTYPE" depart="82.94" route="r39"/>
+    <route id="r40" edges="B2A2 A2A1 A1B1 B1C1 C1C2"/>
+    <vehicle id="41" type="DEFAULT_VEHTYPE" depart="85.02" route="r40"/>
+    <route id="r41" edges="B0C0 C0C1 C1C2 C2B2 B2A2 A2A1"/>
+    <vehicle id="42" type="DEFAULT_VEHTYPE" depart="87.09" route="r41"/>
+    <route id="r42" edges="C2C1 C1B1 B1B2"/>
+    <vehicle id="43" type="DEFAULT_VEHTYPE" depart="89.16" route="r42"/>
+    <route id="r43" edges="A1A0 A0B0"/>
+    <vehicle id="44" type="DEFAULT_VEHTYPE" depart="91.24" route="r43"/>
+    <route id="r44" edges="A1A0 A0B0 B0B1 B1B2 B2B1"/>
+    <vehicle id="45" type="DEFAULT_VEHTYPE" depart="93.31" route="r44"/>
+    <route id="r45" edges="C1B1 B1A1"/>
+    <vehicle id="46" type="DEFAULT_VEHTYPE" depart="95.38" route="r45"/>
+    <route id="r46" edges="A0B0 B0C0"/>
+    <vehicle id="47" type="DEFAULT_VEHTYPE" depart="97.46" route="r46"/>
+    <vehicle id="48" type="DEFAULT_VEHTYPE" depart="99.53" route="r42"/>
+    <route id="r47" edges="C2C1 C1C0"/>
+    <vehicle id="49" type="DEFAULT_VEHTYPE" depart="101.61" route="r47"/>
+    <route id="r48" edges="A0A1 A1B1 B1C1 C1C0 C0B0"/>
+    <vehicle id="50" type="DEFAULT_VEHTYPE" depart="103.68" route="r48"/>
+    <route id="r49" edges="B2C2 C2C1 C1B1 B1B2"/>
+    <vehicle id="51" type="DEFAULT_VEHTYPE" depart="105.75" route="r49"/>
+    <route id="r50" edges="A2B2 B2B1"/>
+    <vehicle id="52" type="DEFAULT_VEHTYPE" depart="107.83" route="r50"/>
+    <route id="r51" edges="A1A0 A0B0 B0B1 B1A1"/>
+    <vehicle id="53" type="DEFAULT_VEHTYPE" depart="109.90" route="r51"/>
+    <route id="r52" edges="B1A1 A1B1 B1C1 C1C2 C2B2"/>
+    <vehicle id="54" type="DEFAULT_VEHTYPE" depart="111.97" route="r52"/>
+    <route id="r53" edges="C1C2 C2B2 B2A2 A2A1 A1A2 A2B2"/>
+    <vehicle id="55" type="DEFAULT_VEHTYPE" depart="114.05" route="r53"/>
+    <route id="r54" edges="B1B2 B2B1 B1A1 A1B1"/>
+    <vehicle id="56" type="DEFAULT_VEHTYPE" depart="116.12" route="r54"/>
+    <route id="r55" edges="C1C2 C2B2 B2C2 C2C1 C1C0"/>
+    <vehicle id="57" type="DEFAULT_VEHTYPE" depart="118.19" route="r55"/>
+    <route id="r56" edges="B0A0 A0A1 A1A2 A2B2 B2B1"/>
+    <vehicle id="58" type="DEFAULT_VEHTYPE" depart="120.27" route="r56"/>
+    <route id="r57" edges="B2A2 A2A1 A1A2"/>
+    <vehicle id="59" type="DEFAULT_VEHTYPE" depart="122.34" route="r57"/>
+    <route id="r58" edges="C0C1 C1B1 B1B2"/>
+    <vehicle id="60" type="DEFAULT_VEHTYPE" depart="124.42" route="r58"/>
+    <vehicle id="61" type="DEFAULT_VEHTYPE" depart="126.49" route="r58"/>
+    <route id="r59" edges="A0A1 A1B1 B1B0 B0A0"/>
+    <vehicle id="62" type="DEFAULT_VEHTYPE" depart="128.56" route="r59"/>
+    <route id="r60" edges="A0A1 A1B1 B1C1 C1C2 C2B2"/>
+    <vehicle id="63" type="DEFAULT_VEHTYPE" depart="130.64" route="r60"/>
+    <route id="r61" edges="C1C2 C2B2 B2C2 C2C1 C1B1"/>
+    <vehicle id="64" type="DEFAULT_VEHTYPE" depart="132.71" route="r61"/>
+    <route id="r62" edges="B0A0 A0A1 A1A0 A0B0"/>
+    <vehicle id="65" type="DEFAULT_VEHTYPE" depart="134.78" route="r62"/>
+    <route id="r63" edges="C1C2 C2B2"/>
+    <vehicle id="66" type="DEFAULT_VEHTYPE" depart="136.86" route="r63"/>
+    <route id="r64" edges="A1A0 A0B0 B0B1 B1B0"/>
+    <vehicle id="67" type="DEFAULT_VEHTYPE" depart="138.93" route="r64"/>
+    <route id="r65" edges="A0B0 B0C0 C0C1"/>
+    <vehicle id="68" type="DEFAULT_VEHTYPE" depart="141.00" route="r65"/>
+    <route id="r66" edges="C0C1 C1B1 B1A1 A1A2"/>
+    <vehicle id="69" type="DEFAULT_VEHTYPE" depart="143.08" route="r66"/>
+    <route id="r67" edges="B1B0 B0B1 B1C1"/>
+    <vehicle id="70" type="DEFAULT_VEHTYPE" depart="145.15" route="r67"/>
+    <route id="r68" edges="A2B2 B2C2 C2C1 C1C0"/>
+    <vehicle id="71" type="DEFAULT_VEHTYPE" depart="147.22" route="r68"/>
+    <route id="r69" edges="B1A1 A1A2 A2B2 B2A2 A2A1"/>
+    <vehicle id="72" type="DEFAULT_VEHTYPE" depart="149.30" route="r69"/>
+    <route id="r70" edges="B1B2 B2C2 C2C1 C1C0 C0B0"/>
+    <vehicle id="73" type="DEFAULT_VEHTYPE" depart="151.37" route="r70"/>
+    <route id="r71" edges="A1B1 B1B0 B0A0"/>
+    <vehicle id="74" type="DEFAULT_VEHTYPE" depart="153.45" route="r71"/>
+    <vehicle id="75" type="DEFAULT_VEHTYPE" depart="155.52" route="r30"/>
+    <route id="r72" edges="B1A1 A1B1 B1B2"/>
+    <vehicle id="76" type="DEFAULT_VEHTYPE" depart="157.59" route="r72"/>
+    <route id="r73" edges="A1A0 A0B0 B0B1 B1B2 B2A2 A2A1"/>
+    <vehicle id="77" type="DEFAULT_VEHTYPE" depart="159.67" route="r73"/>
+    <route id="r74" edges="B0B1 B1B2 B2A2"/>
+    <vehicle id="78" type="DEFAULT_VEHTYPE" depart="161.74" route="r74"/>
+    <route id="r75" edges="A2A1"/>
+    <vehicle id="79" type="DEFAULT_VEHTYPE" depart="163.81" route="r75"/>
+    <route id="r76" edges="A0B0 B0B1 B1B2 B2B1"/>
+    <vehicle id="80" type="DEFAULT_VEHTYPE" depart="165.89" route="r76"/>
+    <route id="r77" edges="A2A1 A1B1 B1C1 C1C2"/>
+    <vehicle id="81" type="DEFAULT_VEHTYPE" depart="167.96" route="r77"/>
+    <route id="r78" edges="C1C0 C0B0 B0A0 A0A1 A1A0 A0B0"/>
+    <vehicle id="82" type="DEFAULT_VEHTYPE" depart="170.03" route="r78"/>
+    <route id="r79" edges="A2A1 A1A2 A2B2 B2C2"/>
+    <vehicle id="83" type="DEFAULT_VEHTYPE" depart="172.11" route="r79"/>
+    <route id="r80" edges="A2A1 A1A2"/>
+    <vehicle id="84" type="DEFAULT_VEHTYPE" depart="174.18" route="r80"/>
+    <route id="r81" edges="C2B2 B2B1 B1C1"/>
+    <vehicle id="85" type="DEFAULT_VEHTYPE" depart="176.25" route="r81"/>
+    <route id="r82" edges="B1B0 B0C0 C0C1"/>
+    <vehicle id="86" type="DEFAULT_VEHTYPE" depart="178.33" route="r82"/>
+    <route id="r83" edges="C1B1 B1A1 A1B1"/>
+    <vehicle id="87" type="DEFAULT_VEHTYPE" depart="180.40" route="r83"/>
+    <vehicle id="88" type="DEFAULT_VEHTYPE" depart="182.48" route="r51"/>
+    <route id="r84" edges="B1A1 A1B1 B1B0"/>
+    <vehicle id="89" type="DEFAULT_VEHTYPE" depart="184.55" route="r84"/>
+    <vehicle id="90" type="DEFAULT_VEHTYPE" depart="186.62" route="r2"/>
+    <route id="r85" edges="C2C1 C1B1 B1A1 A1A0"/>
+    <vehicle id="91" type="DEFAULT_VEHTYPE" depart="188.70" route="r85"/>
+    <route id="r86" edges="B0C0 C0C1 C1C0 C0B0 B0B1"/>
+    <vehicle id="92" type="DEFAULT_VEHTYPE" depart="190.77" route="r86"/>
+    <route id="r87" edges="C1C0 C0B0 B0B1 B1B2 B2A2 A2A1"/>
+    <vehicle id="93" type="DEFAULT_VEHTYPE" depart="192.84" route="r87"/>
+    <route id="r88" edges="A1B1 B1A1"/>
+    <vehicle id="94" type="DEFAULT_VEHTYPE" depart="194.92" route="r88"/>
+    <route id="r89" edges="B1A1 A1A2 A2B2"/>
+    <vehicle id="95" type="DEFAULT_VEHTYPE" depart="196.99" route="r89"/>
+    <vehicle id="96" type="DEFAULT_VEHTYPE" depart="199.06" route="r35"/>
+    <route id="r90" edges="B1A1 A1B1 B1C1 C1C0"/>
+    <vehicle id="97" type="DEFAULT_VEHTYPE" depart="201.14" route="r90"/>
+    <route id="r91" edges="B1C1 C1B1 B1A1 A1A0 A0B0"/>
+    <vehicle id="98" type="DEFAULT_VEHTYPE" depart="203.21" route="r91"/>
+    <vehicle id="99" type="DEFAULT_VEHTYPE" depart="205.28" route="r47"/>
+    <route id="r92" edges="C2C1 C1C2 C2B2"/>
+    <vehicle id="100" type="DEFAULT_VEHTYPE" depart="207.36" route="r92"/>
+    <route id="r93" edges="C1C0 C0B0 B0A0 A0A1 A1A2"/>
+    <vehicle id="101" type="DEFAULT_VEHTYPE" depart="209.43" route="r93"/>
+    <route id="r94" edges="B1B0 B0B1 B1B2 B2A2 A2A1"/>
+    <vehicle id="102" type="DEFAULT_VEHTYPE" depart="211.51" route="r94"/>
+    <route id="r95" edges="B0C0 C0C1 C1B1 B1A1 A1A0 A0B0"/>
+    <vehicle id="103" type="DEFAULT_VEHTYPE" depart="213.58" route="r95"/>
+    <route id="r96" edges="B0C0 C0C1 C1C2 C2B2 B2C2 C2C1"/>
+    <vehicle id="104" type="DEFAULT_VEHTYPE" depart="215.65" route="r96"/>
+    <route id="r97" edges="A2B2 B2B1 B1B0 B0C0 C0C1"/>
+    <vehicle id="105" type="DEFAULT_VEHTYPE" depart="217.73" route="r97"/>
+    <route id="r98" edges="B1A1"/>
+    <vehicle id="106" type="DEFAULT_VEHTYPE" depart="219.80" route="r98"/>
+    <route id="r99" edges="C2B2 B2C2 C2C1"/>
+    <vehicle id="107" type="DEFAULT_VEHTYPE" depart="221.87" route="r99"/>
+    <route id="r100" edges="B1C1 C1C0 C0B0"/>
+    <vehicle id="108" type="DEFAULT_VEHTYPE" depart="223.95" route="r100"/>
+    <route id="r101" edges="A1A2 A2B2 B2B1 B1B0 B0A0"/>
+    <vehicle id="109" type="DEFAULT_VEHTYPE" depart="226.02" route="r101"/>
+    <route id="r102" edges="C2C1 C1B1 B1C1"/>
+    <vehicle id="110" type="DEFAULT_VEHTYPE" depart="228.09" route="r102"/>
+    <vehicle id="111" type="DEFAULT_VEHTYPE" depart="230.17" route="r100"/>
+    <route id="r103" edges="A0B0 B0B1 B1B2 B2A2"/>
+    <vehicle id="112" type="DEFAULT_VEHTYPE" depart="232.24" route="r103"/>
+    <route id="r104" edges="B1B2 B2C2 C2C1 C1C0"/>
+    <vehicle id="113" type="DEFAULT_VEHTYPE" depart="234.32" route="r104"/>
+    <route id="r105" edges="A1A2 A2B2 B2C2 C2C1"/>
+    <vehicle id="114" type="DEFAULT_VEHTYPE" depart="236.39" route="r105"/>
+    <route id="r106" edges="A0B0 B0A0 A0A1 A1B1"/>
+    <vehicle id="115" type="DEFAULT_VEHTYPE" depart="238.46" route="r106"/>
+    <route id="r107" edges="B2A2 A2A1 A1A2 A2B2 B2C2"/>
+    <vehicle id="116" type="DEFAULT_VEHTYPE" depart="240.54" route="r107"/>
+    <route id="r108" edges="A2A1 A1A0"/>
+    <vehicle id="117" type="DEFAULT_VEHTYPE" depart="242.61" route="r108"/>
+    <route id="r109" edges="C1C2 C2B2 B2A2 A2A1"/>
+    <vehicle id="118" type="DEFAULT_VEHTYPE" depart="244.68" route="r109"/>
+    <route id="r110" edges="B2A2"/>
+    <vehicle id="119" type="DEFAULT_VEHTYPE" depart="246.76" route="r110"/>
+    <route id="r111" edges="B1A1 A1A2 A2B2 B2A2"/>
+    <vehicle id="120" type="DEFAULT_VEHTYPE" depart="248.83" route="r111"/>
+    <route id="r112" edges="B1B2 B2C2 C2C1 C1C2 C2B2"/>
+    <vehicle id="121" type="DEFAULT_VEHTYPE" depart="250.90" route="r112"/>
+    <vehicle id="122" type="DEFAULT_VEHTYPE" depart="252.98" route="r28"/>
+    <route id="r113" edges="A2A1 A1A0 A0B0 B0C0"/>
+    <vehicle id="123" type="DEFAULT_VEHTYPE" depart="255.05" route="r113"/>
+    <route id="r114" edges="B2C2 C2C1 C1C0 C0B0 B0A0"/>
+    <vehicle id="124" type="DEFAULT_VEHTYPE" depart="257.12" route="r114"/>
+    <route id="r115" edges="B0A0 A0A1 A1A0 A0B0 B0C0 C0C1"/>
+    <vehicle id="125" type="DEFAULT_VEHTYPE" depart="259.20" route="r115"/>
+    <route id="r116" edges="A0B0 B0B1 B1A1"/>
+    <vehicle id="126" type="DEFAULT_VEHTYPE" depart="261.27" route="r116"/>
+    <route id="r117" edges="C2C1"/>
+    <vehicle id="127" type="DEFAULT_VEHTYPE" depart="263.35" route="r117"/>
+    <vehicle id="128" type="DEFAULT_VEHTYPE" depart="265.42" route="r22"/>
+    <vehicle id="129" type="DEFAULT_VEHTYPE" depart="267.49" route="r26"/>
+    <route id="r118" edges="C1C2"/>
+    <vehicle id="130" type="DEFAULT_VEHTYPE" depart="269.57" route="r118"/>
+    <vehicle id="131" type="DEFAULT_VEHTYPE" depart="271.64" route="r11"/>
+    <route id="r119" edges="C1C0 C0B0 B0B1 B1B2 B2C2"/>
+    <vehicle id="132" type="DEFAULT_VEHTYPE" depart="273.71" route="r119"/>
+    <route id="r120" edges="B2A2 A2A1 A1A2 A2B2 B2C2 C2C1"/>
+    <vehicle id="133" type="DEFAULT_VEHTYPE" depart="275.79" route="r120"/>
+    <vehicle id="134" type="DEFAULT_VEHTYPE" depart="277.86" route="r0"/>
+    <route id="r121" edges="C1B1 B1B0 B0A0"/>
+    <vehicle id="135" type="DEFAULT_VEHTYPE" depart="279.93" route="r121"/>
+    <route id="r122" edges="B2B1 B1C1 C1C2 C2B2"/>
+    <vehicle id="136" type="DEFAULT_VEHTYPE" depart="282.01" route="r122"/>
+    <route id="r123" edges="A1A2 A2B2 B2B1 B1A1 A1A0"/>
+    <vehicle id="137" type="DEFAULT_VEHTYPE" depart="284.08" route="r123"/>
+    <route id="r124" edges="A1A0 A0B0 B0B1 B1C1"/>
+    <vehicle id="138" type="DEFAULT_VEHTYPE" depart="286.15" route="r124"/>
+    <route id="r125" edges="A2B2 B2A2"/>
+    <vehicle id="139" type="DEFAULT_VEHTYPE" depart="288.23" route="r125"/>
+    <route id="r126" edges="C0B0 B0A0 A0A1 A1B1"/>
+    <vehicle id="140" type="DEFAULT_VEHTYPE" depart="290.30" route="r126"/>
+    <route id="r127" edges="B2B1 B1A1 A1A2 A2B2"/>
+    <vehicle id="141" type="DEFAULT_VEHTYPE" depart="292.38" route="r127"/>
+    <route id="r128" edges="B1B0 B0C0 C0C1 C1C2"/>
+    <vehicle id="142" type="DEFAULT_VEHTYPE" depart="294.45" route="r128"/>
+    <route id="r129" edges="C1C0 C0B0 B0A0 A0A1 A1A0"/>
+    <vehicle id="143" type="DEFAULT_VEHTYPE" depart="296.52" route="r129"/>
+    <vehicle id="144" type="DEFAULT_VEHTYPE" depart="298.60" route="r89"/>
+    <route id="r130" edges="A0A1 A1A0 A0B0 B0C0 C0C1"/>
+    <vehicle id="145" type="DEFAULT_VEHTYPE" depart="300.67" route="r130"/>
+    <vehicle id="146" type="DEFAULT_VEHTYPE" depart="302.74" route="r127"/>
+    <route id="r131" edges="C0B0 B0B1 B1C1"/>
+    <vehicle id="147" type="DEFAULT_VEHTYPE" depart="304.82" route="r131"/>
+    <vehicle id="148" type="DEFAULT_VEHTYPE" depart="306.89" route="r4"/>
+    <route id="r132" edges="A0B0 B0C0 C0C1 C1C2"/>
+    <vehicle id="149" type="DEFAULT_VEHTYPE" depart="308.96" route="r132"/>
+    <route id="r133" edges="C1C2 C2B2 B2B1 B1C1"/>
+    <vehicle id="150" type="DEFAULT_VEHTYPE" depart="311.04" route="r133"/>
+    <vehicle id="151" type="DEFAULT_VEHTYPE" depart="313.11" route="r19"/>
+    <route id="r134" edges="A1A2"/>
+    <vehicle id="152" type="DEFAULT_VEHTYPE" depart="315.18" route="r134"/>
+    <route id="r135" edges="B0A0 A0A1 A1B1 B1C1 C1C2"/>
+    <vehicle id="153" type="DEFAULT_VEHTYPE" depart="317.26" route="r135"/>
+    <route id="r136" edges="C1B1 B1C1 C1C0"/>
+    <vehicle id="154" type="DEFAULT_VEHTYPE" depart="319.33" route="r136"/>
+    <vehicle id="155" type="DEFAULT_VEHTYPE" depart="321.41" route="r109"/>
+    <vehicle id="156" type="DEFAULT_VEHTYPE" depart="323.48" route="r108"/>
+    <route id="r137" edges="C0C1 C1C2"/>
+    <vehicle id="157" type="DEFAULT_VEHTYPE" depart="325.55" route="r137"/>
+    <route id="r138" edges="B0C0 C0C1 C1C2 C2B2 B2A2"/>
+    <vehicle id="158" type="DEFAULT_VEHTYPE" depart="327.63" route="r138"/>
+    <route id="r139" edges="A1A2 A2B2 B2C2 C2C1 C1C2 C2B2"/>
+    <vehicle id="159" type="DEFAULT_VEHTYPE" depart="329.70" route="r139"/>
+    <route id="r140" edges="C1C0 C0B0 B0B1 B1B2 B2C2 C2C1"/>
+    <vehicle id="160" type="DEFAULT_VEHTYPE" depart="331.77" route="r140"/>
+    <route id="r141" edges="C1B1 B1C1 C1C2"/>
+    <vehicle id="161" type="DEFAULT_VEHTYPE" depart="333.85" route="r141"/>
+    <vehicle id="162" type="DEFAULT_VEHTYPE" depart="335.92" route="r48"/>
+    <route id="r142" edges="B0A0 A0A1 A1B1 B1C1 C1C2 C2B2"/>
+    <vehicle id="163" type="DEFAULT_VEHTYPE" depart="337.99" route="r142"/>
+    <vehicle id="164" type="DEFAULT_VEHTYPE" depart="340.07" route="r136"/>
+    <route id="r143" edges="C1B1 B1A1 A1A2 A2B2"/>
+    <vehicle id="165" type="DEFAULT_VEHTYPE" depart="342.14" route="r143"/>
+    <route id="r144" edges="C0C1 C1B1 B1A1 A1A0"/>
+    <vehicle id="166" type="DEFAULT_VEHTYPE" depart="344.22" route="r144"/>
+    <route id="r145" edges="C1C0"/>
+    <vehicle id="167" type="DEFAULT_VEHTYPE" depart="346.29" route="r145"/>
+    <route id="r146" edges="A2A1 A1B1 B1C1 C1B1"/>
+    <vehicle id="168" type="DEFAULT_VEHTYPE" depart="348.36" route="r146"/>
+    <route id="r147" edges="B1B0 B0A0"/>
+    <vehicle id="169" type="DEFAULT_VEHTYPE" depart="350.44" route="r147"/>
+    <route id="r148" edges="C1B1 B1B2 B2A2 A2A1"/>
+    <vehicle id="170" type="DEFAULT_VEHTYPE" depart="352.51" route="r148"/>
+    <vehicle id="171" type="DEFAULT_VEHTYPE" depart="354.58" route="r6"/>
+    <route id="r149" edges="B0A0 A0A1 A1B1 B1C1 C1C0"/>
+    <vehicle id="172" type="DEFAULT_VEHTYPE" depart="356.66" route="r149"/>
+    <route id="r150" edges="C2C1 C1B1 B1A1 A1A2 A2B2"/>
+    <vehicle id="173" type="DEFAULT_VEHTYPE" depart="358.73" route="r150"/>
+    <vehicle id="174" type="DEFAULT_VEHTYPE" depart="360.80" route="r37"/>
+    <vehicle id="175" type="DEFAULT_VEHTYPE" depart="362.88" route="r42"/>
+    <route id="r151" edges="C2B2 B2A2 A2A1 A1A0"/>
+    <vehicle id="176" type="DEFAULT_VEHTYPE" depart="364.95" route="r151"/>
+    <route id="r152" edges="C2C1 C1B1 B1A1 A1B1"/>
+    <vehicle id="177" type="DEFAULT_VEHTYPE" depart="367.02" route="r152"/>
+    <vehicle id="178" type="DEFAULT_VEHTYPE" depart="369.10" route="r150"/>
+    <vehicle id="179" type="DEFAULT_VEHTYPE" depart="371.17" route="r51"/>
+    <route id="r153" edges="C0B0 B0A0"/>
+    <vehicle id="180" type="DEFAULT_VEHTYPE" depart="373.25" route="r153"/>
+    <route id="r154" edges="B2A2 A2A1 A1B1 B1B2"/>
+    <vehicle id="181" type="DEFAULT_VEHTYPE" depart="375.32" route="r154"/>
+    <vehicle id="182" type="DEFAULT_VEHTYPE" depart="377.39" route="r17"/>
+    <route id="r155" edges="A2B2 B2C2 C2C1 C1C0 C0B0"/>
+    <vehicle id="183" type="DEFAULT_VEHTYPE" depart="379.47" route="r155"/>
+    <vehicle id="184" type="DEFAULT_VEHTYPE" depart="381.54" route="r60"/>
+    <vehicle id="185" type="DEFAULT_VEHTYPE" depart="383.61" route="r70"/>
+    <vehicle id="186" type="DEFAULT_VEHTYPE" depart="385.69" route="r2"/>
+    <route id="r156" edges="B0B1 B1A1 A1A0 A0B0"/>
+    <vehicle id="187" type="DEFAULT_VEHTYPE" depart="387.76" route="r156"/>
+    <route id="r157" edges="B2B1 B1B0 B0A0"/>
+    <vehicle id="188" type="DEFAULT_VEHTYPE" depart="389.83" route="r157"/>
+    <vehicle id="189" type="DEFAULT_VEHTYPE" depart="391.91" route="r149"/>
+    <vehicle id="190" type="DEFAULT_VEHTYPE" depart="393.98" route="r153"/>
+    <route id="r158" edges="B0A0 A0A1 A1A0 A0B0 B0C0"/>
+    <vehicle id="191" type="DEFAULT_VEHTYPE" depart="396.05" route="r158"/>
+    <route id="r159" edges="B0C0 C0C1 C1C0 C0B0 B0A0"/>
+    <vehicle id="192" type="DEFAULT_VEHTYPE" depart="398.13" route="r159"/>
+    <route id="r160" edges="A1A2 A2B2 B2B1 B1A1"/>
+    <vehicle id="193" type="DEFAULT_VEHTYPE" depart="400.20" route="r160"/>
+    <route id="r161" edges="C2B2 B2C2"/>
+    <vehicle id="194" type="DEFAULT_VEHTYPE" depart="402.28" route="r161"/>
+    <route id="r162" edges="C1C2 C2B2 B2A2"/>
+    <vehicle id="195" type="DEFAULT_VEHTYPE" depart="404.35" route="r162"/>
+    <route id="r163" edges="B0A0 A0A1 A1B1 B1C1"/>
+    <vehicle id="196" type="DEFAULT_VEHTYPE" depart="406.42" route="r163"/>
+    <route id="r164" edges="A0A1 A1A2 A2B2"/>
+    <vehicle id="197" type="DEFAULT_VEHTYPE" depart="408.50" route="r164"/>
+    <route id="r165" edges="B1A1 A1B1 B1C1"/>
+    <vehicle id="198" type="DEFAULT_VEHTYPE" depart="410.57" route="r165"/>
+    <route id="r166" edges="B2B1 B1B0"/>
+    <vehicle id="199" type="DEFAULT_VEHTYPE" depart="412.64" route="r166"/>
+    <vehicle id="200" type="DEFAULT_VEHTYPE" depart="414.72" route="r69"/>
+    <vehicle id="201" type="DEFAULT_VEHTYPE" depart="416.79" route="r128"/>
+    <vehicle id="202" type="DEFAULT_VEHTYPE" depart="418.86" route="r83"/>
+    <route id="r167" edges="A1A0 A0B0 B0B1 B1B2"/>
+    <vehicle id="203" type="DEFAULT_VEHTYPE" depart="420.94" route="r167"/>
+    <vehicle id="204" type="DEFAULT_VEHTYPE" depart="423.01" route="r24"/>
+    <route id="r168" edges="C1B1 B1B0 B0C0 C0C1"/>
+    <vehicle id="205" type="DEFAULT_VEHTYPE" depart="425.08" route="r168"/>
+    <route id="r169" edges="B2C2 C2C1 C1C2 C2B2 B2A2 A2A1"/>
+    <vehicle id="206" type="DEFAULT_VEHTYPE" depart="427.16" route="r169"/>
+    <route id="r170" edges="A1B1 B1B0 B0A0 A0A1"/>
+    <vehicle id="207" type="DEFAULT_VEHTYPE" depart="429.23" route="r170"/>
+    <route id="r171" edges="A2A1 A1B1 B1B0"/>
+    <vehicle id="208" type="DEFAULT_VEHTYPE" depart="431.31" route="r171"/>
+    <vehicle id="209" type="DEFAULT_VEHTYPE" depart="433.38" route="r78"/>
+    <route id="r172" edges="B0C0 C0C1 C1C2 C2B2 B2B1"/>
+    <vehicle id="210" type="DEFAULT_VEHTYPE" depart="435.45" route="r172"/>
+    <route id="r173" edges="A1B1 B1B2 B2C2"/>
+    <vehicle id="211" type="DEFAULT_VEHTYPE" depart="437.53" route="r173"/>
+    <vehicle id="212" type="DEFAULT_VEHTYPE" depart="439.60" route="r94"/>
+    <vehicle id="213" type="DEFAULT_VEHTYPE" depart="441.67" route="r0"/>
+    <route id="r174" edges="C0C1"/>
+    <vehicle id="214" type="DEFAULT_VEHTYPE" depart="443.75" route="r174"/>
+    <vehicle id="215" type="DEFAULT_VEHTYPE" depart="445.82" route="r51"/>
+    <route id="r175" edges="A1B1 B1C1 C1C2 C2B2"/>
+    <vehicle id="216" type="DEFAULT_VEHTYPE" depart="447.89" route="r175"/>
+    <route id="r176" edges="B1B2 B2A2 A2A1 A1A0 A0B0"/>
+    <vehicle id="217" type="DEFAULT_VEHTYPE" depart="449.97" route="r176"/>
+    <route id="r177" edges="A2A1 A1B1 B1C1 C1C0"/>
+    <vehicle id="218" type="DEFAULT_VEHTYPE" depart="452.04" route="r177"/>
+    <route id="r178" edges="B1A1 A1B1 B1C1 C1B1"/>
+    <vehicle id="219" type="DEFAULT_VEHTYPE" depart="454.12" route="r178"/>
+    <route id="r179" edges="B2C2 C2C1"/>
+    <vehicle id="220" type="DEFAULT_VEHTYPE" depart="456.19" route="r179"/>
+    <route id="r180" edges="B2A2 A2A1 A1B1 B1C1 C1C2 C2B2"/>
+    <vehicle id="221" type="DEFAULT_VEHTYPE" depart="458.26" route="r180"/>
+    <vehicle id="222" type="DEFAULT_VEHTYPE" depart="460.34" route="r162"/>
+    <route id="r181" edges="C0B0 B0B1 B1B2"/>
+    <vehicle id="223" type="DEFAULT_VEHTYPE" depart="462.41" route="r181"/>
+    <route id="r182" edges="C1B1 B1C1"/>
+    <vehicle id="224" type="DEFAULT_VEHTYPE" depart="464.48" route="r182"/>
+    <route id="r183" edges="C1C2 C2B2 B2C2 C2C1 C1C0 C0B0"/>
+    <vehicle id="225" type="DEFAULT_VEHTYPE" depart="466.56" route="r183"/>
+    <route id="r184" edges="B1B0 B0A0 A0A1 A1A2 A2B2"/>
+    <vehicle id="226" type="DEFAULT_VEHTYPE" depart="468.63" route="r184"/>
+    <route id="r185" edges="A2A1 A1A2 A2B2 B2B1"/>
+    <vehicle id="227" type="DEFAULT_VEHTYPE" depart="470.70" route="r185"/>
+    <vehicle id="228" type="DEFAULT_VEHTYPE" depart="472.78" route="r58"/>
+    <vehicle id="229" type="DEFAULT_VEHTYPE" depart="474.85" route="r127"/>
+    <route id="r186" edges="A0B0 B0A0 A0A1 A1A2 A2B2"/>
+    <vehicle id="230" type="DEFAULT_VEHTYPE" depart="476.92" route="r186"/>
+    <route id="r187" edges="A2B2 B2B1 B1B0 B0A0"/>
+    <vehicle id="231" type="DEFAULT_VEHTYPE" depart="479.00" route="r187"/>
+    <route id="r188" edges="B1B2 B2B1 B1A1 A1A2"/>
+    <vehicle id="232" type="DEFAULT_VEHTYPE" depart="481.07" route="r188"/>
+    <vehicle id="233" type="DEFAULT_VEHTYPE" depart="483.15" route="r79"/>
+    <vehicle id="234" type="DEFAULT_VEHTYPE" depart="485.22" route="r20"/>
+    <vehicle id="235" type="DEFAULT_VEHTYPE" depart="487.29" route="r17"/>
+    <route id="r189" edges="B0C0 C0C1 C1B1 B1A1 A1B1"/>
+    <vehicle id="236" type="DEFAULT_VEHTYPE" depart="489.37" route="r189"/>
+    <route id="r190" edges="B1A1 A1B1 B1C1 C1C2"/>
+    <vehicle id="237" type="DEFAULT_VEHTYPE" depart="491.44" route="r190"/>
+    <vehicle id="238" type="DEFAULT_VEHTYPE" depart="493.51" route="r107"/>
+    <vehicle id="239" type="DEFAULT_VEHTYPE" depart="495.59" route="r32"/>
+    <route id="r191" edges="B0C0 C0C1 C1C0 C0B0 B0A0 A0A1"/>
+    <vehicle id="240" type="DEFAULT_VEHTYPE" depart="497.66" route="r191"/>
+    <route id="r192" edges="B0B1 B1B0 B0C0 C0C1"/>
+    <vehicle id="241" type="DEFAULT_VEHTYPE" depart="499.73" route="r192"/>
+    <route id="r193" edges="C1C0 C0B0 B0B1 B1C1 C1C2 C2B2"/>
+    <vehicle id="242" type="DEFAULT_VEHTYPE" depart="501.81" route="r193"/>
+    <route id="r194" edges="B1A1 A1B1 B1C1 C1C0 C0B0"/>
+    <vehicle id="243" type="DEFAULT_VEHTYPE" depart="503.88" route="r194"/>
+    <route id="r195" edges="B1C1 C1C2 C2B2 B2A2"/>
+    <vehicle id="244" type="DEFAULT_VEHTYPE" depart="505.95" route="r195"/>
+    <vehicle id="245" type="DEFAULT_VEHTYPE" depart="508.03" route="r75"/>
+    <vehicle id="246" type="DEFAULT_VEHTYPE" depart="510.10" route="r4"/>
+    <route id="r196" edges="B0B1 B1B2 B2C2"/>
+    <vehicle id="247" type="DEFAULT_VEHTYPE" depart="512.18" route="r196"/>
+    <route id="r197" edges="B0C0 C0C1 C1B1 B1A1 A1A2"/>
+    <vehicle id="248" type="DEFAULT_VEHTYPE" depart="514.25" route="r197"/>
+    <route id="r198" edges="B1B0 B0A0 A0A1 A1A2"/>
+    <vehicle id="249" type="DEFAULT_VEHTYPE" depart="516.32" route="r198"/>
+    <route id="r199" edges="B2A2 A2A1 A1A0 A0B0 B0A0 A0A1"/>
+    <vehicle id="250" type="DEFAULT_VEHTYPE" depart="518.40" route="r199"/>
+    <vehicle id="251" type="DEFAULT_VEHTYPE" depart="520.47" route="r17"/>
+    <route id="r200" edges="A0A1 A1A2 A2B2 B2B1"/>
+    <vehicle id="252" type="DEFAULT_VEHTYPE" depart="522.54" route="r200"/>
+    <route id="r201" edges="A1A2 A2B2 B2B1 B1B0"/>
+    <vehicle id="253" type="DEFAULT_VEHTYPE" depart="524.62" route="r201"/>
+    <vehicle id="254" type="DEFAULT_VEHTYPE" depart="526.69" route="r46"/>
+    <route id="r202" edges="A2A1 A1A0 A0B0 B0A0"/>
+    <vehicle id="255" type="DEFAULT_VEHTYPE" depart="528.76" route="r202"/>
+    <route id="r203" edges="C0C1 C1C0 C0B0 B0C0"/>
+    <vehicle id="256" type="DEFAULT_VEHTYPE" depart="530.84" route="r203"/>
+    <route id="r204" edges="C0C1 C1B1"/>
+    <vehicle id="257" type="DEFAULT_VEHTYPE" depart="532.91" route="r204"/>
+    <route id="r205" edges="A2B2 B2B1 B1A1 A1A0 A0B0"/>
+    <vehicle id="258" type="DEFAULT_VEHTYPE" depart="534.98" route="r205"/>
+    <route id="r206" edges="A0A1 A1B1 B1B2"/>
+    <vehicle id="259" type="DEFAULT_VEHTYPE" depart="537.06" route="r206"/>
+    <route id="r207" edges="C2C1 C1C0 C0B0 B0B1"/>
+    <vehicle id="260" type="DEFAULT_VEHTYPE" depart="539.13" route="r207"/>
+    <route id="r208" edges="B2B1 B1B0 B0C0 C0C1"/>
+    <vehicle id="261" type="DEFAULT_VEHTYPE" depart="541.21" route="r208"/>
+    <vehicle id="262" type="DEFAULT_VEHTYPE" depart="543.28" route="r208"/>
+    <route id="r209" edges="C2B2 B2A2 A2A1 A1B1"/>
+    <vehicle id="263" type="DEFAULT_VEHTYPE" depart="545.35" route="r209"/>
+    <route id="r210" edges="A0A1 A1A2"/>
+    <vehicle id="264" type="DEFAULT_VEHTYPE" depart="547.43" route="r210"/>
+    <route id="r211" edges="A1A2 A2B2 B2C2"/>
+    <vehicle id="265" type="DEFAULT_VEHTYPE" depart="549.50" route="r211"/>
+    <route id="r212" edges="B1C1 C1C2 C2B2 B2A2 A2A1"/>
+    <vehicle id="266" type="DEFAULT_VEHTYPE" depart="551.57" route="r212"/>
+    <route id="r213" edges="B2C2 C2C1 C1C0 C0B0 B0C0 C0C1"/>
+    <vehicle id="267" type="DEFAULT_VEHTYPE" depart="553.65" route="r213"/>
+    <route id="r214" edges="A1B1 B1B2 B2A2"/>
+    <vehicle id="268" type="DEFAULT_VEHTYPE" depart="555.72" route="r214"/>
+    <route id="r215" edges="C0B0 B0A0 A0A1 A1A0"/>
+    <vehicle id="269" type="DEFAULT_VEHTYPE" depart="557.79" route="r215"/>
+    <route id="r216" edges="C1B1 B1B2 B2C2 C2C1"/>
+    <vehicle id="270" type="DEFAULT_VEHTYPE" depart="559.87" route="r216"/>
+    <route id="r217" edges="A1A0 A0B0 B0A0 A0A1"/>
+    <vehicle id="271" type="DEFAULT_VEHTYPE" depart="561.94" route="r217"/>
+    <route id="r218" edges="B0A0 A0A1 A1A2 A2B2 B2C2"/>
+    <vehicle id="272" type="DEFAULT_VEHTYPE" depart="564.02" route="r218"/>
+    <route id="r219" edges="C2B2 B2B1 B1B0 B0C0"/>
+    <vehicle id="273" type="DEFAULT_VEHTYPE" depart="566.09" route="r219"/>
+    <route id="r220" edges="C0B0 B0A0 A0A1 A1A0 A0B0"/>
+    <vehicle id="274" type="DEFAULT_VEHTYPE" depart="568.16" route="r220"/>
+    <route id="r221" edges="B2C2 C2C1 C1B1 B1B2 B2B1"/>
+    <vehicle id="275" type="DEFAULT_VEHTYPE" depart="570.24" route="r221"/>
+    <route id="r222" edges="A1A0 A0B0 B0C0 C0C1"/>
+    <vehicle id="276" type="DEFAULT_VEHTYPE" depart="572.31" route="r222"/>
+    <vehicle id="277" type="DEFAULT_VEHTYPE" depart="574.38" route="r14"/>
+    <route id="r223" edges="A1A0 A0B0 B0B1 B1B2 B2C2 C2C1"/>
+    <vehicle id="278" type="DEFAULT_VEHTYPE" depart="576.46" route="r223"/>
+    <route id="r224" edges="C0C1 C1C0 C0B0 B0B1"/>
+    <vehicle id="279" type="DEFAULT_VEHTYPE" depart="578.53" route="r224"/>
+    <route id="r225" edges="B1A1 A1B1 B1B0 B0B1"/>
+    <vehicle id="280" type="DEFAULT_VEHTYPE" depart="580.60" route="r225"/>
+    <route id="r226" edges="B1B2 B2B1 B1B0 B0B1"/>
+    <vehicle id="281" type="DEFAULT_VEHTYPE" depart="582.68" route="r226"/>
+    <route id="r227" edges="C1C0 C0B0 B0B1 B1C1 C1B1"/>
+    <vehicle id="282" type="DEFAULT_VEHTYPE" depart="584.75" route="r227"/>
+    <vehicle id="283" type="DEFAULT_VEHTYPE" depart="586.82" route="r223"/>
+    <route id="r228" edges="B2B1 B1C1 C1B1"/>
+    <vehicle id="284" type="DEFAULT_VEHTYPE" depart="588.90" route="r228"/>
+    <route id="r229" edges="B2C2 C2C1 C1B1 B1A1"/>
+    <vehicle id="285" type="DEFAULT_VEHTYPE" depart="590.97" route="r229"/>
+    <route id="r230" edges="C0B0 B0B1 B1B2 B2C2 C2C1"/>
+    <vehicle id="286" type="DEFAULT_VEHTYPE" depart="593.05" route="r230"/>
+    <route id="r231" edges="A2B2 B2C2 C2C1 C1B1"/>
+    <vehicle id="287" type="DEFAULT_VEHTYPE" depart="595.12" route="r231"/>
+    <route id="r232" edges="B1B2 B2B1 B1B0"/>
+    <vehicle id="288" type="DEFAULT_VEHTYPE" depart="597.19" route="r232"/>
+    <vehicle id="289" type="DEFAULT_VEHTYPE" depart="599.27" route="r194"/>
+</routes>

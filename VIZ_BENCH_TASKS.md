@@ -252,6 +252,38 @@ mouse. **Commit** the exporter, `template.html`, `template.js`, and the generate
 
 # PHASE 2 — scaled-city benchmark ([net]; runs the SUMO side)
 
+**Status: bring-up rung (~30 concurrent) DONE (VB-5..VB-8).** `scripts/gen-benchmark.sh
+<targetConcurrency>` generates net+routes+config from the pinned SUMO alone and Little's-law-tunes
+the insertion period against a live pilot run; `Sim.Harness.AggregateComparator`
+(`TripInfoParser`/`SummaryOutputParser`/`AggregateToleranceConfig`, VB-6) is unit-tested in
+`dotnet test` (113 green, was 105); `src/Sim.BenchCity` (VB-7) runs the engine on a `city-<N>`
+scenario to completion, emits tripinfo/summary analogs + FCD + perf/stuck metrics, and can
+in-line-compare against a SUMO reference. `scenarios/_bench/city-30/` (VB-8) is committed:
+net/rou/cfg/provenance/NOTES, the SUMO reference `summary.xml`/`tripinfo.xml`, `replay.html`, and
+a per-rung `aggregate-tolerance.json`. Engine ran city-30 to completion (289 departed, 256
+arrived, peak concurrent 37, RTF ~1300-2300x, 0 stuck vehicles) and passed the VB-6 aggregate
+compare against SUMO (255 arrived, mean duration 67.6s vs engine 63.7s, mean speed 10.85 vs 11.39
+m/s, KS distribution distance 0.22 — all within a 0.35 relative/KS tolerance). Rungs 2-4
+(~300/~3,000/~15,000) are NOT built yet — see the correction below before attempting `-L 2+`.
+
+**Correction to "Dependency status — C2 gate CLEARED" below:** that note's claim that "all rungs
+(30 → 15k) are engine-capability-unblocked" is **too strong** for multi-LANE nets specifically.
+Empirically reproduced during VB-8: a `netgenerate -L 2 --tls.guess` grid + multi-edge
+`randomTrips` routes throws `InvalidDataException: No <connection> found from edge '...' lane N to
+edge '...'` at insertion for a fraction of vehicles. Root cause (see `scenarios/_bench/city-30/
+NOTES.md` and the header comment in `scripts/gen-benchmark.sh`): `NetworkModel.
+ResolveLaneSequence`/`ComputeBestLanes` and `Engine.TryStrategicLaneChange` (C2-ii) are, by their
+own header comments in `src/Sim.Core/Engine.cs`, a **single-look-ahead scoped port** — they
+resolve the FIRST edge transition of a route and handle same-edge drop-lane convergence at
+runtime, but never a full multi-hop strategic replan. C2 is "done" for the parity scenarios it
+was built and gated against (all single-lane-per-edge or single-hop); it is NOT yet sufficient for
+an arbitrary multi-lane multi-hop city net. The bring-up rung works around this by generating at
+`-L 1` (single lane per edge — see VB-5 below); scaling to `-L 2+` for real lane-changing exercise
+at larger rungs needs `ComputeBestLanes`/`ResolveLaneSequence` extended to genuine multi-hop
+lookahead first (a `Sim.Core` change, out of this benchmark task's scope — flagged back to the
+orchestrator, not silently patched around further than the demand-generation simplification
+already applied).
+
 **Self-service constraint:** everything generatable from the pinned pip SUMO alone —
 `netgenerate` + `randomTrips.py` + `duarouter`, no external scenario download. Reproducible on
 a blank VM with `scripts/install-sumo.sh`.
@@ -272,7 +304,16 @@ gridlocking a multi-lane city artificially — no longer applies. **All rungs (3
 engine-capability-unblocked**; the only remaining constraint on the large rungs is the `[net]`
 side (SUMO tooling + wall-clock cost), not missing engine features.
 
-### VB-5 [net] — parameterized generator script
+### VB-5 [net] — parameterized generator script — **DONE (bring-up rung)**
+
+**Status:** `scripts/gen-benchmark.sh <targetConcurrency>` implemented and run for `30`. Net is
+`-L 1` not `-L 2+` (see the Phase 2 header correction above) — 3x3 grid, `--tls.guess`, seed 42,
+fixed for now (the 15k-rung sizing is left as a documented follow-up in the script's own header
+comment). Demand: `randomTrips.py` → `duarouter --named-routes` (the two-part route form
+`DemandParser` needs) → a post-process step that patches in an explicit `DEFAULT_VEHTYPE`
+(neither tool emits one, and the engine does not synthesize SUMO's implicit default). Little's-law
+tuning converged in one refinement iteration (pilot period 5.0s → tuned 2.07s, landing
+mean_running≈33.4 against a target of 30).
 
 **Goal.** One `scripts/gen-benchmark.sh <targetConcurrency>` that, from the pinned SUMO alone,
 emits net + routes + config for a rung; the rung is a single argument (target concurrency →
@@ -291,7 +332,14 @@ derived insertion `period`), not four hand-built scenarios.
 **Done-condition.** `scripts/gen-benchmark.sh 30` produces net+rou+cfg for the ~30-concurrent
 rung; a pilot SUMO run's `--summary-output` shows a concurrency plateau in the target band.
 
-### VB-6 — aggregate / statistical comparator (offline harness piece)
+### VB-6 — aggregate / statistical comparator (offline harness piece) — **DONE**
+
+**Status:** `Sim.Harness.AggregateComparator` + `TripInfoParser`/`SummaryOutputParser`/
+`AggregateToleranceConfig`/`AggregateComparisonResult` implemented. Both parsers read the SAME
+SUMO-schema subset (id/depart/duration/arrivalSpeed for tripinfo; time/running/arrived/meanSpeed
+for summary) from either a real SUMO output or the engine's VB-7 analog — one loader, two
+producers. 8 new xUnit tests in `tests/Sim.ParityTests/Vb6AggregateComparatorTests.cs` (synthetic
+inputs only, no SUMO) bring `dotnet test` to **113 green** (was 105).
 
 **Goal.** A NEW comparator in `Sim.Harness` for **aggregate** agreement (this is genuinely new
 surface — the existing `TrajectoryComparator` is vehicle-for-vehicle and does NOT apply here).
@@ -304,7 +352,17 @@ engine's equivalents.
 distribution distance and a pass/fail against a configurable per-rung tolerance. Unit-tested
 with synthetic inputs (this part CAN be in `dotnet test` — it's a pure comparator, no SUMO).
 
-### VB-7 — engine benchmark runner + metrics
+### VB-7 — engine benchmark runner + metrics — **DONE (bring-up rung)**
+
+**Status:** new `src/Sim.BenchCity` project (deliberately separate from `src/Sim.Bench`, which
+keeps owning the `highway-dense` determinism/perf oracle untouched). Runs a `city-<N>` scenario to
+completion, writes `engine.tripinfo.xml`/`engine.summary.xml` (the schema subset VB-6 reads) and
+`engine.fcd.xml` (via the existing `FcdWriterObserver`), reports wall-clock/steps-per-sec/RTF/peak-
+concurrent/peak-RSS, and a `StuckDetector` gridlock analog (longest consecutive near-zero-speed
+run per vehicle vs a window threshold — 0 stuck vehicles on city-30). An optional
+`--sumo-summary`/`--sumo-tripinfo`/`--aggregate-tolerance` flag trio runs the VB-6 comparison
+in-line. Engine outputs are gitignored (`scenarios/_bench/city-*/engine.*.xml`) — regenerated by
+this tool, never committed.
 
 **Goal.** Run the engine on a `city-<N>` scenario and emit the engine-side numbers. Reuse
 `Sim.Bench` measurement code (steps/sec, alloc, peak concurrent, RTF = sim-time÷wall-time) and
@@ -323,7 +381,17 @@ VB-0 `FcdWriterObserver` for the viz.
 FCD + the metric line; VB-6 comparator reports aggregates vs the SUMO goldens within the
 rung-30 tolerance.
 
-### VB-8 [net] — scaling ladder execution + committed-vs-regenerated outputs
+### VB-8 [net] — scaling ladder execution + committed-vs-regenerated outputs — **bring-up (~30) DONE, rungs 2-4 NOT built**
+
+**Status:** `scenarios/_bench/city-30/` committed: `net.net.xml`, `rou.rou.xml`, `config.sumocfg`,
+`provenance.txt`, `NOTES.md` (the netgenerate-feature-avoided writeup), the SUMO reference
+`summary.xml`/`tripinfo.xml`, a per-rung `aggregate-tolerance.json`, and `replay.html` (self-
+contained, verified no external refs). Engine ran the full 600s to completion (289 departed, 256
+arrived, 37 peak concurrent, 0 stuck). VB-6 aggregate compare: PASS on all four checks (arrived
+relError 0.004, mean-duration relError 0.057, mean-speed relError 0.050, KS distance 0.22 — all
+well inside the 0.35 tolerance). Rungs 2-4 (~300/~3,000/~15,000) are unbuilt; per the Phase 2
+header correction, scaling past the bring-up net's `-L 1` restriction needs the `ComputeBestLanes`/
+`ResolveLaneSequence` multi-hop extension first (a `Sim.Core` change, not attempted here).
 
 **Goal.** Walk the ladder, same script one knob: **~30 → ~300 → ~3,000 → ~15,000** concurrent.
 Each rung: generate → route → SUMO reference run → engine run → compare → (small rungs) viz.
