@@ -708,13 +708,36 @@ A3) remain the byte-for-byte correctness anchor (same discipline as rungs 8b/10/
     existing single-lane-per-edge parity scenario. Purely additive — touched only
     `src/Sim.Ingest/NetworkModel.cs` + the new test file; no simulation/engine/LC code path
     changed. Full suite: 93 passed, 0 failed (was 87; +6 new tests).
-  - **C2-ii (behavioral, SUMO golden). Strategic LC + actual-lane advance.** Make
-    `ResolveLaneSequence` tolerant (resolve the route path via the CONTINUING lane rather than
-    throwing when the depart lane doesn't connect; track the vehicle's actual lane separately),
-    make `ExecuteMoves`'s boundary advance follow the actual current lane's `<connection>`, and port
-    the LC2013 STRATEGIC block (change toward `bestLaneOffset`, `LCA_URGENT` as the junction nears)
-    into the post-move LC phase alongside speed-gain. Validate against `scenarios/18-strategic-turnlane`.
-    Gate byte-identical on 9a/9b/A3 (single-lane-per-edge → strategic offset is always 0 → inert).
+  - **C2-ii (behavioral, SUMO golden). Strategic LC + actual-lane advance. NEXT — the invasive
+    rework; design worked out below.** The hard part is that today `v.LaneHandle` (actual lane) and
+    `pool[LaneSeqStart+LaneSeqIndex]` (route-path lane) are kept in STRICT LOCKSTEP — `ExecuteMoves`'s
+    boundary advance (`v.LaneHandle = pool[start+index]`) and `JunctionYieldConstraint`'s pool scan
+    both assume it. C2 breaks that lockstep (the vehicle starts on a lane that is NOT on its route
+    path and converges via strategic LC). Concrete design:
+    1. **Pool sequence = the ROUTE PATH via continuing/best lanes** (not the depart lane). Make
+       `ResolveLaneSequenceHandles` resolve from the CONTINUING lane on edge 0 (use `ComputeBestLanes`
+       — always resolvable; never throws now), so for scenario 18 the pool is `[E1_1, :B_0_0, E2_0]`.
+       For single-lane-per-edge scenarios the continuing lane IS the only/ depart lane → pool
+       unchanged → byte-identical.
+    2. **Track the actual lane separately.** `v.LaneHandle` initializes to the DEPART lane (`E1_0`),
+       which may differ from `pool[LaneSeqIndex]` (`E1_1`) mid-edge. Emit / car-following / neighbors
+       already read `v.LaneHandle` (actual) — correct as-is. `JunctionYieldConstraint`'s pool scan
+       reads the route path — correct as-is.
+    3. **Strategic LC (new, post-move phase alongside speed-gain).** When `v.LaneHandle`'s index ≠
+       `pool[LaneSeqIndex]`'s index on the same edge, change ONE lane toward it (neighbor-query safety
+       like speed-gain; urgency/`LCA_URGENT` rising as the edge end nears). Fires only when actual ≠
+       target ⇒ `BestLaneOffset ≠ 0` ⇒ **inert for every single-lane-per-edge scenario** (C2-i's
+       inert-control proof), so 9a/9b/A3 stay byte-identical.
+    4. **Advance requires convergence.** The boundary advance (`pool[index+1]`) is valid only when
+       `v.LaneHandle == pool[LaneSeqIndex]` at the crossing (strategic LC guarantees this before the
+       junction). Add a guard: if not converged at the lane end (stuck on a drop lane), STOP at the
+       lane end rather than teleport onto the route path (SUMO's urgent-change-or-halt). For
+       single-lane-per-edge, actual == target always ⇒ advance unchanged ⇒ byte-identical.
+    Port target: LC2013 STRATEGIC block (`LCA_STRATEGIC`/`LCA_URGENT`, `MSLCM_LC2013::_wantsChange`).
+    Validate against `scenarios/18-strategic-turnlane` golden (change to `E1_1` by ~t=17, cross at
+    t=38-39). **Gate HARD byte-identical on 9a/9b/A3/every multi-edge scenario** + the full 93-test
+    suite; parity-reviewer required (this touches the core lane-advance). Likely worth its own
+    focused session — it is the single most entangled change in the roadmap.
 - **C3. Merging / on-ramp / zipper.** Gap-acceptance merging where two lanes join (`sameTarget`
   links). Extends 9b's foe machinery + A2's neighbor leader/follower. Parity axis. Scenario: an
   on-ramp merging onto a mainline; the ramp vehicle accepts a gap or waits.
