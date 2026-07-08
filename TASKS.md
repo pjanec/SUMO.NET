@@ -811,8 +811,57 @@ A3) remain the byte-for-byte correctness anchor (same discipline as rungs 8b/10/
     the `RungD1BenchmarkDeterminismTests` hash stay green (128). The C2-i UNIT test's continuing-lane
     `Length` assertion was updated 496 -> 992 (now route-wide, correct). SIMPLIFICATIONS (documented
     in `BackwardPassEdge`, none exercised): no bidi/`nextLinkPriority`/vClass-change/elecHybrid
-    arms, no disconnected-route (`bestConnectedLength<=0`) arm. **UNBLOCKS the scaled-city benchmark's
-    multi-lane rungs** (`-L 2+`). Parity-reviewer gate: pending.
+    arms, no disconnected-route (`bestConnectedLength<=0`) arm. Unblocks DEPARTURE-edge /
+    multi-connection multi-hop; **intra-edge mid-route lane change (C2-v below) is still required
+    before a general `-L 2` city runs** -- C2-iii redirects the pool only at `routeEdges[0]`, so a
+    vehicle forced onto the wrong lane of a MIDDLE edge still throws (verified on a plain
+    `netgenerate -L 2` grid). Parity-reviewer ACCEPT.
+  - **C2-v. TODO (parity-track, exact @1e-3). Intra-edge mid-route lane change to reach an onward
+    connection.** The remaining half of multi-hop. **BLOCKS a general `netgenerate -L 2` city** (the
+    benchmark generator `scripts/gen-benchmark.sh` stays pinned to `-L 1` until this lands); the
+    hand-built C2-iii anchor (scenario 36) only exercises the DEPARTURE edge.
+    **The gap:** C2-iii's `ResolveLaneSequence` redirects the pool onto the best-continuing lane
+    ONLY at the departure edge (the `if (routeEdges.Count > 1)` block redirects `currentLaneIndex`
+    once, for `routeEdges[0]`). At every INTERMEDIATE edge it still follows `connection.ToLane`
+    rigidly and hard-throws (`NetworkModel.cs:~296`) when the arrival lane has no onward connection
+    to the next route edge. Missing case: a vehicle ENTERS a middle edge on lane A (fixed by the
+    incoming connection's toLane) but the only onward connection to its next route edge leaves from
+    lane B != A, so it must lane-change A->B while traversing that edge, before the junction.
+    **Repro (clean, no `--ignore-errors`):** `netgenerate --grid --grid.number=3 --grid.length=200
+    -L 2 --tls.guess --seed 42`, route `B1A1 A1B1 B1B0 B0A0 A0A1`: enter A1B1 on lane 1 (conn
+    `B1A1_1->A1B1_1`), but `A1B1->B1B0` only from lane 0 -> must intra-edge-change 1->0 on A1B1. SUMO
+    inserts + completes all 40 such vehicles; the engine throws `No <connection> found from edge
+    'A1B1' lane 1 to edge 'B1B0'` at `ResolveLaneSequence` (NetworkModel.cs:302) via
+    `Engine.TryInsertOnLane` at INSERTION.
+    **Port target:** same `MSVehicle::updateBestLanes`/`LaneQ` (MSVehicle.cpp:5744-6063) --
+    `bestLaneOffset` is a PER-EDGE quantity along the whole route, and the arrival lane and exit lane
+    on one edge legitimately differ; on each edge the vehicle occupies, a nonzero `bestLaneOffset`
+    drives a `LCA_STRATEGIC` change (the existing C2-ii `TryStrategicLaneChange`) toward the
+    connecting lane.
+    **STRUCTURAL NOTE (from analysis, for whoever implements):** the departure edge handles
+    arrival!=exit because the vehicle INSERTS on the depart lane (actual `LaneHandle`) while the pool
+    records the EXIT lane, and strategic LC converges actual->pool before the junction (the
+    ExecuteMoves convergence guard at ~Engine.cs:2332). An intermediate edge has an INCOMING
+    connection that lands the vehicle on the arrival lane, and the crossing sets
+    `v.LaneHandle = _laneSeqPool[...]` (~Engine.cs:2358) -- so the pool's single-lane-per-edge slot
+    cannot hold BOTH the arrival lane (for the FCD to show lane A first, matching SUMO) AND the exit
+    lane (for the onward connection + strategic LC target). Landing directly on the exit lane would
+    mismatch SUMO's `lane` attribute (SUMO shows the arrival lane for the steps before the change).
+    So this likely needs the pool/`LaneSequence` to represent an intra-edge lateral transition
+    (arrival lane -> exit lane on one edge), not just a longitudinal lane-per-edge chain -- build the
+    anchor + golden FIRST to pin exactly when SUMO shows the A->B change, then decide the pool
+    representation.
+    **Done-condition (standard isolate -> golden -> reverse-engineer -> port -> gate):** (1) intra-edge
+    redirection at EVERY hop (arrival lane with no onward connection -> move to the same-edge sibling
+    that connects, record it as the edge's exit lane, strategic-LC across); no throw for any route
+    SUMO routes. (2) the clean `-L 2` repro runs to completion in the engine. (3) NEW anchor
+    `scenarios/NN-intraedge-lanechange/`: 2-lane, >=3-edge net where a vehicle is forced onto the
+    WRONG lane of a MIDDLE edge and must intra-edge-change to reach the last edge (scenario 36 covers
+    only the departure edge); `sigma=0`, one vehicle, SUMO golden `--precision 6`, match
+    lane/pos/speed @1e-3. (4) INERT: scenario 36 + 18 + all committed stay green; `Sim.Bench`
+    highway-dense determinism hash `42F875C2662DB78E` unchanged; departure-edge + single-connection
+    behavior byte-identical. (5) parity-reviewer ACCEPT, faithful to `MSVehicle.cpp`. Briefing
+    transcribed from NEED-C2iii-followup-intraedge-lanechange.md (sibling viz/benchmark track).
     *(original briefing retained below for context)*
     The deferred second half of C2-i/ii. **BLOCKS the scaled-city
     benchmark's multi-lane rungs** (`-L 2+`, the 300/3k/15k concurrency levels in
