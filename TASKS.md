@@ -850,8 +850,27 @@ A3) remain the byte-for-byte correctness anchor (same discipline as rungs 8b/10/
   (a "minor-link cautious-approach" speed cap), NOT the `MSLink::opened()` foe-arrival machinery
   (that only matters when a foe is actually near; here `mA` is far and the cap is purely the
   visibility-distance approach). Needs `estimateSpeedAfterDistance` + the arrive-at-distance-at-speed
-  free-speed in `KraussModel` (port if absent). Fully specified — ready to port + verify to 1e-3;
-  no DEBUG build, no multi-GB clone.
+  free-speed in `KraussModel` (port if absent).
+
+  **CORRECTION (attempted the port this session): exact per-step SPEED defeats static analysis —
+  this is the 9b situation, it needs `DEBUG_PLAN_MOVE` instrumentation.** The mechanism, `visDist=4.5`,
+  and the release (`seen<=4.5`) ARE source-derivable (above). But the exact approach-speed VALUES
+  (golden: seen 22.32→11.906, seen 10.41→7.406, then release+accel to 10.006) do NOT fall out of any
+  clean formula — tried and REJECTED against the golden: (a) `freeSpeed(speed, seen, arrivalSpeed)`
+  with `arrivalSpeed = min(vLinkPass, estimateSpeedAfterDistance(visDist, maximumSafeStopSpeed(visDist),
+  accel))` → gives ~13.4 (barely brakes); (b) `maximumSafeStopSpeedEuler(seen - visDist)` with
+  headway 0 (brakes too late, at seen≈8) and headway 1 (brakes to a near-stop). None reproduce the
+  golden positions (moves 11.906 then 7.406). Root cause: the per-step speed is NOT a closed form —
+  it emerges from the entangled `planMoveInternal` link loop + `processLinkApproaches` + `MSLink::
+  opened()` go-vs-`vLinkWait` decision (`v`/myVLinkPass is NOT reduced in the minor block itself;
+  the brake comes from the `opened()`/`vLinkWait` path). A genuine contradiction under static
+  reading: `opened()` should be TRUE here (mA ~390 m away, no real conflict) yet the vehicle brakes,
+  so the decisive value is only visible at RUNTIME. **Reliable path = compile the (already-vendored,
+  no clone) `/sumo/` with `DEBUG_PLAN_MOVE` and read the printed `slowedDownForMinor
+  maxSpeedAtVisDist/arrivalSpeed` per step** — exactly the instrumented-build approach 9b used
+  (`RUNG9B.md`). Needs SUMO build deps + compile time; NOT derivable from a formula alone. Anchor +
+  golden + this analysis are committed so the instrumented pass starts with the failed interpretations
+  already ruled out.
 - **C4. Remaining right-of-way: right-before-left, roundabouts, stop signs.** 9b did PRIORITY
   junctions only. Right-before-left (uncontrolled symmetric), roundabout yielding (+
   `myRoundaboutBonus`/cooperative), all-way-stop (`LINKSTATE_ALLWAY_STOP`). Reuses 9b's `<request>`
