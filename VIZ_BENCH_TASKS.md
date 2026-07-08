@@ -1,0 +1,344 @@
+# VIZ_BENCH_TASKS.md — Work queue for `Sim.Viz` + the scaled-city benchmark
+
+A separate task tracker for the two utility tracks described in `VIZ_SPEC.md` and
+`BENCHMARK_SPEC.md`. Same discipline as `TASKS.md`: each task is a **self-contained
+briefing** naming its inputs (source files, target files, command, numeric done-condition)
+so a fresh subagent can pick it up cold. Read `CLAUDE.md` (rules), `DESIGN.md`
+(architecture), `HANDOFF.md` (current state), and the two spec files before starting.
+
+**These two tracks are OFF the `dotnet test` parity path.** Neither is a parity gate; both
+are utilities (`VIZ_SPEC.md` and `BENCHMARK_SPEC.md` both say so). They are additive and
+low-risk to the parity iron law — but they must still honor the committed-vs-ephemeral rule,
+the plan/execute invariant, and the "extend through the D-seams, don't route around them"
+rule from `HANDOFF.md`.
+
+Legend: **[net]** = needs a network-enabled VM + SUMO (netgenerate/randomTrips/duarouter or
+golden regen); everything else runs offline.
+
+---
+
+## Ground-truth reconciliation (READ FIRST — the specs are stale about project maturity)
+
+Both spec docs were written assuming a much earlier project. Verified against the checkout
+at `main` (`498d3e3`), the following are **already true** and must NOT be re-derived from the
+specs' hedged "if that isn't done yet" language:
+
+- **The engine already emits real global `X`/`Y`/`Angle`.** `Engine.EmitTrajectory`
+  (`src/Sim.Core/Engine.cs`) calls `LaneGeometry.PositionAtOffset(lane.Shape, pos)`
+  (`src/Sim.Ingest/LaneGeometry.cs`) per vehicle per step. `Angle` is already SUMO's
+  **naviDegree** convention (0°=north, increasing clockwise) — identical to FCD. `(x,y)` is
+  the lane arc-length position (front-reference, matching SUMO's FCD). So the viz can render
+  **engine output** faithfully, not only SUMO goldens; the box back-offset logic is identical
+  for both.
+- **`Sim.Ingest` already parses almost everything the viz needs from `.net.xml`/`.rou.xml`:**
+  - `NetworkModel` (`src/Sim.Ingest/NetworkModel.cs`): `Lane(Shape, Width)` (width defaults to
+    `SUMO_const_laneWidth = 3.2`), `Edge`, `Connection(from, fromLane, to, toLane, via, tl,
+    linkIndex)`, `TlLogic(Id, Offset, Phases)` + `TlPhase(Duration, State)`, `Junction`.
+  - `DemandModel`/`VType` (`src/Sim.Ingest/DemandModel.cs`): `VClass`, `Length`, `Width`
+    (nullable overrides) + the vClass default table in `VTypeDefaults.cs` (length/width/etc.
+    per vClass). The FCD→type→dimensions join is a lookup over these.
+  - **Reuse `NetworkParser.Parse` / `DemandParser.Parse` from the viz exporter.** These are
+    `Sim.Ingest` public parsers, NOT engine internal component structs — reusing them is what
+    the viz spec's "reuse `Sim.Ingest` where it parses net/rou" means, and it does NOT violate
+    the "never reach into engine structs" rule.
+- **The engine's capability gates are already cleared.** Traffic lights (rung 10), priority
+  junctions (9b), lane-changing (A2 speed-gain + keep-right), Dijkstra routing (B2), reroute
+  (B3) are all done and green (64 tests). The benchmark's "needs ~rung 10" dependency is
+  satisfied for the *small* rungs (see the C2 caveat in Phase 2).
+
+Two **real gaps** the tasks below close:
+
+1. **No FCD *writer* exists.** The engine produces an in-memory `TrajectorySet`;
+   `Sim.Harness/FcdParser.cs` only *reads* FCD (SUMO goldens). "Wire the engine to emit FCD"
+   is genuine new work — Phase 0.
+2. **`Junction` has no `Shape` polygon.** `NetworkModel.Junction(Id, Type, IntLanes, Links,
+   Requests, Conflicts)` omits the junction `shape` the viz fills as a solid area.
+   `NetworkParser.ParseJunction` reads the `<junction>` element but drops `shape`. Adding it
+   is inert for the engine (engine never uses it) — done in VB-1.
+
+**Do NOT confuse `Sim.Bench` with the benchmark spec.** `src/Sim.Bench` already exists — it is
+the **Group-D perf/determinism harness** on a hand-built dense highway (`scenarios/_bench/
+highway-dense`), measuring steps/sec, alloc/veh-step, and the determinism hash
+`909605E965BFFE59`. `BENCHMARK_SPEC.md` wants a **new** netgenerate-based synthetic-city
+scaling ladder with statistical SUMO comparison. Reuse `Sim.Bench`'s *measurement code*; do
+not overload that scenario or that project's purpose.
+
+---
+
+## Build order & dependency graph
+
+```
+Phase 0 (offline) ──> Phase 1 Sim.Viz (offline) ──────────────┐
+   FCD writer seam        VB-1 ─ VB-2 ─ VB-3 ─ VB-4            │
+        │                                                     ▼
+        └────────────────────────> Phase 2 Benchmark [net]  (feeds viz)
+                                       VB-5 ─ VB-6 ─ VB-7 ─ VB-8
+```
+
+- **Critical path is Phase 0 → Phase 1**, 100% offline (no SUMO, no network). Highest
+  immediate payoff; delegatable to a separate Sonnet session per `HANDOFF.md`.
+- **Phase 2 is `[net]`** (netgenerate/randomTrips/duarouter + SUMO aggregate goldens) and
+  reuses the Phase 0 FCD writer + `Sim.Bench` measurement code.
+
+---
+
+# PHASE 0 — shared FCD-writer seam (offline)
+
+## VB-0 — `FcdWriterObserver` + a run-and-dump entry point
+
+**Goal.** Let any engine run write a SUMO-schema FCD file, so both `Sim.Viz` and the benchmark
+can consume engine trajectories the same way they consume `golden.fcd.xml`.
+
+**Why the D9 seam.** `HANDOFF.md` mandates extending the engine *through* the D-seams. The D9
+export seam (`src/Sim.Core/ISimExportObserver.cs` + `VehicleExportSnapshot.cs`) is exactly a
+per-frame, per-vehicle export hook — the FCD writer is its first real consumer, not a reason
+to touch `EmitTrajectory`.
+
+**Implement in `Sim.Harness`** (it already owns FCD parsing — keep read+write together):
+- `FcdWriterObserver : ISimExportObserver` — on `OnFrameBegin(time)` open a `<timestep
+  time="...">`; on `OnVehicleExported(in snapshot)` write `<vehicle id x y angle speed pos
+  lane type/>` from the snapshot; on `OnFrameEnd` close the timestep. Root `<fcd-export>`.
+  Match SUMO's element/attribute names and `--precision 6` formatting exactly (see
+  `scripts/regen-goldens.sh` for the golden's schema; the engine emits full double precision —
+  do NOT round).
+  - `VehicleExportSnapshot` currently lacks the vehicle **type** string. Add `VehicleType`
+    (the vType id) to the snapshot (populated in `EmitTrajectory` from the vehicle def) so the
+    FCD `type=` attribute is real. This is inert for existing observers (the default list is
+    empty) and byte-identical for the `TrajectorySet` path.
+- Register it via the existing `Engine.AddExportObserver(...)` — no change to `EmitTrajectory`.
+
+**Entry point.** A small runner so a scenario dir → `engine.fcd.xml`. Cleanest: a new
+`src/Sim.Run` console project (`dotnet run --project src/Sim.Run -- <scenarioDir> [--steps N]
+[--fcd-out engine.fcd.xml]`) that loads net/rou/cfg via `Engine.LoadScenario`, attaches
+`FcdWriterObserver`, runs, and writes the file. (Alternatively extend `Sim.Bench` with a
+`--fcd-out` flag; a dedicated `Sim.Run` keeps Bench's perf purpose clean — prefer `Sim.Run`.)
+
+**Done-condition.** `dotnet run --project src/Sim.Run -- scenarios/01-single-free-flow
+--fcd-out /tmp/engine.fcd.xml` writes a well-formed FCD file; feeding it and
+`scenarios/01-single-free-flow/golden.fcd.xml` through `Sim.Harness.TrajectoryComparator`
+reports **within `tolerance.json`** (a free parity re-confirmation via the new path). Commit
+`Sim.Run` + `FcdWriterObserver` + the snapshot `VehicleType` addition. `dotnet test` stays
+green (still 64; no parity scenario changed).
+
+**Validation bar.** Byte-identical for all existing tests (empty observer list default). Gate
+through parity-reviewer only if `EmitTrajectory` or the snapshot changes touch the hot path.
+
+---
+
+# PHASE 1 — `Sim.Viz` offline replay tool
+
+Front-end is a **committed static template** (`src/Sim.Viz/template.html` + `template.js`);
+the C# exporter injects one `<script>const REPLAY_DATA = {...}</script>` and writes
+`scenarios/<name>/replay.html`. Canvas 2D, vanilla JS, no external libs, self-contained.
+One command: `dotnet run --project src/Sim.Viz -- <scenarioDir>`.
+
+## VB-1 — Exporter: scenario dir → `REPLAY_DATA` JSON → `replay.html`
+
+**Goal.** The `Sim.Viz` C# console tool that reads net + fcd + rou, builds the compact JSON
+payload, injects it into the template, and writes `replay.html`.
+
+**Inputs per scenario dir** (all committed): `*.net.xml`, an FCD file (prefer
+`golden.fcd.xml`; accept `--fcd <path>` to point at an engine `engine.fcd.xml` from VB-0),
+`*.rou.xml`.
+
+**Reuse** `Sim.Ingest.NetworkParser.Parse` and `Sim.Ingest.DemandParser.Parse`, and
+`Sim.Harness.FcdParser` for the FCD. **New parsing gap to close:** add `Shape` (the polygon
+point list) to `NetworkModel.Junction` and populate it in `NetworkParser.ParseJunction` from
+the `<junction shape="...">` attribute (inert for the engine). Lane markings need adjacent
+lanes of the same edge — `Edge` already lists its lanes with index.
+
+**Payload shape (pre-flatten to arrays; keep it compact):**
+- `network`: per lane `{shape:[x,y,...], width}`; per junction `{shape:[x,y,...]}`; per edge
+  its lane ids+indices (for markings); `tls`: the `<tlLogic>` programs (`offset`, phases as
+  `{duration, state}`) and the controlled `<connection>` list (`tl`, `linkIndex`, from-lane id
+  + the stop-line end point of that lane, computed from lane shape).
+- `vehicles`: per FCD vehicle id → `{type, vClass, length, width, color}` (join FCD `type` →
+  `VType`/`VTypeDefaults` for length/width/vClass; if the FCD row already carries length/width,
+  prefer it).
+- `trajectory`: per timestep an array of `{id, x, y, angle, speed}` (parallel arrays are fine
+  and smaller). Record `simStart`, `simEnd`, `stepSize`.
+- `bbox`: network bounding box for fit-to-view (do NOT bake offsets into geometry — keep world
+  coords, camera transforms them).
+
+**Template injection.** Read `template.html`, replace a `/*REPLAY_DATA*/` placeholder (or a
+marked `<script>` block) with the serialized payload, write `replay.html` next to the inputs.
+Do NOT string-concatenate the whole HTML in C# — fill the template.
+
+**Done-condition.** `dotnet run --project src/Sim.Viz -- scenarios/01-single-free-flow`
+writes `scenarios/01-single-free-flow/replay.html` containing a `REPLAY_DATA` block with
+non-empty network + trajectory. (Rendering correctness is VB-2..VB-4.)
+
+## VB-2 — Front-end spine: world/camera + real-time clock (build this correctly first)
+
+**Goal.** The camera transform and the wall-clock replay engine — everything else hangs off
+these. No rendering of vehicles yet beyond a placeholder dot to prove the clock.
+
+- **Camera:** one screen↔world transform (`scale`, `translateX/Y`). On load, fit-to-view from
+  `bbox` (centered, margin). **Flip Y** (canvas Y is screen-down, SUMO Y is up). Zoom on wheel
+  + two-finger pinch, **anchored at cursor / pinch midpoint** (world point under cursor stays
+  fixed). Pan on left-drag + one-finger drag. All zoom/pan are pure matrix ops.
+- **Clock:** `requestAnimationFrame` loop decoupled from FCD step size. Maintain `simTime`;
+  each frame when playing `simTime += realDelta * speedMultiplier`. Map `simTime` to the
+  bracketing FCD steps and **interpolate** position + angle (shortest-arc for angle). A vehicle
+  present at step k but not k+1 stops drawing. Play/Pause freezes accumulation; Restart sets
+  `simTime = simStart`; speed multiplier set {0.25,0.5,1,2,4,8}, default 1×.
+
+**Done-condition.** Open `replay.html` for scenario 01: a placeholder marker moves smoothly
+along the road in real time start→end; wheel/drag zoom-pan works, cursor-anchored.
+
+## VB-3 — Rendering layers (draw back-to-front)
+
+**Goal.** Width-accurate network + native-look TLS + oriented true-size vehicle boxes.
+
+1. **Junctions** — fill each junction `shape` polygon (dark gray).
+2. **Lanes** — each lane centerline `shape` as a filled band of `width` world-units (thick
+   stroke = lane width, or offset polyline both sides). Mid-gray.
+3. **Lane markings** — dashed white between adjacent same-edge lanes.
+4. **Traffic lights (SUMO-native look)** — replay `<tlLogic>` directly: from `simTime`, program
+   `offset`, and cumulative phase `duration`s, find the active phase's `state` string. For each
+   controlled `<connection>` draw a small signal head at the **stop-line end of the `from`
+   lane**, colored by `state[linkIndex]`: `G/g`→green, `y/Y`→yellow, `r`→red, `u`→red-yellow,
+   `o/O`→off. (Phase-1 scenarios are fixed-time, so this is exact. Actuated lights: leave a
+   TODO, don't build.)
+5. **Vehicles** — oriented filled rectangle of true `length`×`width` (world units), centered on
+   interpolated `(x,y)`, rotated by `angle`. `(x,y)` is the **front-reference** (confirmed:
+   engine + SUMO both) — offset the box back by half length so it sits behind the reference
+   point. `angle` is naviDegree (0=north, CW) — convert to canvas rotation accounting for the
+   Y-flip. Color by `vClass` (small fixed palette); real dimensions make a bus/truck visibly
+   bigger than a car.
+
+**Done-condition.** Scenario 01 renders a width-accurate lane and the single vehicle as a
+correctly-oriented, true-size box. Then **also run on `09-traffic-light` and
+`11-priority-junction`** — these actually exercise the TLS heads and junction fill and are the
+real visual regression check.
+
+## VB-4 — HUD, controls, done-condition, commit
+
+**Goal.** The minimal control bar + the committed deliverable.
+
+- Fixed bar: Play/Pause, Restart, speed selector, time slider spanning `[simStart, simEnd]`
+  with a `t = 47.3 s / 120.0 s` readout. Dragging the slider scrubs `simTime` directly (treat
+  as paused while dragging; release restores prior play state; keep it synced during playback).
+  A small vClass→color legend. Live vehicle count. Nothing else — no inspector.
+- **Extras (only if cheap, else defer):** color-by-speed toggle (worth it — spots
+  shockwaves); keyboard shortcuts (space/R/arrows — cheap). Fading trail — defer.
+
+**Done-condition (the VIZ_SPEC done-condition).** `dotnet run --project src/Sim.Viz --
+scenarios/01-single-free-flow` produces a committed `scenarios/01-single-free-flow/replay.html`
+that: opens standalone in a mobile browser from GitHub; renders width-accurate lanes +
+junctions; plays the vehicle as a correctly-oriented true-size box in real time start→end;
+supports play/pause/restart, speed, slider scrub; zooms (cursor-anchored) and pans by touch +
+mouse. **Commit** the exporter, `template.html`, `template.js`, and the generated
+`replay.html` (plus optionally `09`/`11` replays as living examples).
+
+---
+
+# PHASE 2 — scaled-city benchmark ([net]; runs the SUMO side)
+
+**Self-service constraint:** everything generatable from the pinned pip SUMO alone —
+`netgenerate` + `randomTrips.py` + `duarouter`, no external scenario download. Reproducible on
+a blank VM with `scripts/install-sumo.sh`.
+
+**Concurrency semantics:** "15k" = **peak concurrent active vehicles**, a steady-state
+plateau (not a rush-hour spike). Little's law: `concurrent ≈ insertion_rate × mean_trip_time`,
+so `rate ≈ N / mean_trip_time`. Estimate mean trip time from a short pilot, set the rate,
+**measure** actual concurrency from `--summary-output`, iterate 2–3× to land the plateau.
+
+### ⚠ Dependency caveat beyond "rung 10" — likely needs C2
+
+`BENCHMARK_SPEC.md` says the engine needs "~rung 10 (traffic lights)". That clears the
+**small** rungs. But a multi-lane city with turning demand realistically needs **lane-to-lane
+continuity + strategic lane changes (C2 in `TASKS.md`, NOT yet done)** — today a vehicle can
+sit in a lane that cannot reach its route, which will **gridlock artificially** at scale and
+poison the stability metric. So:
+- Rungs 1–2 (~30, ~300 concurrent): runnable now (bring-up, wiring, viz).
+- Rungs 3–4 (~3k, ~15k): **gate on C2** (or accept single-lane-edge networks / very forgiving
+  connectivity for the first pass, and note the limitation in provenance).
+
+### VB-5 [net] — parameterized generator script
+
+**Goal.** One `scripts/gen-benchmark.sh <targetConcurrency>` that, from the pinned SUMO alone,
+emits net + routes + config for a rung; the rung is a single argument (target concurrency →
+derived insertion `period`), not four hand-built scenarios.
+- **Net:** `netgenerate` (randomized `--rand` with controlled node count, or perturbed grid) —
+  real junctions, **multiple lanes per edge**, TLS junctions (`--tls.guess`/default). Size the
+  net **once at the 15k rung** so the same net serves all rungs (only demand changes); target
+  typical-urban density at 15k (not bumper-to-bumper, not empty). Commit `*.net.xml` + the exact
+  `netgenerate` command + seed in `provenance.txt`.
+- **Demand:** `randomTrips.py` (fixed seed, `--fringe-factor` for through-traffic, `period`
+  from the Little's-law estimate) → pre-route with `duarouter` → `*.rou.xml`. Fixed seed
+  everywhere; commit seed + commands in `provenance.txt`. Keep `sigma=0` for cleaner comparison
+  or enable realistic `sigma` (comparison is statistical either way) — note the choice in
+  config. Output goes under `scenarios/_bench/city-<N>/`.
+
+**Done-condition.** `scripts/gen-benchmark.sh 30` produces net+rou+cfg for the ~30-concurrent
+rung; a pilot SUMO run's `--summary-output` shows a concurrency plateau in the target band.
+
+### VB-6 — aggregate / statistical comparator (offline harness piece)
+
+**Goal.** A NEW comparator in `Sim.Harness` for **aggregate** agreement (this is genuinely new
+surface — the existing `TrajectoryComparator` is vehicle-for-vehicle and does NOT apply here).
+Compare engine vs SUMO on: total vehicles arrived, mean trip duration, mean network speed, and
+the **trip-duration distribution** (bucketed histogram or KS-style statistic). Per-rung
+tolerance, far looser than parity. Reads SUMO `--tripinfo-output` + `--summary-output` and the
+engine's equivalents.
+
+**Done-condition.** Given two tripinfo/summary sets it reports the four aggregates + a
+distribution distance and a pass/fail against a configurable per-rung tolerance. Unit-tested
+with synthetic inputs (this part CAN be in `dotnet test` — it's a pure comparator, no SUMO).
+
+### VB-7 — engine benchmark runner + metrics
+
+**Goal.** Run the engine on a `city-<N>` scenario and emit the engine-side numbers. Reuse
+`Sim.Bench` measurement code (steps/sec, alloc, peak concurrent, RTF = sim-time÷wall-time) and
+emit engine `--tripinfo`/`--summary` analogs the VB-6 comparator consumes. Emit FCD via the
+VB-0 `FcdWriterObserver` for the viz.
+- **Stability metric nuance:** SUMO's teleport count is the SUMO-side deadlock signal. The
+  phase-1 engine runs **teleport-off** (no teleport implemented), so its analog is
+  **completion + a gridlock/stuck detector** (count of vehicles making ~zero progress over a
+  window). Record both SUMO teleports (reference) and the engine's stuck-count (first-class
+  metric). A stuck spike = the engine is locking up (likely the C2 gap), not merely slow.
+- **Performance (record, don't gate):** wall-clock, steps/sec, RTF, peak concurrent, peak RSS.
+  Track across rungs (scaling curve) and across commits (regression catch).
+
+**Done-condition.** Engine runs `city-30` to completion; emits tripinfo/summary analogs +
+FCD + the metric line; VB-6 comparator reports aggregates vs the SUMO goldens within the
+rung-30 tolerance.
+
+### VB-8 [net] — scaling ladder execution + committed-vs-regenerated outputs
+
+**Goal.** Walk the ladder, same script one knob: **~30 → ~300 → ~3,000 → ~15,000** concurrent.
+Each rung: generate → route → SUMO reference run → engine run → compare → (small rungs) viz.
+
+**Commit (small, aggregate) — all rungs:** `*.net.xml`, `*.rou.xml`, `config.sumocfg`,
+`provenance.txt`; SUMO `--summary-output` (throughput ground truth); SUMO `--tripinfo-output`
+(distribution ground truth); `replay.html` **only for rungs 1–2**.
+**Do NOT commit:** full `--fcd-output` at rungs 3–4 (15k×hour is huge) — regenerate on demand.
+
+**Viz at scale:** rungs 1–2 full FCD → committed replay. Rungs 3–4: feed viz a **downsampled**
+FCD (every Nth vehicle, or crop to a camera bbox, or coarsen timestep) for gridlock
+spot-checks; don't commit; prefer `--summary-output` plots for the quantitative full-scale
+view. Note the Canvas-2D ceiling (~15k boxes @60fps will strain).
+
+**Done-condition (initial, per BENCHMARK_SPEC).** Bring-up proven at ~30 concurrent: pipeline
+runs end-to-end from the pinned SUMO install, `replay.html` watchable, summary/tripinfo
+committed with provenance. Larger rungs are the same script with a bigger argument, run as
+engine capability (C2) lands. Stability = completes + stuck-count under the per-rung threshold;
+statistical agreement tracks (looser than parity); performance recorded, not gated.
+
+---
+
+## Suggested execution order & ownership
+
+1. **VB-0** (Phase 0) — small, offline, unblocks everything.
+2. **VB-1 → VB-4** (Sim.Viz) — offline, high payoff, watchable on `01`/`09`/`11`. Delegatable
+   to a dedicated Sonnet session (never touches the parity core; gate only if VB-0's snapshot
+   change touches the hot path).
+3. **VB-6** (aggregate comparator) — offline, unit-testable; can be built in parallel with the
+   viz.
+4. **VB-5, VB-7, VB-8** (`[net]`) — on a network-enabled VM; small rungs first, large rungs
+   after C2.
+
+Keep the `TASKS.md` discipline: one task = one committed green state; update this file's status
+as each lands. `dotnet test` must stay green (these tracks add tests but never move a committed
+parity scenario out of tolerance).
