@@ -48,7 +48,12 @@ public class RungC2iBestLanesTests
 
         Assert.True(e1_1.AllowsContinuation);
         Assert.Equal(0, e1_1.BestLaneOffset);
-        Assert.Equal(496.00, e1_1.Length, Tolerance);
+        // C2-iii (route-wide backward pass): the continuing lane's Length now ACCUMULATES the best
+        // downstream continuation (MSVehicle.cpp:6038-6043) -- E1_1's own 496 m + E2's 496 m = 992 m,
+        // no longer the C2-i single-hop 496 m. E1_1 stays the best lane (AllowsContinuation, offset 0)
+        // and the DROP lane E1_0's Length is unchanged at its own 496 m (it accumulates nothing), so
+        // the scenario-18 strategic-LC timing -- which reads the depart lane's Length -- is identical.
+        Assert.Equal(992.00, e1_1.Length, Tolerance);
     }
 
     [Fact]

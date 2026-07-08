@@ -1,0 +1,19 @@
+sumo_version=1.20.0
+sumo_version_reported=Eclipse SUMO sumo Version 1.20.0
+generated_utc=2026-07-08T14:30:00Z
+command=sumo -c config.sumocfg --fcd-output golden.fcd.xml --fcd-output.acceleration --precision 6 --save-state.times 1 --save-state.files golden.state.xml --no-step-log true
+state_time=1
+fcd_precision=6
+# C2-iii multi-hop lane-to-lane continuity EXACT ANCHOR. 3 edges E0->E1->E2 (2 lanes each, 2
+#   junctions); E1->E2 connects ONLY from E1_1, so reaching E2 requires being on E1_1, which requires
+#   inserting on E0_1 -- a connection TWO hops out (E1->E2) dictates the E0 insertion lane. v0 departs
+#   E0_0 (departLane 0, the dead-ending lane); SUMO's route-wide best-lanes (updateBestLanes backward
+#   pass) give E0_0 bestLaneOffset +1, so v0 strategic-changes to E0_1 at t=8 (pos 111.12), then E1_1
+#   (t=15), then E2_0 (t=29). The pre-C2-iii engine's single-look-ahead resolver throws
+#   "No <connection> found from edge 'E1' lane 0 to edge 'E2'". Euler, sigma=0, teleport off, seed 42.
+# net: netconvert from nodes/edges/connections, --no-turnarounds.
+# vtype defaults: golden.vtype.json (libsumo/TraCI dump)
+# input file hashes (sha256):
+input=net.net.xml sha256=ce88e86ede590a26b9fc4f8a9bbb98da2627099f4a7ac5011195bf57b5249d9a
+input=rou.rou.xml sha256=30d2ad08e9ba2cb8dfd68ed8c1e24a2de14cab5697db903d7c7a254bef4d285b
+input=config.sumocfg sha256=308989acc91d865dbc311a287f15d701f7111c51452727d4fd40c76b5e46280f

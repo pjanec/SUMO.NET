@@ -262,7 +262,14 @@ public sealed record NetworkModel(
                     continue;
                 }
 
-                if (!continuation.AllowsContinuation)
+                // C2-iii: steer the pool onto the route-wide best-continuing lane whenever the depart
+                // lane is not it (nonzero BestLaneOffset). Gating on the offset rather than
+                // AllowsContinuation is what makes multi-hop work: SUMO's backward pass keeps a
+                // dead-ending lane's `allowsContinuation` true when its immediate downstream lane has
+                // any length (MSVehicle.cpp:6046), yet still sets BestLaneOffset to steer off it. For
+                // the single-junction C2-ii case the depart lane's offset is nonzero exactly when it
+                // did not continue, so this is byte-identical there (scenario 18 unchanged).
+                if (continuation.BestLaneOffset != 0)
                 {
                     currentLaneIndex = departLaneIndex + continuation.BestLaneOffset;
                 }
@@ -279,12 +286,36 @@ public sealed record NetworkModel(
         {
             var fromEdgeId = routeEdges[i];
             var toEdgeId = routeEdges[i + 1];
-            var key = (fromEdgeId, currentLaneIndex, toEdgeId);
 
-            if (!ConnectionsByFromLaneTo.TryGetValue(key, out var connection))
+            var candidates = ConnectionsByFromEdgeLane.TryGetValue((fromEdgeId, currentLaneIndex), out var conns)
+                ? conns.Where(c => c.To == toEdgeId).ToList()
+                : new List<Connection>();
+
+            if (candidates.Count == 0)
             {
                 throw new InvalidDataException(
                     $"No <connection> found from edge '{fromEdgeId}' lane {currentLaneIndex} to edge '{toEdgeId}'.");
+            }
+
+            Connection connection;
+            if (candidates.Count == 1)
+            {
+                // Single onward connection: byte-identical to the pre-C2-iii lookup.
+                connection = candidates[0];
+            }
+            else
+            {
+                // C2-iii: multiple onward connections from this lane -- thread the pool through the
+                // ToLane with the best route-wide continuation (SUMO's bestConnectedNext /
+                // betterContinuation: longest Length, then least |offset|, then lowest index), so the
+                // resolved lane sequence matches updateBestLanes' bestContinuations.
+                var toBest = ComputeBestLanes(routeEdges, toEdgeId);
+                var toByIndex = toBest.ToDictionary(q => q.LaneIndex);
+                connection = candidates
+                    .OrderByDescending(c => toByIndex[c.ToLane].Length)
+                    .ThenBy(c => Math.Abs(toByIndex[c.ToLane].BestLaneOffset))
+                    .ThenBy(c => c.ToLane)
+                    .First();
             }
 
             if (connection.Via is { } via)
@@ -367,50 +398,167 @@ public sealed record NetworkModel(
                 $"Edge '{currentEdgeId}' is not part of the given route ({string.Join(" ", routeEdges)}).");
         }
 
-        var edge = EdgesById[currentEdgeId];
-        var orderedLanes = edge.Lanes.OrderBy(l => l.Index).ToList();
+        // C2-iii: the full ROUTE-WIDE backward pass (MSVehicle::updateBestLanes,
+        // MSVehicle.cpp:6003-6063), replacing C2-i's single-look-ahead. Build the per-edge LaneQ
+        // from the LAST route edge back to `currentEdgeId`: each lane's Length accumulates the best
+        // reachable downstream continuation, and BestLaneOffset steers -- across multiple junctions
+        // -- toward a lane that stays connected to the END of the route (so a route whose insertion
+        // lane is dictated by a connection two+ hops out resolves instead of dead-ending).
+        //
+        // Base of the recursion -- the last route edge (MSVehicle.cpp:5951-5989): every lane
+        // trivially continues, Length = its own length, offset 0. (SIMPLIFICATION: SUMO's terminal
+        // edge can assign nonzero offsets when its lanes differ in length; every committed anchor's
+        // terminal lanes are equal-length, so offset 0 is exact here.)
+        var lastIndex = routeEdges.Count - 1;
+        var nextQ = EdgesById[routeEdges[lastIndex]].Lanes
+            .OrderBy(l => l.Index)
+            .Select(l => new LaneContinuation(l.Index, AllowsContinuation: true, BestLaneOffset: 0, l.Length))
+            .ToList();
 
-        if (edgeIndex == routeEdges.Count - 1)
+        for (var e = lastIndex - 1; e >= edgeIndex; e--)
         {
-            // Last route edge: every lane trivially continues (MSVehicle.cpp:5951-5989 -- no
-            // lengths differ, so no lane ever gets a nonzero offset here).
-            return orderedLanes
-                .Select(l => new LaneContinuation(l.Index, AllowsContinuation: true, BestLaneOffset: 0, l.Length))
-                .ToList();
+            nextQ = BackwardPassEdge(routeEdges[e], routeEdges[e + 1], nextQ);
         }
 
-        var nextEdgeId = routeEdges[edgeIndex + 1];
-        var allowsByIndex = new Dictionary<int, bool>();
-        foreach (var lane in orderedLanes)
-        {
-            var allows = ConnectionsByFromEdgeLane.TryGetValue((currentEdgeId, lane.Index), out var candidates)
-                && candidates.Any(c => c.To == nextEdgeId);
-            allowsByIndex[lane.Index] = allows;
-        }
+        return nextQ;
+    }
 
-        var continuingIndices = allowsByIndex.Where(kv => kv.Value).Select(kv => kv.Key).ToList();
-        if (continuingIndices.Count == 0)
-        {
-            throw new InvalidDataException(
-                $"No lane on edge '{currentEdgeId}' has a <connection> to the next route edge '{nextEdgeId}' -- route is unreachable.");
-        }
+    // C2-iii: one backward step of MSVehicle::updateBestLanes -- compute edge `edgeId`'s route-wide
+    // LaneQ from the already-computed downstream edge's LaneQ (`nextQ`). SIMPLIFICATIONS (documented,
+    // matching the anchor scenarios/36-multihop-lanes -- none exercised here): no bidi-lane
+    // preference (betterContinuation's bidi arms), no `nextLinkPriority` tie-break (only reached when
+    // two continuations have EQUAL length AND equal |offset|), no vClass permission-change handling,
+    // no elecHybrid overhead-wire preference. The `bestConnectedLength <= 0` disconnected-route arm
+    // (MSVehicle.cpp:6078-6098) is likewise not reached by a route SUMO itself routes.
+    private List<LaneContinuation> BackwardPassEdge(string edgeId, string nextEdgeId, List<LaneContinuation> nextQ)
+    {
+        var lanes = EdgesById[edgeId].Lanes.OrderBy(l => l.Index).ToList();
+        var nextByIndex = nextQ.ToDictionary(q => q.LaneIndex);
 
-        var bestThisIndex = continuingIndices.Min();
-        var bestThisMaxIndex = continuingIndices.Max();
-
-        var result = new List<LaneContinuation>();
-        foreach (var lane in orderedLanes)
+        // Forward init (MSVehicle.cpp:5896-5918): the ToLanes each lane connects to on `nextEdgeId`,
+        // `allows` = it has any such connection, initial `length` = the lane's own length.
+        var toLanes = new List<int>[lanes.Count];
+        var allows = new bool[lanes.Count];
+        var length = new double[lanes.Count];
+        var offset = new int[lanes.Count];
+        var reachableNext = new HashSet<int>();
+        for (var i = 0; i < lanes.Count; i++)
         {
-            var allows = allowsByIndex[lane.Index];
-            var offset = 0;
-            if (!allows)
+            toLanes[i] = ConnectionsByFromEdgeLane.TryGetValue((edgeId, lanes[i].Index), out var cands)
+                ? cands.Where(c => c.To == nextEdgeId).Select(c => c.ToLane).Distinct().ToList()
+                : new List<int>();
+            allows[i] = toLanes[i].Count > 0;
+            length[i] = lanes[i].Length;
+            offset[i] = 0;
+            foreach (var tl in toLanes[i])
             {
-                var toLowest = bestThisIndex - lane.Index;
-                var toHighest = bestThisMaxIndex - lane.Index;
-                offset = Math.Abs(toLowest) < Math.Abs(toHighest) ? toLowest : toHighest;
+                reachableNext.Add(tl);
+            }
+        }
+
+        // bestConnectedLength = the longest downstream lane reachable from THIS edge; bestLength =
+        // the longest downstream lane overall (MSVehicle.cpp:6012-6019).
+        var bestConnectedLength = -1.0;
+        var bestLength = -1.0;
+        foreach (var q in nextQ)
+        {
+            if (reachableNext.Contains(q.LaneIndex) && bestConnectedLength < q.Length)
+            {
+                bestConnectedLength = q.Length;
             }
 
-            result.Add(new LaneContinuation(lane.Index, allows, offset, lane.Length));
+            if (bestLength < q.Length)
+            {
+                bestLength = q.Length;
+            }
+        }
+
+        if (bestConnectedLength > 0)
+        {
+            for (var i = 0; i < lanes.Count; i++)
+            {
+                if (!allows[i])
+                {
+                    continue;
+                }
+
+                // bestConnectedNext = the best downstream lane this lane connects to
+                // (betterContinuation, MSVehicle.cpp:5940-5949: longest length, then least |offset|).
+                LaneContinuation? bcn = null;
+                foreach (var tl in toLanes[i])
+                {
+                    var m = nextByIndex[tl];
+                    if (bcn is null
+                        || bcn.Length < m.Length
+                        || (bcn.Length == m.Length && Math.Abs(bcn.BestLaneOffset) > Math.Abs(m.BestLaneOffset)))
+                    {
+                        bcn = m;
+                    }
+                }
+
+                if (bcn is not null)
+                {
+                    // MSVehicle.cpp:6038-6043: keep this lane on the globally-best downstream lane
+                    // when it can reach it (length == bestConnectedLength, near-straight offset),
+                    // else accumulate its own best continuation's length.
+                    length[i] += bcn.Length == bestConnectedLength && Math.Abs(bcn.BestLaneOffset) < 2
+                        ? bestLength
+                        : bcn.Length;
+                    offset[i] = bcn.BestLaneOffset;
+
+                    // MSVehicle.cpp:6046-6050: the continuation dies only if the best downstream lane
+                    // neither continues nor has any length of its own.
+                    if (!(bcn.AllowsContinuation || bcn.Length > 0))
+                    {
+                        allows[i] = false;
+                    }
+                }
+                else
+                {
+                    allows[i] = false;
+                }
+            }
+        }
+
+        // bestThisIndex = the lane with the greatest route-wide length (tie: least |offset|);
+        // bestThisMaxIndex = the highest-index lane sharing that length and |offset|
+        // (MSVehicle.cpp:6027-6033).
+        var bestThis = 0;
+        for (var i = 1; i < lanes.Count; i++)
+        {
+            if (length[i] > length[bestThis]
+                || (length[i] == length[bestThis] && Math.Abs(offset[i]) < Math.Abs(offset[bestThis])))
+            {
+                bestThis = i;
+            }
+        }
+
+        var bestThisMax = bestThis;
+        for (var i = 0; i < lanes.Count; i++)
+        {
+            if (length[i] == length[bestThis] && Math.Abs(offset[i]) == Math.Abs(offset[bestThis]))
+            {
+                bestThisMax = i;
+            }
+        }
+
+        // Final offset (MSVehicle.cpp:6103-6115): every lane worse than the best is steered toward
+        // it, choosing the nearer of the lowest/highest best index.
+        for (var i = 0; i < lanes.Count; i++)
+        {
+            if (length[i] < length[bestThis]
+                || (length[i] == length[bestThis] && Math.Abs(offset[i]) > Math.Abs(offset[bestThis])))
+            {
+                var toLow = lanes[bestThis].Index - lanes[i].Index;
+                var toHigh = lanes[bestThisMax].Index - lanes[i].Index;
+                offset[i] = Math.Abs(toLow) < Math.Abs(toHigh) ? toLow : toHigh;
+            }
+        }
+
+        var result = new List<LaneContinuation>(lanes.Count);
+        for (var i = 0; i < lanes.Count; i++)
+        {
+            result.Add(new LaneContinuation(lanes[i].Index, allows[i], offset[i], length[i]));
         }
 
         return result;

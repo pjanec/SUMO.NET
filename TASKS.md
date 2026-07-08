@@ -794,8 +794,27 @@ A3) remain the byte-for-byte correctness anchor (same discipline as rungs 8b/10/
     first such scenario lands (with its own golden), port the full early-return semantics (return
     before the accumulator decrement) instead of the commit-gate veto, and re-anchor 07/12
     byte-identical.
-  - **C2-iii. TODO (parity-track, exact @1e-3). Multi-hop lane-to-lane continuity (route-wide
-    best-lanes backward pass).** The deferred second half of C2-i/ii. **BLOCKS the scaled-city
+  - **C2-iii. DONE (parity-track, exact @1e-3). Multi-hop lane-to-lane continuity (route-wide
+    best-lanes backward pass).** Anchor `scenarios/36-multihop-lanes`
+    (`RungC2iiiMultiHopLanesParityTests`, exact). Ported SUMO's backward pass
+    (`MSVehicle::updateBestLanes`, MSVehicle.cpp:6003-6063) into `NetworkModel.ComputeBestLanes` (new
+    `BackwardPassEdge`): builds each route edge's LaneQ from the route END back, accumulating a
+    route-wide continuation `Length` and steering `BestLaneOffset` toward a lane that stays connected
+    to the route end. `ResolveLaneSequence` now (a) redirects the pool onto the best-continuing lane
+    on nonzero `BestLaneOffset` (not `!AllowsContinuation` -- SUMO keeps a dead-ending lane's
+    `allowsContinuation` true when its immediate downstream has any length, MSVehicle.cpp:6046, yet
+    still sets the offset), and (b) threads multi-connection hops through the best downstream lane
+    (betterContinuation). v0 departs the dead-ending E0_0, gets `bestLaneOffset +1`, strategic-changes
+    (the existing C2-ii `TryStrategicLaneChange`) to E0_1 at t=8, then E1_1 (t=15), E2_0 (t=29) --
+    exact. INERT: a 2-edge route's backward pass reduces to the C2-i single-hop result and
+    single-connection hops are byte-identical, so scenario 18 (behavioral) + all committed scenarios +
+    the `RungD1BenchmarkDeterminismTests` hash stay green (128). The C2-i UNIT test's continuing-lane
+    `Length` assertion was updated 496 -> 992 (now route-wide, correct). SIMPLIFICATIONS (documented
+    in `BackwardPassEdge`, none exercised): no bidi/`nextLinkPriority`/vClass-change/elecHybrid
+    arms, no disconnected-route (`bestConnectedLength<=0`) arm. **UNBLOCKS the scaled-city benchmark's
+    multi-lane rungs** (`-L 2+`). Parity-reviewer gate: pending.
+    *(original briefing retained below for context)*
+    The deferred second half of C2-i/ii. **BLOCKS the scaled-city
     benchmark's multi-lane rungs** (`-L 2+`, the 300/3k/15k concurrency levels in
     `BENCHMARK_SPEC.md`/`VIZ_BENCH_TASKS.md` Phase 2 -- bring-up is pinned to `-L 1` today precisely
     because of this gap, `scenarios/_bench/city-30/NOTES.md`); also a real realism gap (any
