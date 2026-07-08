@@ -230,11 +230,17 @@ public static class NetworkParser
             ? new List<string>()
             : intLanesAttr.Split(' ', StringSplitOptions.RemoveEmptyEntries).ToList();
 
+        // VB-1: `shape` is absent for some internal junctions -- an empty polygon is tolerated
+        // (the viz simply has nothing to fill for that junction), never a parse error.
+        var shape = junctionEl.Attribute("shape") is { } shapeAttr
+            ? ParseShape(shapeAttr.Value)
+            : Array.Empty<(double X, double Y)>();
+
         var requestEls = junctionEl.Elements("request").ToList();
         if (intLanes.Count == 0 || requestEls.Count == 0)
         {
             return new Junction(id, type, intLanes, Array.Empty<JunctionLink>(), Array.Empty<JunctionRequest>(),
-                Array.Empty<JunctionConflict>(), Array.Empty<MergeConflict>());
+                Array.Empty<JunctionConflict>(), Array.Empty<MergeConflict>(), shape);
         }
 
         // Links: for each link index i, the top-level <connection> whose `via` equals
@@ -366,7 +372,7 @@ public static class NetworkParser
             }
         }
 
-        return new Junction(id, type, intLanes, links, requests, conflicts, merges);
+        return new Junction(id, type, intLanes, links, requests, conflicts, merges, shape);
     }
 
     // Rung 9b-ii: a straight 2-point internal lane's travel direction, normalized -- ported

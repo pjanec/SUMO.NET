@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <ServerGarbageCollection>false</ServerGarbageCollection>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Sim.Ingest\Sim.Ingest.csproj" />
+    <ProjectReference Include="..\Sim.Harness\Sim.Harness.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Committed static front-end template (VIZ_SPEC.md "Architecture"): copied next to the
+         built exe so Program.cs can read it at run time regardless of cwd. -->
+    <None Include="template.html" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="template.js" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+</Project>

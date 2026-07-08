@@ -164,13 +164,19 @@ public sealed record MergeConflict(
     int EgoLink, int FoeLink,
     double EgoLengthBehindCrossing, double FoeLengthBehindCrossing);
 
+// VB-1 (Sim.Viz, VIZ_BENCH_TASKS.md): `Shape` is the junction's `<junction shape="...">`
+// polygon (same "x,y x,y ..." polyline format as a lane's shape) -- ported straight from
+// netconvert's output, purely for rendering (the viz tool fills this polygon as a solid area
+// under the lanes). Empty when the attribute is absent (e.g. some internal junctions omit it).
+// Inert for the engine: nothing in Sim.Core reads Junction.Shape.
 public sealed record Junction(
     string Id, string Type,
     IReadOnlyList<string> IntLanes,
     IReadOnlyList<JunctionLink> Links,
     IReadOnlyList<JunctionRequest> Requests,
     IReadOnlyList<JunctionConflict> Conflicts,
-    IReadOnlyList<MergeConflict> Merges);
+    IReadOnlyList<MergeConflict> Merges,
+    IReadOnlyList<(double X, double Y)> Shape);
 
 // C2-i: one lane's route-continuity data for STRATEGIC lane-change planning -- a scoped port of
 // `struct LaneQ` (sumo/src/microsim/MSVehicle.h:865-886), the per-lane record

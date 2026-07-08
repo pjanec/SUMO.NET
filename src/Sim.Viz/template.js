@@ -1,0 +1,639 @@
+// Sim.Viz front-end -- committed static template (VIZ_SPEC.md "Architecture"). Vanilla JS,
+// Canvas 2D, no external libraries. Inlined verbatim into replay.html by Sim.Viz/Program.cs
+// (the `/*TEMPLATE_JS*/` marker in template.html), right after a `const REPLAY_DATA = {...}`
+// block this file reads as its only external input.
+(function () {
+  "use strict";
+
+  var data = REPLAY_DATA;
+
+  // ---------------------------------------------------------------------
+  // DOM
+  // ---------------------------------------------------------------------
+  var canvas = document.getElementById("cv");
+  var ctx = canvas.getContext("2d");
+  var wrap = document.getElementById("canvasWrap");
+  var legendEl = document.getElementById("legend");
+  var vehCountEl = document.getElementById("vehCount");
+  var btnPlay = document.getElementById("btnPlay");
+  var btnRestart = document.getElementById("btnRestart");
+  var speedSel = document.getElementById("speedSel");
+  var speedColorToggle = document.getElementById("speedColorToggle");
+  var timeReadout = document.getElementById("timeReadout");
+  var timeSlider = document.getElementById("timeSlider");
+
+  // ---------------------------------------------------------------------
+  // vClass color palette (also drives the legend)
+  // ---------------------------------------------------------------------
+  var VCLASS_COLORS = {
+    passenger: "#4f8ef7",
+    truck: "#f5a623",
+    bus: "#2ecc71",
+    coach: "#9b59b6",
+    delivery: "#f97316",
+    trailer: "#e74c3c",
+    bicycle: "#22d3ee",
+    motorcycle: "#ec4899",
+    moped: "#a3a3a3",
+    emergency: "#dc2626",
+    pedestrian: "#eab308",
+  };
+  var DEFAULT_COLOR = "#9ca3af";
+
+  function colorForVClass(vClass) {
+    return VCLASS_COLORS[vClass] || DEFAULT_COLOR;
+  }
+
+  // Speed heatmap: cold (slow) -> hot (fast), 0..speedCap m/s.
+  var SPEED_COLOR_CAP = 20.0; // m/s (~72 km/h); chosen to give useful contrast on urban scenarios.
+  function colorForSpeed(speed) {
+    var t = Math.max(0, Math.min(1, speed / SPEED_COLOR_CAP));
+    // blue (slow) -> yellow -> red (fast).
+    var r, g, b;
+    if (t < 0.5) {
+      var u = t / 0.5;
+      r = Math.round(59 + u * (250 - 59));
+      g = Math.round(130 + u * (204 - 130));
+      b = Math.round(246 + u * (21 - 246));
+    } else {
+      var v = (t - 0.5) / 0.5;
+      r = Math.round(250 + v * (220 - 250));
+      g = Math.round(204 + v * (38 - 204));
+      b = Math.round(21 + v * (38 - 21));
+    }
+    return "rgb(" + r + "," + g + "," + b + ")";
+  }
+
+  // ---------------------------------------------------------------------
+  // Network precomputation
+  // ---------------------------------------------------------------------
+  var lanesById = {};
+  data.network.lanes.forEach(function (lane) {
+    lanesById[lane.id] = lane;
+  });
+
+  // Group lanes by edge, sorted by index, for lane-marking placement.
+  var lanesByEdge = {};
+  data.network.lanes.forEach(function (lane) {
+    (lanesByEdge[lane.edgeId] = lanesByEdge[lane.edgeId] || []).push(lane);
+  });
+  Object.keys(lanesByEdge).forEach(function (edgeId) {
+    lanesByEdge[edgeId].sort(function (a, b) {
+      return a.index - b.index;
+    });
+  });
+
+  // Offset a flat [x0,y0,x1,y1,...] polyline perpendicular to its local travel direction by
+  // `dist` (positive = to the LEFT of travel direction, matching this repo's lane-index
+  // left/right convention). Per-segment offset (no miter join) -- sufficient for SUMO nets,
+  // which are built from short straight/gently-curved segments.
+  function offsetPolyline(flatShape, dist) {
+    var out = [];
+    var n = flatShape.length / 2;
+    for (var i = 0; i < n - 1; i++) {
+      var x1 = flatShape[i * 2], y1 = flatShape[i * 2 + 1];
+      var x2 = flatShape[(i + 1) * 2], y2 = flatShape[(i + 1) * 2 + 1];
+      var dx = x2 - x1, dy = y2 - y1;
+      var len = Math.sqrt(dx * dx + dy * dy) || 1;
+      // Left-normal of travel direction (dx,dy): (-dy, dx) normalized.
+      var nx = (-dy / len) * dist;
+      var ny = (dx / len) * dist;
+      out.push([x1 + nx, y1 + ny, x2 + nx, y2 + ny]);
+    }
+    return out;
+  }
+
+  var laneMarkings = []; // array of segment arrays [x1,y1,x2,y2]
+  Object.keys(lanesByEdge).forEach(function (edgeId) {
+    var lanes = lanesByEdge[edgeId];
+    for (var i = 0; i < lanes.length; i++) {
+      var lane = lanes[i];
+      var hasLeftNeighbor = lanes.some(function (l) {
+        return l.index === lane.index + 1;
+      });
+      if (!hasLeftNeighbor) {
+        continue;
+      }
+      var segs = offsetPolyline(lane.shape, lane.width / 2);
+      segs.forEach(function (s) {
+        laneMarkings.push(s);
+      });
+    }
+  });
+
+  var tlsById = {};
+  data.network.tls.forEach(function (tl) {
+    tlsById[tl.id] = tl;
+  });
+
+  function cycleLength(tl) {
+    var sum = 0;
+    for (var i = 0; i < tl.phases.length; i++) sum += tl.phases[i].duration;
+    return sum;
+  }
+
+  // Mirrors Sim.Core/TrafficLightState.cs GetLinkState exactly: (time - offset) mod cycle,
+  // then walk cumulative phase durations.
+  function tlLinkState(tl, linkIndex, simTime) {
+    var cl = cycleLength(tl);
+    if (cl <= 0) return "o";
+    var position = (simTime - tl.offset) % cl;
+    if (position < 0) position += cl;
+    var cumulative = 0;
+    for (var i = 0; i < tl.phases.length; i++) {
+      cumulative += tl.phases[i].duration;
+      if (position < cumulative) {
+        return tl.phases[i].state[linkIndex];
+      }
+    }
+    var last = tl.phases[tl.phases.length - 1];
+    return last.state[linkIndex];
+  }
+
+  function colorForSignalState(ch) {
+    switch (ch) {
+      case "G":
+      case "g":
+        return "#2ecc71";
+      case "y":
+      case "Y":
+        return "#f1c40f";
+      case "r":
+        return "#e74c3c";
+      case "u":
+        return "#e08a2f"; // red-yellow
+      case "o":
+      case "O":
+        return "#555555";
+      default:
+        return "#888888";
+    }
+  }
+
+  // ---------------------------------------------------------------------
+  // Camera (VIZ_SPEC.md "Coordinate & camera model")
+  // screenX = worldX * scale + offsetX
+  // screenY = -worldY * scale + offsetY   (Y flipped: canvas-down vs. SUMO-up)
+  // ---------------------------------------------------------------------
+  var camera = { scale: 1, offsetX: 0, offsetY: 0 };
+
+  function worldToScreen(wx, wy) {
+    return [wx * camera.scale + camera.offsetX, -wy * camera.scale + camera.offsetY];
+  }
+
+  function screenToWorld(sx, sy) {
+    return [(sx - camera.offsetX) / camera.scale, -(sy - camera.offsetY) / camera.scale];
+  }
+
+  function fitToView() {
+    var bbox = data.bbox;
+    var bw = Math.max(1e-6, bbox.maxX - bbox.minX);
+    var bh = Math.max(1e-6, bbox.maxY - bbox.minY);
+    var cw = canvas.clientWidth || 300;
+    var ch = canvas.clientHeight || 300;
+    var margin = 0.9; // fill 90% of the viewport
+    var scale = Math.min(cw / bw, ch / bh) * margin;
+    var wcx = (bbox.minX + bbox.maxX) / 2;
+    var wcy = (bbox.minY + bbox.maxY) / 2;
+    camera.scale = scale;
+    camera.offsetX = cw / 2 - wcx * scale;
+    camera.offsetY = ch / 2 + wcy * scale;
+  }
+
+  function zoomAt(screenX, screenY, factor) {
+    var before = screenToWorld(screenX, screenY);
+    camera.scale = Math.max(0.02, Math.min(4000, camera.scale * factor));
+    // Re-anchor so `before` still projects to (screenX, screenY).
+    camera.offsetX = screenX - before[0] * camera.scale;
+    camera.offsetY = screenY + before[1] * camera.scale;
+  }
+
+  function panBy(dxScreen, dyScreen) {
+    camera.offsetX += dxScreen;
+    camera.offsetY += dyScreen;
+  }
+
+  // ---------------------------------------------------------------------
+  // Canvas sizing (devicePixelRatio-aware)
+  // ---------------------------------------------------------------------
+  var dpr = Math.max(1, window.devicePixelRatio || 1);
+  var firstFit = true;
+  function resizeCanvas() {
+    var cw = wrap.clientWidth;
+    var ch = wrap.clientHeight;
+    canvas.width = Math.max(1, Math.round(cw * dpr));
+    canvas.height = Math.max(1, Math.round(ch * dpr));
+    canvas.style.width = cw + "px";
+    canvas.style.height = ch + "px";
+    if (firstFit) {
+      fitToView();
+      firstFit = false;
+    }
+  }
+  window.addEventListener("resize", resizeCanvas);
+
+  // ---------------------------------------------------------------------
+  // Pointer input: wheel zoom, drag pan, touch pinch/pan.
+  // ---------------------------------------------------------------------
+  canvas.addEventListener(
+    "wheel",
+    function (ev) {
+      ev.preventDefault();
+      var rect = canvas.getBoundingClientRect();
+      var sx = (ev.clientX - rect.left) * dpr;
+      var sy = (ev.clientY - rect.top) * dpr;
+      var factor = Math.exp(-ev.deltaY * 0.0015);
+      zoomAt(sx, sy, factor);
+    },
+    { passive: false }
+  );
+
+  var dragging = false;
+  var lastX = 0, lastY = 0;
+  canvas.addEventListener("mousedown", function (ev) {
+    if (ev.button !== 0) return;
+    dragging = true;
+    lastX = ev.clientX;
+    lastY = ev.clientY;
+  });
+  window.addEventListener("mousemove", function (ev) {
+    if (!dragging) return;
+    var dx = (ev.clientX - lastX) * dpr;
+    var dy = (ev.clientY - lastY) * dpr;
+    lastX = ev.clientX;
+    lastY = ev.clientY;
+    panBy(dx, dy);
+  });
+  window.addEventListener("mouseup", function () {
+    dragging = false;
+  });
+
+  // Touch: one-finger pan, two-finger pinch-zoom anchored at the pinch midpoint.
+  var touchState = null; // { mode: 'pan'|'pinch', ... }
+  canvas.addEventListener(
+    "touchstart",
+    function (ev) {
+      ev.preventDefault();
+      var rect = canvas.getBoundingClientRect();
+      if (ev.touches.length === 1) {
+        touchState = {
+          mode: "pan",
+          x: ev.touches[0].clientX,
+          y: ev.touches[0].clientY,
+        };
+      } else if (ev.touches.length >= 2) {
+        var t0 = ev.touches[0], t1 = ev.touches[1];
+        var dx = t1.clientX - t0.clientX, dy = t1.clientY - t0.clientY;
+        touchState = {
+          mode: "pinch",
+          dist: Math.sqrt(dx * dx + dy * dy),
+          midX: (t0.clientX + t1.clientX) / 2 - rect.left,
+          midY: (t0.clientY + t1.clientY) / 2 - rect.top,
+        };
+      }
+    },
+    { passive: false }
+  );
+  canvas.addEventListener(
+    "touchmove",
+    function (ev) {
+      ev.preventDefault();
+      if (!touchState) return;
+      var rect = canvas.getBoundingClientRect();
+      if (touchState.mode === "pan" && ev.touches.length === 1) {
+        var dx = (ev.touches[0].clientX - touchState.x) * dpr;
+        var dy = (ev.touches[0].clientY - touchState.y) * dpr;
+        touchState.x = ev.touches[0].clientX;
+        touchState.y = ev.touches[0].clientY;
+        panBy(dx, dy);
+      } else if (touchState.mode === "pinch" && ev.touches.length >= 2) {
+        var t0 = ev.touches[0], t1 = ev.touches[1];
+        var ddx = t1.clientX - t0.clientX, ddy = t1.clientY - t0.clientY;
+        var dist = Math.sqrt(ddx * ddx + ddy * ddy);
+        var midX = (t0.clientX + t1.clientX) / 2 - rect.left;
+        var midY = (t0.clientY + t1.clientY) / 2 - rect.top;
+        var factor = dist / (touchState.dist || dist);
+        zoomAt(midX * dpr, midY * dpr, factor);
+        touchState.dist = dist;
+        touchState.midX = midX;
+        touchState.midY = midY;
+      }
+    },
+    { passive: false }
+  );
+  canvas.addEventListener("touchend", function (ev) {
+    if (ev.touches.length === 0) touchState = null;
+    else if (ev.touches.length === 1) {
+      touchState = { mode: "pan", x: ev.touches[0].clientX, y: ev.touches[0].clientY };
+    }
+  });
+
+  // ---------------------------------------------------------------------
+  // Real-time clock (VIZ_SPEC.md "Real-time clock")
+  // ---------------------------------------------------------------------
+  var simStart = data.simStart;
+  var simEnd = data.simEnd;
+  var stepSize = data.stepSize > 0 ? data.stepSize : 1.0;
+  var simTime = simStart;
+  var playing = true;
+  var speedMultiplier = 1;
+  var sliderDragging = false;
+  var wasPlayingBeforeDrag = true;
+
+  timeSlider.min = String(simStart);
+  timeSlider.max = String(simEnd);
+  timeSlider.step = String(Math.max(stepSize / 10, 0.001));
+  timeSlider.value = String(simStart);
+
+  var steps = data.trajectory; // array of {t, v: {id: {x,y,angle,speed}}}
+
+  function stepIndexAt(t) {
+    if (steps.length === 0) return 0;
+    if (t <= steps[0].t) return 0;
+    if (t >= steps[steps.length - 1].t) return steps.length - 1;
+    // stepSize is uniform across committed scenarios; a direct index estimate plus a small
+    // linear correction handles any FP drift without a full binary search.
+    var idx = Math.floor((t - steps[0].t) / stepSize);
+    idx = Math.max(0, Math.min(steps.length - 2, idx));
+    while (idx + 1 < steps.length && steps[idx + 1].t <= t) idx++;
+    while (idx > 0 && steps[idx].t > t) idx--;
+    return idx;
+  }
+
+  function shortestArcDeg(fromDeg, toDeg) {
+    var d = ((toDeg - fromDeg + 540) % 360) - 180;
+    return fromDeg + d;
+  }
+
+  // Returns a map id -> {x,y,angle,speed} interpolated at `t`; a vehicle present at step k but
+  // absent at step k+1 is omitted (VIZ_SPEC.md: "stops being drawn").
+  function interpolatedVehicles(t) {
+    var result = {};
+    if (steps.length === 0) return result;
+    var k = stepIndexAt(t);
+    var k2 = Math.min(k + 1, steps.length - 1);
+    var stepA = steps[k];
+    var stepB = steps[k2];
+    var span = stepB.t - stepA.t;
+    var frac = span > 1e-9 ? Math.max(0, Math.min(1, (t - stepA.t) / span)) : 0;
+
+    var idsA = stepA.v;
+    for (var id in idsA) {
+      if (!Object.prototype.hasOwnProperty.call(idsA, id)) continue;
+      var a = idsA[id];
+      var b = stepB.v[id];
+      if (!b) {
+        // Only draw the exact-hold position when we are still essentially AT step k (k===k2,
+        // i.e. simTime is at/after the last step); otherwise the vehicle has left and is hidden.
+        if (k === k2) {
+          result[id] = a;
+        }
+        continue;
+      }
+      var angle = shortestArcDeg(a.angle, b.angle);
+      result[id] = {
+        x: a.x + (b.x - a.x) * frac,
+        y: a.y + (b.y - a.y) * frac,
+        angle: angle,
+        speed: a.speed + (b.speed - a.speed) * frac,
+      };
+    }
+    return result;
+  }
+
+  // ---------------------------------------------------------------------
+  // Rendering (VIZ_SPEC.md "Rendering layers", back-to-front)
+  // ---------------------------------------------------------------------
+  function drawPolygon(flatShape, fillStyle) {
+    var n = flatShape.length / 2;
+    if (n < 3) return;
+    ctx.beginPath();
+    for (var i = 0; i < n; i++) {
+      var p = worldToScreen(flatShape[i * 2], flatShape[i * 2 + 1]);
+      if (i === 0) ctx.moveTo(p[0], p[1]);
+      else ctx.lineTo(p[0], p[1]);
+    }
+    ctx.closePath();
+    ctx.fillStyle = fillStyle;
+    ctx.fill();
+  }
+
+  function drawLaneBand(lane) {
+    var n = lane.shape.length / 2;
+    if (n < 2) return;
+    ctx.beginPath();
+    for (var i = 0; i < n; i++) {
+      var p = worldToScreen(lane.shape[i * 2], lane.shape[i * 2 + 1]);
+      if (i === 0) ctx.moveTo(p[0], p[1]);
+      else ctx.lineTo(p[0], p[1]);
+    }
+    ctx.strokeStyle = "#4a4d55";
+    ctx.lineWidth = Math.max(1, lane.width * camera.scale);
+    ctx.lineCap = "butt";
+    ctx.lineJoin = "round";
+    ctx.stroke();
+  }
+
+  function drawLaneMarkings() {
+    ctx.save();
+    ctx.strokeStyle = "rgba(255,255,255,0.85)";
+    ctx.lineWidth = Math.max(1, 0.15 * camera.scale);
+    ctx.setLineDash([Math.max(2, 1.5 * camera.scale), Math.max(2, 1.5 * camera.scale)]);
+    laneMarkings.forEach(function (seg) {
+      var p1 = worldToScreen(seg[0], seg[1]);
+      var p2 = worldToScreen(seg[2], seg[3]);
+      ctx.beginPath();
+      ctx.moveTo(p1[0], p1[1]);
+      ctx.lineTo(p2[0], p2[1]);
+      ctx.stroke();
+    });
+    ctx.restore();
+  }
+
+  function drawSignals(simT) {
+    data.network.signals.forEach(function (sig) {
+      var tl = tlsById[sig.tl];
+      if (!tl) return;
+      var state = tlLinkState(tl, sig.linkIndex, simT);
+      var p = worldToScreen(sig.x, sig.y);
+      ctx.beginPath();
+      ctx.arc(p[0], p[1], Math.max(3, 0.9 * camera.scale), 0, Math.PI * 2);
+      ctx.fillStyle = colorForSignalState(state);
+      ctx.fill();
+      ctx.lineWidth = 1;
+      ctx.strokeStyle = "rgba(0,0,0,0.6)";
+      ctx.stroke();
+    });
+  }
+
+  function drawVehicle(id, v) {
+    var info = data.vehicles[id];
+    if (!info) return;
+    var length = info.length || 4.3;
+    var width = info.width || 1.8;
+
+    var p = worldToScreen(v.x, v.y);
+    // naviDegree: 0 = north (+Y world), increasing clockwise. Canvas rotate() is clockwise for
+    // positive angles in a standard (Y-down) screen space already, and our world Y is flipped
+    // in worldToScreen -- a naviDegree heading maps directly onto canvas rotation with the
+    // convention "angle 0 points up the screen (-Y screen / +Y world), increasing clockwise",
+    // which is exactly ctx.rotate(angleRad) in canvas space (canvas +angle = clockwise, 0 = +X
+    // screen axis) once we rotate an extra -90deg to move "0 = up" to "0 = +X screen axis".
+    var angleRad = (v.angle * Math.PI) / 180;
+
+    ctx.save();
+    ctx.translate(p[0], p[1]);
+    ctx.rotate(angleRad - Math.PI / 2);
+    // (x,y) is the vehicle's FRONT-CENTER reference point (VIZ_SPEC.md); offset the box back by
+    // half its length so it sits behind the reference point along its own heading.
+    var lengthPx = length * camera.scale;
+    var widthPx = width * camera.scale;
+    var boxColor = speedColorToggle.checked ? colorForSpeed(v.speed) : colorForVClass(info.vClass);
+    ctx.fillStyle = boxColor;
+    ctx.strokeStyle = "rgba(0,0,0,0.55)";
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.rect(-lengthPx, -widthPx / 2, lengthPx, widthPx);
+    ctx.fill();
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  function render(simT) {
+    var cw = canvas.width, ch = canvas.height;
+    ctx.clearRect(0, 0, cw, ch);
+    ctx.fillStyle = "#1b1e26";
+    ctx.fillRect(0, 0, cw, ch);
+
+    // 1. Junctions.
+    data.network.junctions.forEach(function (j) {
+      drawPolygon(j.shape, "#33363f");
+    });
+
+    // 2. Lanes (width-accurate bands).
+    data.network.lanes.forEach(function (lane) {
+      drawLaneBand(lane);
+    });
+
+    // 3. Lane markings.
+    drawLaneMarkings();
+
+    // 4. Traffic lights.
+    drawSignals(simT);
+
+    // 5. Vehicles.
+    var vehicles = interpolatedVehicles(simT);
+    var count = 0;
+    for (var id in vehicles) {
+      if (!Object.prototype.hasOwnProperty.call(vehicles, id)) continue;
+      drawVehicle(id, vehicles[id]);
+      count++;
+    }
+
+    vehCountEl.textContent = "vehicles: " + count;
+    timeReadout.textContent =
+      "t = " + simT.toFixed(1) + " s / " + simEnd.toFixed(1) + " s";
+    if (!sliderDragging) {
+      timeSlider.value = String(simT);
+    }
+  }
+
+  // ---------------------------------------------------------------------
+  // HUD wiring
+  // ---------------------------------------------------------------------
+  function setPlaying(p) {
+    playing = p;
+    btnPlay.textContent = playing ? "Pause" : "Play";
+  }
+
+  btnPlay.addEventListener("click", function () {
+    setPlaying(!playing);
+  });
+
+  btnRestart.addEventListener("click", function () {
+    simTime = simStart;
+    setPlaying(true);
+  });
+
+  speedSel.addEventListener("change", function () {
+    speedMultiplier = parseFloat(speedSel.value) || 1;
+  });
+
+  timeSlider.addEventListener("pointerdown", function () {
+    sliderDragging = true;
+    wasPlayingBeforeDrag = playing;
+    playing = false;
+  });
+  timeSlider.addEventListener("input", function () {
+    simTime = parseFloat(timeSlider.value);
+    render(simTime);
+  });
+  timeSlider.addEventListener("pointerup", function () {
+    sliderDragging = false;
+    playing = wasPlayingBeforeDrag;
+  });
+
+  window.addEventListener("keydown", function (ev) {
+    if (ev.code === "Space") {
+      ev.preventDefault();
+      setPlaying(!playing);
+    } else if (ev.key === "r" || ev.key === "R") {
+      simTime = simStart;
+      setPlaying(true);
+    } else if (ev.key === "ArrowRight") {
+      simTime = Math.min(simEnd, simTime + stepSize);
+      render(simTime);
+    } else if (ev.key === "ArrowLeft") {
+      simTime = Math.max(simStart, simTime - stepSize);
+      render(simTime);
+    }
+  });
+
+  // Legend.
+  (function buildLegend() {
+    var seenVClasses = {};
+    Object.keys(data.vehicles).forEach(function (id) {
+      seenVClasses[data.vehicles[id].vClass] = true;
+    });
+    var classes = Object.keys(seenVClasses);
+    if (classes.length === 0) classes = ["passenger"];
+    legendEl.innerHTML = "";
+    classes.forEach(function (vc) {
+      var row = document.createElement("div");
+      row.className = "row";
+      var sw = document.createElement("span");
+      sw.className = "swatch";
+      sw.style.background = colorForVClass(vc);
+      row.appendChild(sw);
+      var label = document.createElement("span");
+      label.textContent = vc;
+      row.appendChild(label);
+      legendEl.appendChild(row);
+    });
+  })();
+
+  // ---------------------------------------------------------------------
+  // Main loop
+  // ---------------------------------------------------------------------
+  var lastFrameMs = null;
+  function frame(nowMs) {
+    if (lastFrameMs === null) lastFrameMs = nowMs;
+    var realDelta = (nowMs - lastFrameMs) / 1000;
+    lastFrameMs = nowMs;
+
+    if (playing && !sliderDragging) {
+      simTime += realDelta * speedMultiplier;
+      if (simTime >= simEnd) {
+        simTime = simEnd;
+        setPlaying(false);
+      }
+      if (simTime < simStart) simTime = simStart;
+    }
+
+    render(simTime);
+    requestAnimationFrame(frame);
+  }
+
+  resizeCanvas();
+  requestAnimationFrame(frame);
+})();
