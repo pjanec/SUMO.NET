@@ -22,6 +22,8 @@ public static class ScenarioConfigParser
 
         var timeEl = root.Element("time");
         var processingEl = root.Element("processing");
+        // C1-i: SUMO's <random_number> section (see ScenarioConfig.Seed's own comment).
+        var randomEl = root.Element("random_number");
 
         return new ScenarioConfig(
             Begin: ParseDouble(timeEl, "begin", 0.0),
@@ -30,7 +32,8 @@ public static class ScenarioConfigParser
             Ballistic: ParseBool(processingEl, "step-method.ballistic", defaultValue: false),
             TimeToTeleport: ParseDouble(processingEl, "time-to-teleport", -1.0),
             ActionStepLength: ParseDouble(processingEl, "default.action-step-length", 0.0),
-            SpeedDev: ParseDouble(processingEl, "default.speeddev", 0.1));
+            SpeedDev: ParseDouble(processingEl, "default.speeddev", 0.1),
+            Seed: ParseInt(randomEl, "seed", 42));
     }
 
     private static double ParseDouble(XElement? parent, string name, double defaultValue)
@@ -43,5 +46,11 @@ public static class ScenarioConfigParser
     {
         var value = parent?.Element(name)?.Attribute("value")?.Value;
         return value is null ? defaultValue : bool.Parse(value);
+    }
+
+    private static int ParseInt(XElement? parent, string name, int defaultValue)
+    {
+        var value = parent?.Element(name)?.Attribute("value")?.Value;
+        return value is null ? defaultValue : int.Parse(value, CultureInfo.InvariantCulture);
     }
 }

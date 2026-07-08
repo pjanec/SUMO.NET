@@ -272,6 +272,11 @@ public static class KraussModel
     // state machine); the caller has already taken that MIN2 before calling in, so this method
     // only has to consume the result -- when there is no stop it is simply vPos again (a no-op
     // MIN, exactly like phase 1-4's dead +infinity slot).
+    //
+    // C1-i: `rng` is threaded `ref` so patchSpeedBeforeLC's dawdle draw (below) advances the
+    // CALLER's (this vehicle's own) VehicleRuntime.RngState in place -- see Engine.
+    // ComputeMoveIntent's call site. When vType.Sigma==0 (every pre-C1 rung's scenario), `rng`
+    // is never read/advanced and vNext==vMax exactly as before this rung -- byte-identical.
     public static double FinalizeSpeed(
         double oldV,
         double vPos,
@@ -279,7 +284,8 @@ public static class KraussModel
         double laneVehicleMaxSpeed,
         ResolvedVType vType,
         double dt,
-        double actionStepLengthSecs)
+        double actionStepLengthSecs,
+        ref VehicleRng rng)
     {
         var vMinEmergency = MinNextSpeedEmergency(oldV, vType, dt);
         // vMin = MIN2(minNextSpeed(oldV), MAX2(vPos, vMinEmergency))
@@ -292,10 +298,44 @@ public static class KraussModel
         var vMax = Min3(oldV + Accel2Speed(aMax, dt), MaxNextSpeed(oldV, vType, dt), vStop);
         vMax = Math.Max(vMin, vMax);
 
-        // sigma=0 in rung 1 => patchSpeedBeforeLC (dawdle) is a no-op; no lane-change model and
-        // startupDelay defaults to 0 => applyStartupDelay is a no-op too. So vNext = vMax.
-        var vNext = vMax;
+        // MSCFModel.cpp:220 `vNext = patchSpeedBeforeLC(veh, vMin, vMax)`. Our resolved
+        // carFollowModel is always "Krauss" (VTypeDefaults.Resolve), i.e.
+        // MSCFModel_Krauss::patchSpeedBeforeLC with the default sigmaStep==DELTA_T (per-step)
+        // path -- MSCFModel_Krauss.cpp:73-96's `myDawdleStep > DELTA_T` accelDawdle branch is a
+        // DEFERRED feature (sigmaStep>dt sub-stepped dawdling is out of scope for C1-i; every
+        // vType here resolves sigmaStep==dt via the default cf-param), so this always takes the
+        // `else` arm: `vDawdle = MAX2(vMin, dawdle2(vMax, sigma, rng))`.
+        //
+        // sigma==0 is the strict no-op case required for byte-identical parity: dawdle2 would
+        // still draw a random number even at sigma==0 in SUMO's own C++ (the draw happens
+        // unconditionally, only its effect is scaled to zero by sigma==0's multiplication) --
+        // but we skip the draw entirely here rather than draw-and-multiply-by-zero, so that (a)
+        // no existing sigma=0 scenario's RNG-state timeline is perturbed by a call that used to
+        // not exist, and (b) `vNext` is bit-for-bit `vMax`, matching every prior rung exactly
+        // (0.0 * anything is still exactly 0.0 in IEEE 754, so this is a genuine no-op, not an
+        // approximation -- we simply also avoid the pointless draw+multiply).
+        //
+        // No lane-change model exists in phase 1 (MSAbstractLaneChangeModel::patchSpeed is a
+        // no-op) and applyStartupDelay defaults to 0 (MSCFModel.cpp:232) -- both unaffected by
+        // C1-i, exactly as before.
+        var vNext = vType.Sigma > 0.0 ? Math.Max(vMin, Dawdle2(vMax, vType.Sigma, vType.Accel, dt, ref rng)) : vMax;
         return vNext;
+    }
+
+    // MSCFModel_Krauss.cpp:129-151 dawdle2, Euler branch only (the `!gSemiImplicitEulerUpdate`
+    // negative-speed short-circuit at the top is a ballistic-only guard -- out of scope per
+    // phase 1/DESIGN.md, Euler is the only integration mode). One draw per call:
+    //   random = rand[0,1)
+    //   if (speed < myAccel) speed -= ACCEL2SPEED(sigma * speed * random);
+    //   else                 speed -= ACCEL2SPEED(sigma * myAccel * random);
+    //   return MAX2(0., speed);
+    // `speed` here is vMax (the caller always passes vMax, matching
+    // MSCFModel_Krauss.cpp:91's `dawdle2(vMax, sigma, veh->getRNG())`).
+    private static double Dawdle2(double speed, double sigma, double accel, double dt, ref VehicleRng rng)
+    {
+        var random = rng.NextDouble();
+        speed -= Accel2Speed(sigma * Math.Min(speed, accel) * random, dt);
+        return Math.Max(0.0, speed);
     }
 
     private static double Min3(double a, double b, double c) => Math.Min(a, Math.Min(b, c));

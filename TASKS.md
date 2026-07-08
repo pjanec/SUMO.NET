@@ -552,11 +552,61 @@ A3) remain the byte-for-byte correctness anchor (same discipline as rungs 8b/10/
 - **C1. Statistical parity / driver imperfection (`sigma>0`). THE determinism-ladder shift; do
   first — unblocks most of the rest.** Port Krauss dawdling (`MSCFModel_Krauss::dawdle`) and the
   per-vehicle SEEDED RNG (CLAUDE.md rule: no `System.Random`; seed per entity so results are
-  independent of thread order). Add a **statistical** `parityMode` to the harness: either reproduce
-  SUMO's RNG stream for trajectory-exact parity (hard — needs SUMO's `RandHelper`/per-vehicle seeding
-  reproduced), or, more realistically, an **ensemble/aggregate** tolerance (mean + spread of
-  speed/flow over N seeds, or the fundamental diagram). Produces stop-and-go waves and realistic
-  capacity. Prereq for C7 and for believable everything.
+  independent of thread order). Add a **statistical** `parityMode` to the harness.
+
+  **DECISION (owner, this session): the statistical bar is ENSEMBLE/AGGREGATE, not RNG-exact.** We do
+  NOT reproduce SUMO's `RandHelper`/MT19937 per-vehicle stream (brittle, version-dependent, and it
+  fights the ECS parallelism). Instead we validate aggregate properties over N seeds (mean + spread of
+  speed/flow, or the fundamental diagram) within a statistical tolerance. Dawdle is ported to the
+  ALGORITHM faithfully; only the RNG *stream* is ours (any good deterministic per-entity-seeded PRNG).
+
+  **Decomposed (like B5/9b):**
+  - **C1-i. DONE (OFFLINE, no SUMO). Dawdle + per-entity seeded RNG.** Ported
+    `MSCFModel_Krauss::dawdle2` (sumo/src/microsim/cfmodels/MSCFModel_Krauss.cpp:129-151) and
+    `MSCFModel_KraussOrig1::patchSpeedBeforeLC`'s `MAX2(vMin, dawdle2(vMax, sigma, rng))` bound
+    (MSCFModel_Krauss.cpp:90-96, the default per-step `sigmaStep==DELTA_T` path only —
+    MSCFModel_Krauss.cpp:73-89's `myDawdleStep > DELTA_T` sub-stepped `accelDawdle` machinery is
+    DEFERRED/out of scope) as `KraussModel.Dawdle2`, called from `KraussModel.FinalizeSpeed`
+    (`src/Sim.Core/KraussModel.cs`) right where `vNext` used to be set unconditionally to `vMax`:
+    `vNext = vType.Sigma > 0.0 ? MAX2(vMin, Dawdle2(vMax, sigma, accel, dt, ref rng)) : vMax`.
+    New `VehicleRng` struct (`src/Sim.Core/VehicleRng.cs`) — SplitMix64 (Vigna, public domain), a
+    single unmanaged `ulong` of state, `NextDouble()` in `[0,1)`, `SeedFor(globalSeed,
+    entityIndex)` mixing the two through one SplitMix64 step. Explicitly NOT SUMO's
+    RandHelper/MT19937 stream (owner decision above) — determinism + per-entity independence is
+    the bar, not stream-matching. `VehicleRuntime.RngState` (new `VehicleRng` field, unmanaged,
+    D3-clean) is seeded ONCE at vehicle creation in `Engine.LoadScenario` from
+    `VehicleRng.SeedFor(Seed, entityIndex)`; new `Engine.Seed` property (`ulong`, default 42,
+    settable before `LoadScenario` — later ensemble harnesses vary it per run) drives the global
+    seed. `ScenarioConfig.Seed`/`ScenarioConfigParser` now also parse the sumocfg's
+    `<random_number><seed value="..."/></random_number>` (default 42) for future use, but it is
+    NOT auto-applied to `Engine.Seed` (keeps `Engine.Seed` the single caller-controlled source of
+    truth, so a caller setting it before `LoadScenario` for an ensemble sweep is never silently
+    clobbered). `Engine.ComputeMoveIntent` threads `ref v.RngState` into `FinalizeSpeed` so the
+    draw advances that vehicle's own private state in place — no shared/global RNG, so
+    `UseParallelPlan=true` stays race-free (each `Parallel.For` iteration only ever touches its
+    own entity's `RngState`, exactly the D8 argument already made for every other field). `sigma
+    == 0` never calls `Dawdle2` (no draw at all, not a draw-then-multiply-by-zero) → **byte-
+    identical to every existing deterministic rung**: confirmed via the full `dotnet test` run
+    (78 passed, 0 failed, up from 73) AND by name-checking `Rung1ParityTests`/`Rung9bParityTests`
+    (real `golden.fcd.xml`/`tolerance.json` comparisons) still pass unchanged. New fixture
+    `scenarios/_fixtures/dawdle-single-lane` (reuses `scenarios/01-single-free-flow`'s net, one
+    `sigma=0.5` vehicle "dawdler") + `tests/Sim.ParityTests/RungC1DawdleTests.cs` (5 new
+    behavioral/property tests, no golden): same-seed determinism (byte-identical trajectories),
+    sigma>0 reduces mean steady-state speed below free-flow max with positive step-to-step
+    variance (contrasted against the sigma=0 control, zero variance), different seeds diverge but
+    stay bounded (`speed∈[0,vMax]`, no NaN, non-decreasing position), and `UseParallelPlan=true`
+    reproduces the sequential sigma>0 result exactly.
+  - **C1-ii (OFFLINE, no SUMO). Statistical parity harness mode.** Extend `Sim.Harness`
+    (`TrajectoryComparator` + `tolerance.json` `parityMode="statistical"`) to compare ENSEMBLE
+    aggregate stats (mean/spread of speed, flow) within a statistical tolerance, instead of
+    per-`(vehicle,time)` points. Self-test it with synthetic ensembles (matching stats → pass; shifted
+    mean/inflated variance → fail), mirroring Task 0's comparator self-test. No SUMO needed.
+  - **C1-iii ([net], needs SUMO). Statistical golden + parity test.** Generate N SUMO runs with
+    `sigma>0` (different seeds) → an aggregate/ensemble golden; wire the statistical parity test for a
+    `sigma>0` scenario. Requires the network-enabled golden-regen loop (SUMO install) — a `[net]`
+    step, NOT part of the offline `dotnet test` loop.
+
+  Produces stop-and-go waves and realistic capacity. Prereq for C7 and for believable everything.
 - **C2. Strategic (route-driven) lane changes + lane-to-lane continuity. The #1 lane-based realism
   gap.** Today a vehicle can sit in a lane that cannot reach its route. Port LC2013's STRATEGIC block
   (`LCA_STRATEGIC`/`LCA_URGENT`, `getBestLanes`/`bestLaneOffset` — `MSLCM_LC2013::_wantsChange` +

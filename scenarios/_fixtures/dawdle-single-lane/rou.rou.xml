@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- C1-i behavioral fixture (TASKS.md "Statistical parity / driver imperfection", sub-rung
+     C1-i). NOT a golden scenario: sigma>0 is explicitly OUT of the phase-1 exact-parity
+     determinism ladder (CLAUDE.md "Determinism (phase 1)" requires sigma=0 there), so this
+     fixture has no golden.fcd.xml/golden.state.xml/tolerance.json/provenance.txt, only inputs,
+     and is validated purely behaviorally by tests/Sim.ParityTests/RungC1DawdleTests.cs against
+     the engine's own TrajectorySet (mirrors scenarios/_fixtures/junction-external-foe's B5-iii
+     convention).
+
+     net.net.xml is copied verbatim from scenarios/01-single-free-flow (single 1000m lane
+     "e0_0", speed=13.89 m/s, no leader/junction/stop to interact with, which isolates the
+     dawdle effect from every other constraint). A single vehicle "dawdler" with sigma=0.5
+     (SUMO's own per-vClass default imperfection, VTypeDefaults.Resolve/getDefaultImperfection,
+     left unset here to also exercise that default resolution path, matching CLAUDE.md rule 6).
+     The sigma=0 CONTROL run reuses scenarios/01-single-free-flow's own "veh0" (sigma="0")
+     rather than duplicating it here. -->
+<routes xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://sumo.dlr.de/xsd/routes_file.xsd">
+    <vType id="dawdler0" vClass="passenger"/>
+    <route id="r0" edges="e0"/>
+    <vehicle id="dawdler" type="dawdler0" route="r0" depart="0" departSpeed="0" departPos="0" departLane="0"/>
+</routes>

@@ -68,6 +68,19 @@ internal sealed class VehicleRuntime
     public Kinematics Kinematics;
     public MoveIntent Intent;
 
+    // C1-i: this vehicle's private dawdle RNG state (Sim.Core.VehicleRng -- a single unmanaged
+    // `ulong`, D3-clean). Seeded ONCE, at creation (Engine.LoadScenario), from
+    // `VehicleRng.SeedFor(engine.Seed, EntityIndex)` -- never reseeded mid-run. Advanced by
+    // exactly one draw per active vehicle per step, ONLY when VType.Sigma>0, inside
+    // KraussModel.FinalizeSpeed's dawdle2 port (threaded there `ref` from
+    // Engine.ComputeMoveIntent so the draw persists) -- when Sigma==0 this field is written at
+    // creation and never read/advanced again, which is exactly why sigma==0 stays
+    // byte-identical to every pre-C1 rung (no draw occurs, so this field's value never
+    // influences the result). Each entity draws from its own copy here, never a shared/global
+    // RNG, which is what keeps Engine.UseParallelPlan race-free with sigma>0 (see that
+    // property's own header comment).
+    public VehicleRng RngState;
+
     // D3: this vehicle's scheduled stops (Sim.Ingest.VehicleDef.Stops) moved to Engine's
     // `_stopsByEntity` side table (keyed by EntityIndex), populated once at LoadScenario only
     // for vehicles that actually have stops -- the managed `Queue<StopRuntime>` no longer lives

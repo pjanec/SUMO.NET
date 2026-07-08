@@ -140,6 +140,25 @@ public sealed class Engine : IEngine
     // partitionable) is race-free here.
     public bool UseParallelPlan { get; set; } = false;
 
+    // C1-i (TASKS.md "Statistical parity / driver imperfection"): the global seed for every
+    // vehicle's per-entity dawdle RNG (Sim.Core.VehicleRng). Each vehicle's RngState is seeded
+    // ONCE, at creation, from `VehicleRng.SeedFor(Seed, EntityIndex)` -- see
+    // VehicleRuntime.RngState's own comment -- so this property must be set BEFORE
+    // LoadScenario for a non-default value to take effect (mirrors how a later ensemble harness
+    // (C1-ii/C1-iii, out of scope here) would sweep seeds: `new Engine { Seed = seed }` then
+    // `LoadScenario(...)` per run). Defaults to 42, matching every rung-1..11 scenario's own
+    // `<random_number><seed value="42"/></random_number>` (ScenarioConfig.Seed, parsed but
+    // deliberately NOT auto-applied here by LoadScenario -- see that field's header comment for
+    // why keeping this property the single caller-controlled source of truth is the safer
+    // choice: auto-applying the config's seed would silently clobber a seed the caller had
+    // already set for an ensemble sweep before calling LoadScenario).
+    //
+    // OWNER DECISION (TASKS.md C1): the statistical parity bar is ensemble/aggregate, not
+    // RNG-exact, so this seed does NOT need to reproduce SUMO's own RandHelper stream for a
+    // given sumocfg seed value -- it only needs to be deterministic and per-entity-independent
+    // (see VehicleRng's own header comment).
+    public ulong Seed { get; set; } = 42;
+
     // D9 (FastDataPlane ECS readiness -- info/replication export SEAM, TASKS.md line ~651):
     // the registered `ISimExportObserver`s notified once per active vehicle, once per
     // Export-phase frame, from EmitTrajectory below. Empty by default -- with no observer
@@ -261,7 +280,12 @@ public sealed class Engine : IEngine
             var entityIndex = _vehicles.Count;
             // D5: the FDP-shaped handle, set once here alongside EntityIndex -- Generation
             // stays 0 (see Entity.cs / VehicleRuntime.Entity's own comments).
-            var runtime = new VehicleRuntime { Def = def, VType = vType, EntityIndex = entityIndex, Entity = new Entity(entityIndex, 0) };
+            // C1-i: seeded ONCE here, from the engine's global Seed + this vehicle's own stable
+            // EntityIndex -- see VehicleRuntime.RngState's and Engine.Seed's own comments. Every
+            // vehicle gets an independent stream regardless of insertion/plan order or thread
+            // scheduling (UseParallelPlan's parallel-safety argument).
+            var rngState = VehicleRng.SeedFor(Seed, entityIndex);
+            var runtime = new VehicleRuntime { Def = def, VType = vType, EntityIndex = entityIndex, Entity = new Entity(entityIndex, 0), RngState = rngState };
 
             // Rung 5 (D3: side table): seed this vehicle's own stop queue (StopRuntime) from its
             // immutable Def, ONLY when it actually has stops. Reached/RemainingDuration start at
@@ -823,7 +847,10 @@ public sealed class Engine : IEngine
         var (processedVelocity, stopUpdate) = ProcessNextStop(v, vPos, actionStepLengthSecs);
         var vStop = Math.Min(vPos, processedVelocity);
 
-        var newSpeed = KraussModel.FinalizeSpeed(v.Kinematics.Speed, vPos, vStop, laneVehicleMaxSpeed, v.VType, dt, actionStepLengthSecs);
+        // C1-i: threaded `ref` so the dawdle draw (only taken when v.VType.Sigma>0) advances
+        // THIS vehicle's own private RngState in place -- no shared/global RNG, so this remains
+        // safe under UseParallelPlan (each loop iteration/task only ever touches its own `v`).
+        var newSpeed = KraussModel.FinalizeSpeed(v.Kinematics.Speed, vPos, vStop, laneVehicleMaxSpeed, v.VType, dt, actionStepLengthSecs, ref v.RngState);
 
         return new MoveIntent
         {
