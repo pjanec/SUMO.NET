@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<routes xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://sumo.dlr.de/xsd/routes_file.xsd">
+    <vType id="car" vClass="passenger" sigma="0"/>
+    <route id="southNorth" edges="SJ JN"/>
+    <route id="westEast" edges="WJ JE"/>
+    <!-- Both approach the uncontrolled junction on a collision course, arriving together.
+         At right_before_left, vWest (heading east) must yield to vSouth (approaching from the
+         south, i.e. on vWest's right); vSouth keeps priority. -->
+    <vehicle id="vSouth" type="car" route="southNorth" depart="0" departPos="0" departSpeed="13.89" departLane="0"/>
+    <vehicle id="vWest"  type="car" route="westEast"   depart="0" departPos="0" departSpeed="13.89" departLane="0"/>
+</routes>

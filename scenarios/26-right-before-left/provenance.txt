@@ -1,0 +1,18 @@
+sumo_version=1.20.0
+sumo_version_reported=Eclipse SUMO sumo Version 1.20.0
+generated_utc=2026-07-08T08:03:59Z
+command=sumo -c config.sumocfg --fcd-output golden.fcd.xml --fcd-output.acceleration --precision 6 --save-state.times 1 --save-state.files golden.state.xml --no-step-log true
+state_time=1
+fcd_precision=6
+# net built with: netconvert --node-files nodes.nod.xml --edge-files edges.edg.xml --connection-files connections.con.xml --output-file net.net.xml --no-turnarounds true --junctions.corner-detail 0
+# vtype defaults: golden.vtype.json (libsumo/TraCI dump)
+# C4-i anchor: right_before_left junction. Uncontrolled symmetric cross J; netconvert resolves
+#   it to link 0 (SJ->JN, vSouth) MAJOR (response=00) and link 1 (WJ->JE, vWest) EQUAL, yielding
+#   to link 0 (response=01) -- i.e. vWest yields to vSouth (approaching from vWest's right).
+#   vSouth cruises 13.89; vWest cautiously approaches then junction-leader-follows vSouth
+#   through the crossing (9.6097/5.1097), enters :J_1_0 at t=16, re-accelerates. sigma=0, Euler,
+#   teleport off, collision.action=none, seed 42.
+# input file hashes (sha256):
+input=net.net.xml sha256=75f7d66be2b7748cc874cfbc61d67e2c546d2b59fbbb1cb61838fe6811272669
+input=rou.rou.xml sha256=a7ea7128d587cb940494dc13380053e0ae75c9b2d4c6a550d10833c9ec2bd3e1
+input=config.sumocfg sha256=e223af1756a90d679275050f74fdd2db249acace8573706c7c1bb2df77c03b85
