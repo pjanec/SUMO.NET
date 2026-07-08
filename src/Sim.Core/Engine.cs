@@ -922,6 +922,14 @@ public sealed class Engine : IEngine
         // about the pre-existing 9b-ii/iii SUMO-foe machinery reads `time` at all.
         vPos = Math.Min(vPos, JunctionYieldConstraint(v, ActiveVehicles(), time, dt, actionStepLengthSecs, laneVehicleMaxSpeed));
 
+        // C5 (keepClear / don't-block-the-box): MSVehicle::checkRewindLinkLanes' downstream
+        // available-space accounting. A vehicle approaching a junction whose EXIT is jammed (a
+        // stopped vehicle downstream, no room for ego) must stop at the junction ENTRY rather than
+        // creep onto the internal lane and block cross traffic. +infinity (non-binding) unless a
+        // stopped vehicle is found on ego's downstream exit chain with leftSpace < 0 -- so every
+        // existing (jam-free) scenario is untouched.
+        vPos = Math.Min(vPos, KeepClearConstraint(v, ActiveVehicles(), dt, actionStepLengthSecs, laneVehicleMaxSpeed));
+
         // B1: external obstacle (DESIGN.md "Two futures" -- a live, non-SUMO input, not a
         // ported SUMO code path). Modeled as one more virtual stopped leader reusing the same
         // KraussModel.FollowSpeed leader car-following formula as LeaderFollowSpeedConstraint
@@ -1576,6 +1584,151 @@ public sealed class Engine : IEngine
         }
 
         return constraint;
+    }
+
+    // C5 (keepClear / don't-block-the-box): the "removal" half of MSVehicle::checkRewindLinkLanes
+    // (sumo/src/microsim/MSVehicle.cpp:5025). A vehicle must not enter a junction it cannot clear:
+    // when its downstream EXIT lane is jammed by a stopped vehicle and there is no room for ego
+    // (`availableSpace - lengthWithGap < 0`), SUMO sets `removalBegin` and brakes ego to the
+    // junction-entry stop line (`myVLinkPass = myVLinkWait`) rather than letting it advance onto the
+    // internal lane and block cross traffic. Ported and VERIFIED against the vendored v1_20_0
+    // DEBUG_CHECKREWINDLINKLANES trace for scenarios/34-keepclear's mThrough (per step: exit lane JE
+    // `stls=1.0`, empty internal lane, `avail=1.0` -> `leftSpace=1.0-7.5=-6.5` -> `removalBegin=0`,
+    // brake to `WJ.len-1.0=91.8`). keepClear applies iff the link has crossing foes
+    // (`request.Foes` has a set bit) -- MSVehicle::keepClear's `link->hasFoes() && link->keepClear()`
+    // (the keepClear connection flag defaults true; a `keepClear="0"` override is not parsed, not
+    // exercised). +infinity (non-binding) unless a STOPPED vehicle is found on ego's downstream exit
+    // chain with negative leftSpace, so every jam-free scenario is untouched.
+    //
+    // SIMPLIFICATIONS (documented, matching the committed anchor): `lengthsInFront` (vehicles ahead
+    // of ego on its OWN approach lane) is taken as 0 -- a queue on the approach itself is handled by
+    // ordinary car-following, not this gate; the back-propagation `allowsContinuation` reduces, for a
+    // single empty internal lane, to copying the exit lane's space to the entry link (done here by
+    // accumulating `seenSpace` straight through and stopping at the first stopped vehicle); the
+    // stop-line offset uses the priority-link `DIST_TO_STOPLINE_EXPECT_PRIORITY` (1.0), not the
+    // foe-visibility-limited general form.
+    private double KeepClearConstraint(VehicleRuntime v, ActiveVehicleQuery allVehicles, double dt, double actionStepLengthSecs, double laneVehicleMaxSpeed)
+    {
+        // Ego's upcoming junction ENTRY link -- the first internal lane at/after LaneSeqIndex (the
+        // same forward scan JunctionYieldConstraint uses).
+        var egoLinkSeqIndex = -1;
+        string? egoInternalLaneId = null;
+        for (var i = v.LaneSeqIndex; i < v.LaneSeqLen; i++)
+        {
+            var seqLaneId = _network!.LanesByHandle[_laneSeqPool[v.LaneSeqStart + i]].Id;
+            if (_network.LinkByInternalLane.ContainsKey(seqLaneId))
+            {
+                egoLinkSeqIndex = i;
+                egoInternalLaneId = seqLaneId;
+                break;
+            }
+        }
+
+        if (egoInternalLaneId is null || v.LaneId == egoInternalLaneId || egoLinkSeqIndex < 1)
+        {
+            // No upcoming junction, already on the internal lane (committed), or no approach lane.
+            return double.PositiveInfinity;
+        }
+
+        var (junction, egoLink) = _network!.LinkByInternalLane[egoInternalLaneId];
+
+        JunctionRequest? request = null;
+        foreach (var r in junction.Requests)
+        {
+            if (r.Index == egoLink.Index)
+            {
+                request = r;
+                break;
+            }
+        }
+
+        if (request is null || !request.Foes.Contains('1'))
+        {
+            // keepClear only applies at a link with crossing foes.
+            return double.PositiveInfinity;
+        }
+
+        // Downstream available-space walk from the entry link: subtract each internal lane's brutto
+        // vehicle-length sum, add each normal exit lane's space-till-last-standing, stop at the first
+        // STOPPED vehicle (lengthsInFront == 0, see header).
+        var seenSpace = 0.0;
+        var foundStopped = false;
+        for (var i = egoLinkSeqIndex; i < v.LaneSeqLen && !foundStopped; i++)
+        {
+            var lane = _network.LanesByHandle[_laneSeqPool[v.LaneSeqStart + i]];
+            if (lane.Id.StartsWith(':'))
+            {
+                seenSpace -= LaneBruttoVehLenSum(lane.Id, v, allVehicles);
+            }
+            else
+            {
+                seenSpace += LaneSpaceTillLastStanding(lane, v, allVehicles, dt, out foundStopped);
+            }
+        }
+
+        if (!foundStopped || seenSpace - (v.VType.Length + v.VType.MinGap) >= 0.0)
+        {
+            // Either the exit chain is clear, or ego fits -> not a box-blocking situation.
+            return double.PositiveInfinity;
+        }
+
+        // Blocked box: brake to the junction-entry stop line (approach-lane end minus the 1.0
+        // priority stop offset -- DIST_TO_STOPLINE_EXPECT_PRIORITY).
+        const double distToStopLine = 1.0;
+        var approachLane = _network.LanesByHandle[_laneSeqPool[v.LaneSeqStart + egoLinkSeqIndex - 1]];
+        var stopDist = approachLane.Length - v.Kinematics.Pos - distToStopLine;
+        return StopSpeedFor(v.VType, v.Kinematics.Speed, stopDist, laneVehicleMaxSpeed, dt, actionStepLengthSecs, v.LevelOfService);
+    }
+
+    // C5 helper: MSLane::getBruttoVehLenSum -- the sum of lengthWithGap (length + minGap) over the
+    // vehicles currently on the lane (frozen start-of-step snapshot), excluding ego.
+    private double LaneBruttoVehLenSum(string laneId, VehicleRuntime ego, ActiveVehicleQuery allVehicles)
+    {
+        var sum = 0.0;
+        foreach (var other in allVehicles)
+        {
+            if (!ReferenceEquals(other, ego) && other.LaneId == laneId)
+            {
+                sum += other.VType.Length + other.VType.MinGap;
+            }
+        }
+
+        return sum;
+    }
+
+    // C5 helper: MSLane::getSpaceTillLastStanding (sumo/src/microsim/MSLane.cpp). Walk the lane's
+    // vehicles front-first (largest pos first); at the first STOPPED one (speed < haltingSpeed)
+    // return its back position + its brakeGap minus the lengthWithGap of the vehicles ahead of it;
+    // if none is stopped return laneLength minus the total lengthWithGap. `foundStopped` reports
+    // whether a stopped vehicle bounded the result.
+    private double LaneSpaceTillLastStanding(Lane lane, VehicleRuntime ego, ActiveVehicleQuery allVehicles, double dt, out bool foundStopped)
+    {
+        foundStopped = false;
+        var onLane = new List<VehicleRuntime>();
+        foreach (var other in allVehicles)
+        {
+            if (!ReferenceEquals(other, ego) && other.LaneId == lane.Id)
+            {
+                onLane.Add(other);
+            }
+        }
+
+        onLane.Sort((a, b) => b.Kinematics.Pos.CompareTo(a.Kinematics.Pos));
+
+        var lengths = 0.0;
+        foreach (var last in onLane)
+        {
+            if (last.Kinematics.Speed < KraussModel.HaltingSpeed)
+            {
+                foundStopped = true;
+                var lastBrakeGap = KraussModel.BrakeGap(last.Kinematics.Speed, last.VType.Decel, headwayTime: 0.0, dt);
+                return (last.Kinematics.Pos - last.VType.Length) + lastBrakeGap - lengths;
+            }
+
+            lengths += last.VType.Length + last.VType.MinGap;
+        }
+
+        return lane.Length - lengths;
     }
 
     // C4-ii (TASKS.md "Remaining right-of-way" -- the ALL-WAY-STOP sub-rung). A distinct

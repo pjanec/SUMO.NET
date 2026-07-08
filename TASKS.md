@@ -978,19 +978,30 @@ A3) remain the byte-for-byte correctness anchor (same discipline as rungs 8b/10/
   STOPPED vehicle is found, then if `availableSpace - lengthWithGap < 0` at a keepClear link sets
   `removalBegin` -> `myVLinkPass = myVLinkWait` (brake to the stop line). The engine has none of this
   downstream-lane occupancy machinery.
-  **ANCHOR BUILT (this session): `scenarios/34-keepclear`** (committed, NON-TESTED) -- a 4-way
-  priority cross where `mBlock` sits STOPPED on exit edge JE (pos 6), `mThrough` (W->E major) must
-  keepClear-stop at the J entry (`WJ@91.8` = WJ.len 92.80 - `DIST_TO_STOPLINE_EXPECT_PRIORITY` 1.0,
-  confirmed in the golden) instead of creeping onto `:J_1`, and `nCross` (N->S minor) then crosses.
-  The engine today drives `mThrough` straight through the junction AND through the stopped `mBlock`
-  (it lacks BOTH keepClear AND cross-junction leader following -- the stopped vehicle on the exit
-  edge is never seen as a leader). The stop POSITION is understood (the 1.0 major stop offset); what
-  remains is the AVAILABLE-SPACE ACCOUNTING that decides *when* keepClear fires (the entangled
-  `lengthsInFront` / brutto-sum / `getSpaceTillLastStanding` inputs). Trace handoff prepared:
-  `scripts/sumo-keepclear-trace-instructions.md` (`DEBUG_CHECKREWINDLINKLANES` gated to `mThrough`)
-  + `keepclear-trace.zip`. Port lands once the trace pins the per-link `avail`/`leftSpace`/
-  `removalBegin` values. Note: a full port also wants the new lane-occupancy queries
-  (`getSpaceTillLastStanding`/`getBruttoVehLenSum`/`getLastAnyVehicle`) over the frozen snapshot.
+  **DONE (this session, exact @1e-3): `scenarios/34-keepclear`** (`RungC5KeepClearParityTests`). A
+  4-way priority cross where `mBlock` sits STOPPED on exit edge JE (pos 6); `mThrough` (W->E major)
+  keepClear-stops at the J entry (`WJ@91.8` = WJ.len 92.80 - `DIST_TO_STOPLINE_EXPECT_PRIORITY` 1.0)
+  instead of creeping onto `:J_1` and blocking the box. keepClear fires because the WJ->JE link has
+  crossing foe LINKS (N->S) -- `link->hasFoes()` -- even with no crossing vehicle. Port =
+  `Engine.KeepClearConstraint` + the `LaneBruttoVehLenSum` / `LaneSpaceTillLastStanding` lane-
+  occupancy queries over the frozen snapshot: the "removal" half of `checkRewindLinkLanes` (walk the
+  downstream exit chain, subtract internal-lane brutto sums, add `getSpaceTillLastStanding`, and when
+  a stopped vehicle leaves `leftSpace = avail - lengthWithGap < 0` brake to the junction-entry stop
+  line). VERIFIED byte-exact against the vendored v1_20_0 `DEBUG_CHECKREWINDLINKLANES` trace
+  (`debug/keepclear-trace` on `pjanec/sumo`: exit JE `stls=1.0`, `avail=1.0`, `leftSpace=-6.5`,
+  `removalBegin=0`). Inert (+infinity) for every jam-free scenario (125 green). SIMPLIFICATIONS
+  (documented in the method header): `lengthsInFront=0` (a queue on ego's own approach is ordinary
+  car-following), the single-empty-internal-lane back-propagation, and the 1.0 priority stop offset.
+  **FOLLOW-ON (own small rung): the keepClear/cross-traffic willPass coupling.** A crossing vehicle
+  must NOT yield to a keepClear-stopped foe (SUMO clears the stopped vehicle's request via
+  `setRequest=false`, so `blockedByFoe`'s `!avi.willPass` short-circuit lets the crosser proceed).
+  The engine's crossing approaching-foe arm (JunctionYieldConstraint) uses a blanket seq-index yield
+  with no willPass gate, so a crossing vehicle over-yields to a keepClear-stopped foe (observed when
+  the anchor kept its `nCross` vehicle). The anchor drops `nCross` to isolate the keepClear mechanism;
+  wiring willPass into the crossing yield (skip a foe whose own KeepClear/red/stop keeps it out of
+  the box) is the follow-on that lets cross traffic proceed. Also still open: general cross-junction
+  leader following (a stopped vehicle on the exit edge is not yet seen as a plain car-following
+  leader -- keepClear covers the box-blocking case but not a moving downstream queue).
 - **C6. Actuated / adaptive traffic lights + yellow decision.** Rung 10 did STATIC `tlLogic` only.
   - **C6-i. DONE. Yellow decision ("stop if you can brake, else go").** `scenarios/30-yellow-decision`
     (`RungC6YellowDecisionParityTests`, exact @1e-3). Ported the `canBrakeBeforeStopLine` gate from
