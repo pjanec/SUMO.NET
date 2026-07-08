@@ -882,18 +882,26 @@ A3) remain the byte-for-byte correctness anchor (same discipline as rungs 8b/10/
       `>=` (advance at ==), a latent deviation invisible until a vehicle landed on the boundary.
       Anchor `scenarios/33-roundabout-solo` (`RungC4iiiSuccessiveLaneSpeedParityTests`, single
       circulating vehicle, exact @1e-3); byte-identical for all prior scenarios (122 green).
-    - **BLOCKED: two-vehicle entry-yield to an APPROACHING circulating foe.**
-      `scenarios/32-roundabout` (committed as a NON-TESTED anchor) adds vSouth entering at RS while
-      vWest circulates through. vWest is exact, but vSouth must STOP-line yield to vWest while vWest
+    - **DONE (this session): two-vehicle entry-yield via junction ARRIVAL-TIME right-of-way.**
+      `scenarios/32-roundabout` (`RungC4iiiRoundaboutRowParityTests`, exact @1e-3) adds vSouth
+      entering at RS while vWest circulates through. vSouth must STOP-line yield to vWest while vWest
       is still APPROACHING the merge (on the ring's approach lane, not yet on its internal lane).
-      `SameTargetMergeConstraint` only follows a foe already ON the merge/target lane; a blanket
-      "stop for any approaching merge foe" over-yields when the foe is FAR (breaks scenario 19/C3,
-      where the mainline is distant). SUMO gates this on ARRIVAL-TIME WINDOWS
-      (`MSLink::opened`/`blockedByFoe`, MSLink.cpp:747-1013: block iff the foe's
-      `[arrivalTime, leavingTime]` overlaps ego's within `lookAhead`), fed by the approach-
-      reservation each vehicle registers in planMove (`MSVehicle::setApproaching`/`getArrivalTime`).
-      That arrival-time right-of-way is its own rung (needs a `DEBUG` trace of the arrival/leave
-      times); the two-vehicle roundabout anchor lands once it exists.
+      `SameTargetMergeConstraint` only followed a foe already ON the merge/target lane; a blanket
+      "stop for any approaching merge foe" over-yields when the foe is FAR (broke scenario 19/C3,
+      mainline ~362 m away). Ported SUMO's arrival-time gate (`MSLink::opened`/`blockedByFoe`,
+      MSLink.cpp:747-1013): a new PHASE-0 arm in `SameTargetMergeConstraint` blocks ego iff a
+      responded foe **within its approach-reservation range** (`MSVehicle::setApproaching`'s
+      lookahead `dist = SPEED2DIST(maxV) + brakeGap(maxV)`) has an arrival-time window overlapping
+      ego's within a 1 s `lookAhead` (`KraussModel.MinimalArrivalTime` = getMinimalArrivalTime +
+      `Engine.BlockedByMergeFoe` = the three-way follower/leader/hard-conflict test). The
+      reservation-distance gate is what excludes the distant scenario-19 mainline (it never reserves
+      the link). VERIFIED per-step against the vendored v1_20_0 `MSLink_DEBUG_OPENED` trace
+      (`debug/arrivaltime-row-trace` on `pjanec/sumo`): `blocked (hard conflict)` for vSouth t=14..18,
+      then PHASE 1 (merge-leader, vWest on :RS_1) at t=19. Arrival SPEEDS are approximated by the
+      current speed (a constant-speed arrival); the block decision's wide margins make it robust
+      (exact trajectory + no regression across the 19/29/31/32 merge scenarios). The leader-branch
+      `unsafeMergeSpeeds` path is present for fidelity but not exercised by a committed scenario (the
+      reservation gate short-circuits the only far-foe case). Suite 122 -> 123 green.
   - **C4-iv. DONE (symmetric merge, exact @1e-3). sameTarget-merge yield (the C3 merge half).**
     `scenarios/31-merge-yield-sym` (`RungC4ivMergeYieldParityTests`, exact). A SLOW major vehicle mA
     crawls across the merge exactly as the minor vehicle vB arrives, so vB must follow-YIELD to mA

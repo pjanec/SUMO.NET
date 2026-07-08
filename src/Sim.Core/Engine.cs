@@ -1760,6 +1760,67 @@ public sealed class Engine : IEngine
         var foeInternalLaneId = junction.IntLanes[foeLinkIndex];
         var foeInternalLaneHandle = _network.LaneHandleById[foeInternalLaneId];
         var foeMerging = FindFoeVehicle(ego, allVehicles, foeInternalLaneHandle);
+
+        // PHASE 0 (APPROACHING foe -- junction arrival-time RoW): the responded merge foe is still
+        // on its OWN approach lane, heading for the shared merge (not yet ON its merging internal
+        // lane -- PHASE 1 -- nor on the shared target lane -- PHASE 2). SUMO decides this via
+        // MSLink::opened/blockedByFoe: ego stop-line yields iff the foe's arrival-time window at the
+        // conflict overlaps ego's (verified against the v1_20_0 arrival-time DEBUG trace for
+        // scenarios/32-roundabout's vSouth: `blocked (hard conflict)` t=14..18, then PHASE 1 takes
+        // over at t=19 once vWest is on :RS_1). This is what makes a roundabout entry yield to
+        // circulating traffic that has not yet reached the ring node -- while NOT over-yielding to a
+        // far foe (scenario 19's distant mainline lands in blockedByFoe's "ego leader" arm and does
+        // not block). Once ego is on its internal lane it is committed and no longer gated.
+        if (!egoOnInternal
+            && foeMerging is not null
+            && foeMerging.LaneId != foeInternalLaneId
+            && IndexOfLaneHandle(foeMerging, foeInternalLaneHandle) > foeMerging.LaneSeqIndex)
+        {
+            var foeInternalLaneAppr = _network.LanesByHandle[foeInternalLaneHandle];
+            var egoInternalLaneAppr = _network.LanesById[egoInternalLaneId];
+            var egoSeen = approachLane!.Length - ego.Kinematics.Pos;
+            var foeSeen = SeenToInternalLaneEntry(foeMerging, foeInternalLaneHandle);
+
+            // Approach-reservation range (MSVehicle::setApproaching only registers a vehicle at links
+            // within its own planMove lookahead dist = SPEED2DIST(maxV) + brakeGap(maxV),
+            // MSVehicle.cpp:2238): a foe farther than this from the conflict has not reserved the
+            // link, so opened() never sees it (numApproaching==0) and ego is not blocked. This is
+            // what distinguishes a close circulating foe (scenario 32, ~8 m) from a distant mainline
+            // foe (scenario 19, ~362 m -- unblocked despite responding in the request matrix).
+            // SPEED2DIST(maxV) + brakeGap(maxV): the single-arg MSCFModel::brakeGap(maxV) expands to
+            // brakeGap(maxV, myDecel, myHeadwayTime) (MSCFModel.h), so the reservation range carries
+            // the foe's headway (tau) reaction margin -- pass VType.Tau, not 0.
+            var foeMaxV = KraussModel.MaxNextSpeed(foeMerging.Kinematics.Speed, foeMerging.VType, dt);
+            var foeReservationDist = KraussModel.Speed2Dist(foeMaxV, dt)
+                + KraussModel.BrakeGap(foeMaxV, foeMerging.VType.Decel, foeMerging.VType.Tau, dt);
+            if (foeSeen > foeReservationDist)
+            {
+                return double.PositiveInfinity;
+            }
+
+            // Arrival speeds: the current speed (a constant-speed arrival estimate). The block
+            // decision compares windows against a 1 s lookAhead with wide margins, so it is robust
+            // to this approximation -- confirmed against the trace's per-step verdicts.
+            var egoSpeed = ego.Kinematics.Speed;
+            var foeSpeed = foeMerging.Kinematics.Speed;
+            var egoArrival = KraussModel.MinimalArrivalTime(egoSeen, egoSpeed, egoSpeed, ego.VType);
+            var foeArrival = KraussModel.MinimalArrivalTime(foeSeen, foeSpeed, foeSpeed, foeMerging.VType);
+            var egoLeave = egoArrival + (egoInternalLaneAppr.Length + ego.VType.Length)
+                / Math.Max(0.5 * (egoSpeed + egoSpeed), KraussModel.NumericalEps);
+            var foeLeave = foeArrival + (foeInternalLaneAppr.Length + foeMerging.VType.Length)
+                / Math.Max(0.5 * (foeSpeed + foeSpeed), KraussModel.NumericalEps);
+
+            if (BlockedByMergeFoe(
+                    egoArrival, egoLeave, egoSpeed, egoSpeed, ego.VType.Decel,
+                    foeArrival, foeLeave, foeSpeed, foeSpeed, foeMerging.VType.Decel))
+            {
+                return StopSpeedFor(
+                    ego.VType, ego.Kinematics.Speed,
+                    approachLane.Length - ego.Kinematics.Pos - PositionEps,
+                    laneVehicleMaxSpeed, dt, actionStepLengthSecs, ego.LevelOfService);
+            }
+        }
+
         if (foeMerging is not null && foeMerging.LaneId == foeInternalLaneId)
         {
             var foeInternalLane = _network.LanesByHandle[foeInternalLaneHandle];
@@ -1856,6 +1917,63 @@ public sealed class Engine : IEngine
         }
 
         return rearmost;
+    }
+
+    // Arrival-time RoW: the distance from a vehicle's front to the ENTRY of the given internal lane
+    // along its own route (the junction stop line for that link) -- (currentLane.length - pos) plus
+    // the lengths of any lanes strictly between the current one and the target internal lane. This
+    // is the `seen` fed to MSCFModel::getMinimalArrivalTime for the vehicle's arrival window at the
+    // conflicting link. +infinity when the internal lane is not on the vehicle's route.
+    private double SeenToInternalLaneEntry(VehicleRuntime veh, int targetInternalLaneHandle)
+    {
+        var targetIndex = IndexOfLaneHandle(veh, targetInternalLaneHandle);
+        if (targetIndex < 0)
+        {
+            return double.PositiveInfinity;
+        }
+
+        var seen = _network!.LanesByHandle[veh.LaneHandle].Length - veh.Kinematics.Pos;
+        for (var i = veh.LaneSeqIndex + 1; i < targetIndex; i++)
+        {
+            seen += _network.LanesByHandle[_laneSeqPool[veh.LaneSeqStart + i]].Length;
+        }
+
+        return seen;
+    }
+
+    // Arrival-time RoW (MSLink::blockedByFoe, MSLink.cpp:919-1013, impatience==0 / sameTargetLane
+    // arm -- phase 1 has no impatience, and a sameTarget MERGE always has sameTargetLane==true):
+    // does the foe's arrival window at the merge conflict block ego? ego occupies its internal lane
+    // during [egoArrival, egoLeave]; the foe during [foeArrival, foeLeave]; lookAhead == 1.0 s
+    // (MSLink::myLookaheadTime = TIME2STEPS(1), no JM_TIMEGAP_MINOR override). Times are relative
+    // (seconds from now) -- the common `t - DELTA_T` offset cancels between ego and foe.
+    //   - ego is follower (foeLeave < egoArrival): blocked if the gap is under lookAhead OR the
+    //     merge speeds are unsafe.
+    //   - ego is leader   (foeArrival > egoLeave + lookAhead): blocked only if the merge speeds are
+    //     unsafe (a far foe -- e.g. the scenario-19 mainline -- lands here and does NOT block).
+    //   - otherwise the windows overlap: hard conflict, blocked.
+    private static bool BlockedByMergeFoe(
+        double egoArrival, double egoLeave, double egoArrSpeed, double egoLeaveSpeed, double egoDecel,
+        double foeArrival, double foeLeave, double foeArrSpeed, double foeLeaveSpeed, double foeDecel)
+    {
+        const double lookAhead = 1.0;
+
+        // MSLink.h unsafeMergeSpeeds(leaderSpeed, followerSpeed, leaderDecel, followerDecel) =
+        // leaderSpeed^2/leaderDecel <= followerSpeed^2/followerDecel.
+        static bool Unsafe(double leaderSpeed, double followerSpeed, double leaderDecel, double followerDecel) =>
+            leaderSpeed * leaderSpeed / leaderDecel <= followerSpeed * followerSpeed / followerDecel;
+
+        if (foeLeave < egoArrival)
+        {
+            return egoArrival - foeLeave < lookAhead || Unsafe(foeLeaveSpeed, egoArrSpeed, foeDecel, egoDecel);
+        }
+
+        if (foeArrival > egoLeave + lookAhead)
+        {
+            return Unsafe(egoLeaveSpeed, foeArrSpeed, egoDecel, foeDecel);
+        }
+
+        return true;
     }
 
     // C4-v: the static (egoLbc, foeLbc) lengthBehindCrossing for a sameTarget merge pair

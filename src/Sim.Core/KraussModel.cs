@@ -60,6 +60,33 @@ public static class KraussModel
         return Speed2Dist((steps * speed) - (speedReduction * steps * (steps + 1) / 2.0), dt) + (speed * headwayTime);
     }
 
+    // MSCFModel.cpp:getMinimalArrivalTime -- the minimal time (SECONDS here; the source returns
+    // TIME2STEPS) for a vehicle at `currentSpeed` to cover `dist` and arrive at `arrivalSpeed`,
+    // either decelerating as late as possible or accelerating then holding. Used by the junction
+    // arrival-time right-of-way (MSLink::opened/blockedByFoe) to place each vehicle's arrival window
+    // at a conflicting link. We keep it in seconds because the block decision only ever compares
+    // ego-vs-foe windows against a lookAhead, so the common `t - DELTA_T` offset and the ms
+    // quantization both cancel.
+    public static double MinimalArrivalTime(double dist, double currentSpeed, double arrivalSpeed, ResolvedVType vType)
+    {
+        if (dist <= 0.0)
+        {
+            return 0.0;
+        }
+
+        var accel = arrivalSpeed >= currentSpeed ? vType.Accel : -vType.Decel;
+        var accelTime = accel == 0.0 ? 0.0 : (arrivalSpeed - currentSpeed) / accel;
+        var accelWay = accelTime * (arrivalSpeed + currentSpeed) * 0.5;
+        if (dist >= accelWay)
+        {
+            var nonAccelWay = dist - accelWay;
+            var nonAccelSpeed = Math.Max(currentSpeed, Math.Max(arrivalSpeed, HaltingSpeed));
+            return accelTime + nonAccelWay / nonAccelSpeed;
+        }
+
+        return -(currentSpeed - Math.Sqrt(currentSpeed * currentSpeed + 2.0 * accel * dist)) / accel;
+    }
+
     // MSCFModel.cpp:105-121 freeSpeed (the BASE class method, semi-implicit Euler arm only --
     // phase 1 is Euler-only per CLAUDE.md/DESIGN.md). This is NOT overridden by MSCFModel_Krauss,
     // so a Krauss vehicle uses exactly this braking-curve formula for the successive-lane speed
