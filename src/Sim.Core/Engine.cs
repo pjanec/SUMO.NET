@@ -1520,16 +1520,31 @@ public sealed class Engine : IEngine
             dt: _config!.StepLength);
     }
 
-    // Execute phase: apply each vehicle's own MoveIntent and integrate position. Euler per
-    // config.sumocfg's step-method.ballistic=false: pos += newSpeed * dt (integration method
-    // is a config flag per DESIGN.md, not hard-coded -- Ballistic support is a later task).
+    // Execute phase: apply each vehicle's own MoveIntent and integrate position.
+    // Integration method is a config flag per DESIGN.md (step-method.ballistic), not hard-coded:
+    //  - Euler (gSemiImplicitEulerUpdate=true, the phase-1 default, every scenario but 21): the
+    //    whole step is taken at the NEW speed -- pos += newSpeed * dt.
+    //  - C8-i ballistic (step-method.ballistic=true): the trapezoidal update SUMO uses when
+    //    !gSemiImplicitEulerUpdate -- pos += 0.5*(oldSpeed + newSpeed)*dt (the vehicle is treated
+    //    as accelerating linearly across the step, so it covers the average of its start/end
+    //    speeds). Verified against scenarios/21-ballistic-freeflow's golden (t=1 pos 1.30 =
+    //    0.5*(0+2.6)*1; t=6 pos 45.945 = 32.5 + 0.5*(13.0+13.89)*1). Scope: this is the free-flow
+    //    ballistic POSITION update only; the ballistic SAFE-SPEED branches
+    //    (maximumSafeStopSpeedBallistic / followSpeed / finalizeSpeed) are deferred to a
+    //    ballistic-car-following scenario (they never bind free-flow, where the speed sequence is
+    //    identical to Euler). Byte-identical to the old code when Ballistic=false.
     private void ExecuteMoves(double dt)
     {
         // D6: the Query() analog -- see ActiveVehicles()'s own comment.
         foreach (var v in ActiveVehicles())
         {
+            // C8-i: capture the pre-move speed BEFORE overwriting it, for the ballistic
+            // trapezoidal position update below (Euler ignores it).
+            var oldSpeed = v.Kinematics.Speed;
             v.Kinematics.Speed = v.Intent.NewSpeed;
-            v.Kinematics.Pos += v.Intent.NewSpeed * dt;
+            v.Kinematics.Pos += _config!.Ballistic
+                ? 0.5 * (oldSpeed + v.Intent.NewSpeed) * dt
+                : v.Intent.NewSpeed * dt;
             v.Kinematics.LatOffset = v.Intent.LatOffset;
 
             // Rung 5: apply the plan phase's proposed stop-queue update (Engine.ProcessNextStop).

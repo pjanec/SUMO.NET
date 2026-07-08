@@ -1,0 +1,14 @@
+sumo_version=1.20.0
+sumo_version_reported=Eclipse SUMO sumo Version 1.20.0
+command=sumo -c config.sumocfg --fcd-output golden.fcd.xml --fcd-output.acceleration --precision 6 --save-state.times 1 --save-state.files golden.state.xml --no-step-log true
+state_time=1
+fcd_precision=6
+# C8-i anchor: BALLISTIC integration (step-method.ballistic=true), free flow. net = scenario 01's
+#   1000m single lane. Single vehicle, depart speed 0, accel to 13.89. sigma=0, actionStepLength=1.
+# ballistic vs Euler: SPEEDS are identical (accel-bounded, same); only POSITION differs. Ballistic
+#   uses the trapezoidal update pos += 0.5*(oldSpeed + newSpeed)*dt (MSCFModel/MSVehicle ballistic
+#   branch, gSemiImplicitEulerUpdate=false) instead of Euler's pos += newSpeed*dt. Verified: t=1
+#   pos=1.30 (=0.5*(0+2.6)*1), t=6 pos=45.945 (=32.5 + 0.5*(13.0+13.89)*1).
+# scope: free-flow only -> exercises just the position integration. The ballistic SAFE-SPEED
+#   formulas (maximumSafeStopSpeedBallistic / followSpeed / finalizeSpeed ballistic branches) matter
+#   only with a leader/stop and are DEFERRED to a ballistic-car-following scenario.

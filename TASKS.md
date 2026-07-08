@@ -958,6 +958,24 @@ A3) remain the byte-for-byte correctness anchor (same discipline as rungs 8b/10/
   already a config flag (DESIGN.md seam); this ports the ballistic `finalizeSpeed`/position update and
   the action-step sub-sampling. Parity axis — effectively a config variant of every scenario, so it
   needs its own goldens (ballistic on).
+  - **C8-i. DONE (ballistic integration, free flow). `[net]` golden + offline test.** Ballistic
+    (`step-method.ballistic=true`) differs from Euler ONLY in the position update: SUMO's trapezoidal
+    `pos += 0.5*(oldSpeed + newSpeed)*dt` (the `!gSemiImplicitEulerUpdate` branch) vs Euler's
+    `pos += newSpeed*dt`; the free-flow SPEED sequence is identical (accel-bounded). `ExecuteMoves`
+    now branches on `_config.Ballistic` (capturing `oldSpeed` before the overwrite); **byte-identical
+    to the old code when `Ballistic=false` (every existing scenario)**. New scenario
+    `scenarios/21-ballistic-freeflow` (scenario 01's net, `ballistic=true`, single vehicle 0→13.89)
+    + SUMO golden (verified t=1 pos 1.30 = 0.5·2.6·1, t=6 pos 45.945). Test `RungC8ParityTests`
+    matches it to 1e-3. Full suite 100 green (99 Euler unchanged + this). **Deferred to C8-ii+**: the
+    ballistic SAFE-SPEED branches (`maximumSafeStopSpeedBallistic`/`followSpeed`/`finalizeSpeed`
+    ballistic) — they never bind free-flow; need a ballistic-with-leader scenario.
+  - **C8-ii. TODO. `actionStepLength > 1` (reaction time).** The vehicle re-plans its speed only
+    every `actionStepLength` seconds (holding the decision between action steps), not every step.
+    `actionStepLengthSecs` is already threaded into the car-following formulas as a parameter, but
+    the re-plan interval itself is not yet implemented (every step re-plans). Byte-identical when
+    `actionStepLength=1` (every existing scenario). Own SUMO golden with `action-step-length>1`.
+  - **C8-iii. TODO (optional). Ballistic car-following.** The ballistic safe-speed branches, with a
+    ballistic-with-leader scenario, completing ballistic parity beyond free-flow.
 - **C9. Cooperative lane changes.** LC2013's COOPERATIVE block (`LCA_COOPERATIVE` — make room for a
   blocked/merging neighbor). Depends on A2's neighbor query + C3 (merging pressure). Parity axis.
 - **C10. Sublane / continuous lateral (SL2015). The lateral axis and the BRIDGE to navmesh/RVO.**
