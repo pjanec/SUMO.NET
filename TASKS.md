@@ -899,7 +899,9 @@ A3) remain the byte-for-byte correctness anchor (same discipline as rungs 8b/10/
     the D1 determinism hash stay green (141). NON-VACUOUS: snapping the crossing to the Exit lane
     fails at FirstDivergenceStep=15 (vehicle jumps to E1_0 instead of showing E1_1). SIMPLIFICATION
     (documented, unexercised): a |offset| > 1 clamps/stays rather than moving one lane per edge.
-    Parity-reviewer gate pending. **UNBLOCKS a general `netgenerate -L 2` city.**
+    Parity-reviewer ACCEPT (byte-identical for no-intra-change routes -- D1 hash unchanged, 141 green;
+    snap-to-exit fails at step 15; clamp faithful to SUMO's per-edge bounded bestLaneOffset).
+    **UNBLOCKS a general `netgenerate -L 2` city.**
     *(original briefing retained below for context.)*
     Intra-edge mid-route lane change to reach an onward
     connection. The remaining half of multi-hop. **BLOCKS a general `netgenerate -L 2` city** (the
