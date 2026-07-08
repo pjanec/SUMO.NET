@@ -898,10 +898,25 @@ A3) remain the byte-for-byte correctness anchor (same discipline as rungs 8b/10/
 - **C5. Junction-blocking avoidance (`keepClear` / don't-block-the-box).** `MSLink::keepClear` + jam
   detection so a vehicle does not enter a junction it cannot clear. Prevents artificial gridlock /
   spillback across intersections. Parity axis; also a property test (junction never deadlocks).
+  **SCOPING (this session):** the mechanism is `MSVehicle::checkRewindLinkLanes`
+  (`sumo/src/microsim/MSVehicle.cpp:5025`, ~235 lines) -- the `myLFLinkLanes` downstream
+  available-space accounting that reserves room on the exit lane before committing to a link, plus
+  the `jm_ignore_keepclear_time` gate (`:7256`). This is the SAME next-lane/available-space
+  machinery C4-iv phase-2 needs, and the engine has none of it today (no downstream-lane space
+  lookup). Substantial own rung; needs a multi-vehicle downstream-jam scenario + almost certainly a
+  DEBUG trace. SUMO is available in-session for golden regen.
 - **C6. Actuated / adaptive traffic lights + yellow decision.** Rung 10 did STATIC `tlLogic` only.
   Add actuated/`delay_based` programs (`MSActuatedTrafficLightLogic` — gap-based phase extension) and
   the yellow "stop if you can brake, else go" decision (the rung-10 deferred note; `MSLink::haveYellow`
   + the `canBrake` branch). Parity axis (actuated needs detector state).
+  **SCOPING (this session):** `MSActuatedTrafficLightLogic` is ~1436 lines with heavy induction-loop
+  detector dependency (`MSInductLoop`, ~87 refs) -- the phase extension is driven by per-detector
+  time-gaps, so this rung needs the detector subsystem modeled first (vehicle presence + time-since-
+  detection per approach lane), then the gap-based `duration`/`maxDur` phase-switch logic. Large own
+  rung. The YELLOW-decision half (deferred from rung 10) is a much smaller, separable sub-rung
+  (`MSLink::haveYellow` + `MSVehicle::ignoreRed`'s `!canBrake` arm -- the passenger "too close to
+  stop, so proceed" branch) and is the natural first bite of C6. SUMO is available in-session for
+  golden regen.
 - **C7. `speedFactor` distribution (heterogeneous desired speeds).** Per-vehicle desired-speed
   variation (`speedFactor` = `normc(1.0, dev)`, `default.speeddev`); today everyone wants exactly the
   limit (mean 1.0, dev forced 0). Depends on C1 (seeded RNG). Statistical parity. Produces realistic
