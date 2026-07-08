@@ -372,7 +372,11 @@ public sealed class Engine : IEngine
             // gaps (unlike keep-right, which has no leader-gap dependence and stays entirely in
             // the pre-move Plan phase per rung 8b). This is its own PostSimulation pass, not a
             // change to PlanMovements/ExecuteMoves above.
-            DecideSpeedGainChanges(dt);
+            // B5-ii: `time` is threaded through so the veto below can evaluate obstacle
+            // active-windows (StartTime/EndTime) at the SAME instant ObstacleConstraint already
+            // does earlier this same step -- see DecideSpeedGainChanges' own header comment and
+            // TargetLaneBlockedByObstacle.
+            DecideSpeedGainChanges(time, dt);
         }
 
         return trajectory;
@@ -1494,7 +1498,13 @@ public sealed class Engine : IEngine
     // Target-lane safety veto (A2-iii) is a minimal-but-faithful brake-gap check
     // (MSCFModel::getSecureGap), not the full checkBlocking/blocker-gap machinery -- see
     // IsTargetLaneSafe's own comment.
-    private void DecideSpeedGainChanges(double dt)
+    //
+    // B5-ii (TASKS.md "Cross-lane blocker vetoing lane changes"): `time` is now threaded through
+    // (alongside `dt`) purely so TargetLaneBlockedByObstacle below can evaluate an
+    // ExternalObstacle's [StartTime, EndTime) active window at the same instant every other
+    // read this phase uses -- it is not otherwise used by the pre-existing keep-right/speed-gain
+    // math above it.
+    private void DecideSpeedGainChanges(double time, double dt)
     {
         const double relGainNormalizationMinSpeed = 10.0; // MSLCM_LC2013.cpp RELGAIN_NORMALIZATION_MIN_SPEED
         const double changeProbThresholdLeft = 0.2; // ctor: (0.2/mySpeedGainParam), default mySpeedGainParam=1
@@ -1598,8 +1608,20 @@ public sealed class Engine : IEngine
                 // IsTargetLaneSafe). A vetoed change does NOT reset the accumulator (SUMO only
                 // resets on an actually-committed change, :1063/1080) -- it keeps accumulating
                 // and is retried next step.
+                //
+                // B5-ii: a SECOND, independent veto -- an external (non-SUMO) obstacle currently
+                // occupying `leftLane` -- is ANDed in alongside the real-neighbor safety check.
+                // Exactly the same "no reset on veto" semantics apply: TargetLaneBlockedByObstacle
+                // returning true just leaves `targetLaneId` null for this step, same as
+                // IsTargetLaneSafe returning false above, so the vehicle keeps its lane, keeps
+                // accumulating SpeedGainProbability, and retries next step -- it changes as soon
+                // as the obstacle clears. Inert-when-absent (CLAUDE.md rule 3): with no obstacle
+                // ever added to `_obstacles`, TargetLaneBlockedByObstacle's own empty-store fast
+                // path returns false unconditionally, so this `&&` is byte-identical to today's
+                // bare `IsTargetLaneSafe(...)` gate for scenario 12 and every other
+                // obstacle-free scenario/test.
                 var neighFollow = postMoveNeighbors.GetNeighborFollower(v, leftLane.Handle);
-                if (IsTargetLaneSafe(v, neighLead, neighFollow, dt))
+                if (IsTargetLaneSafe(v, neighLead, neighFollow, dt) && !TargetLaneBlockedByObstacle(v, leftLane, time, dt))
                 {
                     targetLaneId = leftLane.Id;
                     targetLaneHandle = leftLane.Handle;
@@ -1822,13 +1844,121 @@ public sealed class Engine : IEngine
         return true;
     }
 
+    // B5-ii (TASKS.md "Cross-lane blocker vetoing lane changes"): generalizes IsTargetLaneSafe's
+    // real-neighLead/neighFollow secure-gap veto to an EXTERNAL (non-SUMO) obstacle sitting on
+    // the LEFT (target) lane -- same brake-gap secure-gap machinery (SecureGap below), just with
+    // an ExternalObstacle standing in for the real VehicleRuntime neighbor. Reads `_obstacles`
+    // exactly as ObstacleConstraint/AdvanceObstacles's own header comments describe: a frozen,
+    // already-advanced-for-this-step position (AdvanceObstacles ran in this same step's Input
+    // phase, before PlanMovements/ExecuteMoves/this post-move phase), never mutated here
+    // (CLAUDE.md rule 2 -- this method only READS `_obstacles`).
+    //
+    // Ego's projected slot on `targetLane` is [egoBack, egoFront] = [ego.Pos - ego.VType.Length,
+    // ego.Pos] -- the commit gate performs an instant lane-index snap (lanechange.duration=0,
+    // same convention every other structural change in this engine uses): only LaneId changes,
+    // ego's own arc-length Pos is unchanged, so this is exactly the segment ego would occupy on
+    // `targetLane` the instant the change commits.
+    //
+    // Inert-when-absent (CLAUDE.md rule 3 / the A2-byte-identical constraint): `_obstacles.Count
+    // == 0` returns false immediately -- the SAME empty-store fast path ObstacleConstraint's own
+    // header comment documents -- so for scenario 12 and every other obstacle-free scenario/test
+    // this helper is a no-op and the commit gate's `&&` above is byte-identical to a bare
+    // `IsTargetLaneSafe(...)` call.
+    private bool TargetLaneBlockedByObstacle(VehicleRuntime ego, Lane targetLane, double time, double dt)
+    {
+        if (_obstacles.Count == 0)
+        {
+            return false;
+        }
+
+        var egoFront = ego.Kinematics.Pos;
+        var egoBack = egoFront - ego.VType.Length;
+
+        foreach (var obstacle in _obstacles.Values)
+        {
+            // Same active-window/lane filter ObstacleConstraint applies, just against
+            // `targetLane` instead of `v.LaneId` -- an obstacle on ego's OWN (current, non-
+            // target) lane, or outside [StartTime, EndTime), never reaches the checks below
+            // (the "obstacle on the OTHER lane doesn't affect the change" scoping).
+            if (obstacle.StartTime > time || time >= obstacle.EndTime || obstacle.LaneId != targetLane.Id)
+            {
+                continue;
+            }
+
+            var obstacleBack = obstacle.FrontPos - obstacle.Length;
+            var obstacleFront = obstacle.FrontPos;
+
+            if (obstacleBack >= egoFront)
+            {
+                // Ahead of ego's projected slot -- virtual neighLead: the SAME
+                // MSLane::getLeader-shaped gap (leaderBackPos - egoMinGap - egoPos)
+                // IsTargetLaneSafe's neighLead branch requires, secured by the SAME brake-gap
+                // formula (SecureGap), with the obstacle's own reported Speed/MaxDecel standing
+                // in for a real leader's Kinematics.Speed/VType.Decel -- mirrors
+                // LeaderFollowSpeedConstraint/ObstacleConstraint's existing predSpeed/
+                // predMaxDecel plumbing exactly.
+                var gap = obstacleBack - ego.VType.MinGap - egoFront;
+                var secureGap = SecureGap(ego.Kinematics.Speed, ego.VType, obstacle.Speed, obstacle.MaxDecel, dt);
+                if (gap < secureGap)
+                {
+                    return true;
+                }
+            }
+            else if (obstacleFront <= egoBack)
+            {
+                // Behind ego's projected slot -- virtual neighFollow: the SAME gap
+                // ((egoBack) - followerMinGap - followerPos) and brake-gap secure-gap
+                // IsTargetLaneSafe's neighFollow branch requires, with the obstacle playing the
+                // FOLLOWER role this time. An ExternalObstacle carries only Speed/MaxDecel (B5-i's
+                // own field comment) -- no MinGap/Tau field exists to fall back to, so two
+                // documented proxies stand in, both conservative (widening, never narrowing, the
+                // required gap versus what a real trailing vehicle would need):
+                //   - follower decel: obstacle.MaxDecel when moving (Speed != 0), else ego's own
+                //     VType.Decel -- EXACTLY ObstacleConstraint's own
+                //     `nearest.Speed != 0.0 ? nearest.MaxDecel : v.VType.Decel` conditional (a
+                //     Speed==0/B1-style static obstacle's decel capability is otherwise
+                //     unobservable, so its default MaxDecel=0 must not be trusted here either).
+                //   - follower minGap/headway (Tau): reuse ego's own VType.MinGap/VType.Tau (the
+                //     only resolved vType in scope) -- there is no B5-i precedent for a follower-
+                //     role obstacle at all (obstacles have only ever played the LEADER role, see
+                //     LeaderFollowSpeedConstraint/ObstacleConstraint), so this is a fresh, explicit
+                //     choice rather than a mirrored one.
+                var obstacleDecel = obstacle.Speed != 0.0 ? obstacle.MaxDecel : ego.VType.Decel;
+                var gap = egoBack - ego.VType.MinGap - obstacleFront;
+                var secureGap = SecureGap(obstacle.Speed, obstacleDecel, ego.VType.Tau, ego.Kinematics.Speed, ego.VType.Decel, dt);
+                if (gap < secureGap)
+                {
+                    return true;
+                }
+            }
+            else
+            {
+                // Overlaps ego's projected slot outright -- no brake-gap check needed or
+                // meaningful (a negative gap by construction): there is no room to change into
+                // at all. Hard veto.
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     // MSCFModel::getSecureGap (MSCFModel.cpp:166-172): the brake-gap-difference secure-gap
     // formula (gComputeLC-relax branch at :173-179 omitted -- see IsTargetLaneSafe's comment).
-    private static double SecureGap(double followerSpeed, ResolvedVType followerVType, double leaderSpeed, double leaderMaxDecel, double dt)
+    private static double SecureGap(double followerSpeed, ResolvedVType followerVType, double leaderSpeed, double leaderMaxDecel, double dt) =>
+        SecureGap(followerSpeed, followerVType.Decel, followerVType.Tau, leaderSpeed, leaderMaxDecel, dt);
+
+    // B5-ii: raw-decel/tau overload the real-vType SecureGap above now forwards to -- needed
+    // because TargetLaneBlockedByObstacle's neighFollow-role branch has no ResolvedVType to hand
+    // it (an ExternalObstacle is not a vType-bearing entity; see that branch's own comment for
+    // the follower-decel/minGap/tau proxies it passes here). Formula itself is untouched/
+    // unmoved: same MSCFModel::getSecureGap math, byte-identical for every existing
+    // ResolvedVType-based call site above.
+    private static double SecureGap(double followerSpeed, double followerDecel, double followerTau, double leaderSpeed, double leaderMaxDecel, double dt)
     {
-        var maxDecel = Math.Max(followerVType.Decel, leaderMaxDecel);
+        var maxDecel = Math.Max(followerDecel, leaderMaxDecel);
         var leaderBrakeGap = KraussModel.BrakeGap(leaderSpeed, maxDecel, 0.0, dt);
-        return Math.Max(0.0, KraussModel.BrakeGap(followerSpeed, followerVType.Decel, followerVType.Tau, dt) - leaderBrakeGap);
+        return Math.Max(0.0, KraussModel.BrakeGap(followerSpeed, followerDecel, followerTau, dt) - leaderBrakeGap);
     }
 
     // The engine emits FULL double-precision trajectory values. The goldens are regenerated

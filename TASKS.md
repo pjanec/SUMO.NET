@@ -454,10 +454,48 @@ A3) remain the byte-for-byte correctness anchor (same discipline as rungs 8b/10/
     B1's exact stop-at-`242.499` steady state, proving the moving path degenerates exactly to B1.
     `RungB1ExternalObstacleTests` and scenarios 13/14 verified unchanged/still green. Full suite: 67
     green (64 baseline + 3 new Facts), 0 failed.
-  - **B5-ii. Cross-lane blocker vetoing lane changes.** Feed an active obstacle on the TARGET lane into
-    A2's `IsTargetLaneSafe`/neighbor query so a moving external agent on the neighbor lane vetoes a
-    speed-gain change. Behavioral test: ego wanting to change lanes holds its lane while an external
-    agent occupies the target-lane gap; changes once clear.
+  - **B5-ii. DONE. Cross-lane blocker vetoing lane changes.** `DecideSpeedGainChanges` (Engine.cs) now
+    takes `(double time, double dt)` (was `dt` only) — `Run(int)`'s call site threads its loop `time`
+    through, needed only so the veto below can evaluate an obstacle's `[StartTime, EndTime)` active
+    window at the same instant every other obstacle read this step uses; nothing else in the pre-
+    existing keep-right/speed-gain math reads `time`. New `TargetLaneBlockedByObstacle(ego, targetLane,
+    time, dt)`: returns `false` immediately when `_obstacles` is empty (the same empty-store fast path
+    `ObstacleConstraint` documents — the inert-when-absent guard). Otherwise, for each obstacle active
+    at `time` whose `LaneId == targetLane.Id`, treats it as a virtual neighbor against ego's PROJECTED
+    target-lane slot `[ego.Pos - ego.VType.Length, ego.Pos]` (the instant lane-index snap the commit
+    gate performs uses ego's own POST-move Pos unchanged, only LaneId moves): obstacle entirely ahead
+    (`obstacleBack >= egoFront`) is a virtual `neighLead` requiring `IsTargetLaneSafe`'s own leader
+    secure-gap (`SecureGap(ego.Speed, ego.VType, obstacle.Speed, obstacle.MaxDecel, dt)`, mirroring
+    `LeaderFollowSpeedConstraint`/`ObstacleConstraint`'s existing predSpeed/predMaxDecel plumbing
+    exactly); obstacle entirely behind (`obstacleFront <= egoBack`) is a virtual `neighFollow` requiring
+    the same secure-gap with the obstacle playing follower — since `ExternalObstacle` has no vType,
+    two documented (conservative, gap-widening) proxies stand in: follower decel is
+    `obstacle.Speed != 0 ? obstacle.MaxDecel : ego.VType.Decel` (exactly `ObstacleConstraint`'s own
+    conditional) and follower minGap/Tau reuse ego's own `VType.MinGap`/`VType.Tau` (no B5-i precedent
+    exists for an obstacle-as-follower role at all, so this is a fresh, explicitly-documented choice);
+    any other overlap of ego's projected slot is a hard veto (no secure-gap arithmetic needed — there
+    is no room to change into at all). `SecureGap` was split into a raw-decel/tau overload (the
+    ResolvedVType-taking overload now just forwards to it) so the obstacle-as-follower branch has
+    somewhere to pass its proxied decel/tau without a fake `ResolvedVType`; both overloads are
+    byte-identical for every existing real-vType call site. Wired into the A2-iii commit gate as a
+    SECOND, ANDed veto: `if (IsTargetLaneSafe(...) && !TargetLaneBlockedByObstacle(v, leftLane, time,
+    dt))` — a vetoed change does NOT reset `SpeedGainProbability` (same no-reset-on-veto semantics
+    `IsTargetLaneSafe`'s own veto already had: MSLCM_LC2013.cpp:1063/1080 only resets on an actually-
+    COMMITTED change), so the vehicle keeps its lane, keeps accumulating, and retries every subsequent
+    step until the obstacle clears. Inert-when-absent / A2-byte-identical: with `_obstacles` empty the
+    helper's own fast path makes the `&&` a no-op, so `RungA2ParityTests`/scenario 12 are untouched and
+    remain byte-for-byte identical (verified: unchanged files, still green). New behavioral tests in
+    `tests/Sim.ParityTests/RungB5LaneChangeVetoTests.cs` (mirrors `RungB5MovingObstacleTests`'s idiom,
+    reuses `scenarios/12-overtake`, anchored on the golden-verified `follow` overtake step t=11->12):
+    (1) baseline sanity — no obstacle, `follow` still changes to `e0_1` at t=11->12; (2) a whole-lane
+    (`FrontPos`==`Length`==lane length, so back=0) static obstacle on `e0_1` active through t=20 holds
+    `follow` on `e0_0` for the ENTIRE window (t=11..19), never lets it reach `e0_1` while active, then
+    `follow` completes the change within a few steps once the obstacle deactivates (proving the
+    accumulator survived every vetoed retry — a delay, not a permanent block); (3) an obstacle on the
+    NON-target lane (`e0_0`, positioned with a strictly-negative back so it is also inert to the
+    separate `ObstacleConstraint` leader-follow check) does not affect the change at all — same t=11->12
+    timing as baseline, proving the veto is target-lane-scoped. Full suite: 70 green (67 baseline + 3
+    new Facts), 0 failed.
   - **B5-iii. Junction foe the reducer yields to.** Feed an external agent approaching/occupying a
     junction (its position + `Speed` → arrival time) into 9b's `JunctionYieldConstraint` as an
     approaching foe, so a SUMO vehicle yields to a crossing navmesh/RVO agent. Behavioral test: ego
