@@ -1,0 +1,13 @@
+sumo_version=1.20.0
+sumo_version_reported=Eclipse SUMO sumo Version 1.20.0
+command=sumo -c config.sumocfg --fcd-output golden.fcd.xml --fcd-output.acceleration --precision 6 --save-state.times 1 --save-state.files golden.state.xml --no-step-log true
+state_time=1
+fcd_precision=6
+# C11-ii anchor: ACC (Adaptive Cruise Control) car-following. net = scenario 01's 1000m single lane.
+#   Both vehicles carFollowModel="ACC"; leader maxSpeed=6, follower default desired (~13.9), leader
+#   departs pos 140 so the initial gap (~135) > 120 -> the follower does SPEED CONTROL, transitions
+#   through the 100-120 HYSTERESIS band (using the per-vehicle ACC_ControlMode state), then GAP
+#   CONTROL (<100) settling behind the slow leader. sigma=0, Euler, actionStepLength=1.
+# ACC is STATEFUL: per-vehicle ACC_ControlMode (0=speed,1=gap), updated once per step, read in the
+#   hysteresis band. Params (MSCFModel_ACC.cpp): SC_GAIN=-0.4, GCC=(0.8,0.04), GC=(0.07,0.23),
+#   CA=(0.8,0.23), emergencyThreshold=2.0, GAP_THRESHOLD_SPEEDCTRL=120, GAP_THRESHOLD_GAPCTRL=100.

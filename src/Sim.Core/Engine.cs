@@ -832,7 +832,7 @@ public sealed class Engine : IEngine
         // C11-i: for an IDM-resolved vType this dispatches to IdmModel.FollowSpeed
         // (MSCFModel_IDM.cpp:104-107) instead -- see FollowSpeedFor's own header comment; the
         // Krauss arm is the SAME KraussModel.FollowSpeed call this line always made.
-        vPos = Math.Min(vPos, LeaderFollowSpeedConstraint(v, neighbors, dt, laneVehicleMaxSpeed));
+        vPos = Math.Min(vPos, LeaderFollowSpeedConstraint(v, neighbors, dt, time, laneVehicleMaxSpeed));
 
         // Desired free-flow speed (MSLane::getVehicleMaxSpeed): lane speed limit adapted
         // by this vehicle's speedFactor, capped by its vType maxSpeed. C11-i: for Krauss this
@@ -895,7 +895,13 @@ public sealed class Engine : IEngine
         // this port's scope -- see IdmModel.FinalizeSpeed's own header comment), so it takes no
         // `ref VehicleRng` at all; the Krauss arm below is the SAME KraussModel.FinalizeSpeed call
         // this line always made.
-        var newSpeed = v.VType.CarFollowModel == "IDM"
+        // C11-ii: ACC never overrides finalizeSpeed OR patchSpeedBeforeLC (MSCFModel_ACC.h has no
+        // such override), so it inherits the BASE MSCFModel::finalizeSpeed -- the SAME vMin/vMax
+        // accel/decel-bound clamp IDM's own override delegates to, with patchSpeedBeforeLC's base
+        // (non-Krauss-overridden) default of `return vMax` (MSCFModel.h:102-105) meaning NO dawdle
+        // at all, regardless of vType.Sigma. IdmModel.FinalizeSpeed IS that exact base formula
+        // (see its own header comment), so ACC reuses it verbatim rather than duplicating it.
+        var newSpeed = v.VType.CarFollowModel is "IDM" or "ACC"
             ? IdmModel.FinalizeSpeed(v.Kinematics.Speed, vPos, vStop, laneVehicleMaxSpeed, v.VType, dt, actionStepLengthSecs)
             : KraussModel.FinalizeSpeed(v.Kinematics.Speed, vPos, vStop, laneVehicleMaxSpeed, v.VType, dt, actionStepLengthSecs, ref v.RngState);
 
@@ -907,17 +913,23 @@ public sealed class Engine : IEngine
         };
     }
 
-    // C11-i dispatch (TASKS.md): every constraint below computes ego's OWN car-following speed
-    // against some leader/obstacle/stop -- `vType` is always the EGO vehicle's resolved vType
-    // (never a leader's/foe's), so a single vType.CarFollowModel=="IDM" check at each call site
+    // C11-i/C11-ii dispatch (TASKS.md): every constraint below computes ego's OWN car-following
+    // speed against some leader/obstacle/stop -- `vType` is always the EGO vehicle's resolved
+    // vType (never a leader's/foe's), so a single vType.CarFollowModel check at each call site
     // is the complete dispatch. The Krauss arm of every one of these two helpers is the EXACT
     // pre-C11 call (same argument values, just routed through a pass-through wrapper) -- see
     // CLAUDE.md rule "byte-identical Krauss" and this rung's briefing.
     //
     // FollowSpeedFor: MSCFModel_Krauss.cpp:111-127 followSpeed (KraussModel.FollowSpeed) vs.
-    // MSCFModel_IDM.cpp:104-107 followSpeed (IdmModel.FollowSpeed) -- IDM's `desSpeed` argument is
+    // MSCFModel_IDM.cpp:104-107 followSpeed (IdmModel.FollowSpeed) vs. MSCFModel_ACC.cpp:96-106
+    // followSpeed (AccModel.FollowSpeed) -- IDM/ACC's `desSpeed` argument is
     // `veh->getLane()->getVehicleMaxSpeed(veh)`, i.e. the caller-supplied `laneVehicleMaxSpeed`
     // (ego's OWN current-lane desired speed, independent of which leader/foe this call is against).
+    // C11-ii: `time`/`accControlMode`/`accLastUpdateTime` are ONLY read/written by the ACC arm
+    // (AccModel.cs's own header comment) -- every Krauss/IDM call site simply threads its own
+    // `time` and `ref ego.AccControlMode/ref ego.AccLastUpdateTime` through unread/unwritten, so
+    // this stays a pure plumbing change for those two models, not a behavior change (verified by
+    // the "Krauss AND IDM byte-identical" parity tests below).
     private static double FollowSpeedFor(
         ResolvedVType vType,
         double egoSpeed,
@@ -925,13 +937,28 @@ public sealed class Engine : IEngine
         double predSpeed,
         double predMaxDecel,
         double laneVehicleMaxSpeed,
-        double dt) =>
-        vType.CarFollowModel == "IDM"
+        double dt,
+        double time,
+        ref int accControlMode,
+        ref double accLastUpdateTime)
+    {
+        if (vType.CarFollowModel == "ACC")
+        {
+            return AccModel.FollowSpeed(
+                egoSpeed, gap, predSpeed, predMaxDecel, laneVehicleMaxSpeed, vType, dt, time,
+                ref accControlMode, ref accLastUpdateTime);
+        }
+
+        return vType.CarFollowModel == "IDM"
             ? IdmModel.FollowSpeed(egoSpeed, gap, predSpeed, laneVehicleMaxSpeed, vType, dt)
             : KraussModel.FollowSpeed(egoSpeed, gap, predSpeed, predMaxDecel, vType, dt);
+    }
 
     // StopSpeedFor: MSCFModel_Krauss.cpp:100-107 stopSpeed (KraussModel.StopSpeed) vs.
-    // MSCFModel_IDM.cpp:151-173 stopSpeed (IdmModel.StopSpeed) -- same `desSpeed`=
+    // MSCFModel_IDM.cpp:151-173 stopSpeed (IdmModel.StopSpeed) vs. MSCFModel_ACC.cpp:110-115
+    // stopSpeed (AccModel.StopSpeed, itself a byte-identical pass-through to
+    // KraussModel.StopSpeed -- see AccModel.StopSpeed's own header comment for why ACC's stopSpeed
+    // is provably the same formula as Krauss's, not a distinct one) -- same `desSpeed`=
     // laneVehicleMaxSpeed convention as FollowSpeedFor above.
     private static double StopSpeedFor(
         ResolvedVType vType,
@@ -939,10 +966,17 @@ public sealed class Engine : IEngine
         double gap,
         double laneVehicleMaxSpeed,
         double dt,
-        double actionStepLengthSecs) =>
-        vType.CarFollowModel == "IDM"
+        double actionStepLengthSecs)
+    {
+        if (vType.CarFollowModel == "ACC")
+        {
+            return AccModel.StopSpeed(speed, gap, vType, dt, actionStepLengthSecs);
+        }
+
+        return vType.CarFollowModel == "IDM"
             ? IdmModel.StopSpeed(speed, gap, laneVehicleMaxSpeed, vType, dt, actionStepLengthSecs)
             : KraussModel.StopSpeed(gap, speed, vType, dt, actionStepLengthSecs);
+    }
 
     // Desired free-flow speed term (Engine.cs's simplified single-constraint analog of
     // MSVehicle.cpp:2908's per-link `cfModel.freeSpeed(this, getSpeed(), seen, laneMaxV)` call).
@@ -1248,7 +1282,7 @@ public sealed class Engine : IEngine
             if (foe.LaneId == foeInternalLaneId)
             {
                 // On-junction: MSVehicle::adaptToJunctionLeader.
-                thisConstraint = AdaptToJunctionLeader(v, egoLane, approachLane, egoOnInternal, conflict, foe, dt, actionStepLengthSecs, laneVehicleMaxSpeed);
+                thisConstraint = AdaptToJunctionLeader(v, egoLane, approachLane, egoOnInternal, conflict, foe, dt, time, actionStepLengthSecs, laneVehicleMaxSpeed);
             }
             else if (foeInternalSeqIndex > foe.LaneSeqIndex)
             {
@@ -1340,6 +1374,7 @@ public sealed class Engine : IEngine
         JunctionConflict conflict,
         VehicleRuntime foe,
         double dt,
+        double time,
         double actionStepLengthSecs,
         double laneVehicleMaxSpeed)
     {
@@ -1367,7 +1402,9 @@ public sealed class Engine : IEngine
         var vsafeLeader = 0.0;
         if (gap >= 0)
         {
-            vsafeLeader = FollowSpeedFor(ego.VType, ego.Kinematics.Speed, gap, foe.Kinematics.Speed, foe.VType.Decel, laneVehicleMaxSpeed, dt);
+            vsafeLeader = FollowSpeedFor(
+                ego.VType, ego.Kinematics.Speed, gap, foe.Kinematics.Speed, foe.VType.Decel, laneVehicleMaxSpeed, dt,
+                time: time, accControlMode: ref ego.AccControlMode, accLastUpdateTime: ref ego.AccLastUpdateTime);
         }
         else
         {
@@ -1510,7 +1547,7 @@ public sealed class Engine : IEngine
     // leader's OWN decel (MSVehicle::getCurrentApparentDecel(), which for our phase-1 vTypes
     // -- no apparent-decel override beyond the vType default -- equals the leader's vType
     // decel). Returns +infinity (non-binding) when ego has no leader on its lane.
-    private static double LeaderFollowSpeedConstraint(VehicleRuntime ego, LaneNeighborQuery neighbors, double dt, double laneVehicleMaxSpeed)
+    private static double LeaderFollowSpeedConstraint(VehicleRuntime ego, LaneNeighborQuery neighbors, double dt, double time, double laneVehicleMaxSpeed)
     {
         var leader = neighbors.GetLeader(ego);
         if (leader is null)
@@ -1528,7 +1565,10 @@ public sealed class Engine : IEngine
             predSpeed: leader.Kinematics.Speed,
             predMaxDecel: leader.VType.Decel,
             laneVehicleMaxSpeed: laneVehicleMaxSpeed,
-            dt: dt);
+            dt: dt,
+            time: time,
+            accControlMode: ref ego.AccControlMode,
+            accLastUpdateTime: ref ego.AccLastUpdateTime);
     }
 
     // B1/B5-i: external-obstacle constraint. Treats the nearest active obstacle ahead of `v` on
@@ -1597,7 +1637,10 @@ public sealed class Engine : IEngine
             predSpeed: nearest.Speed,
             predMaxDecel: nearest.Speed != 0.0 ? nearest.MaxDecel : v.VType.Decel,
             laneVehicleMaxSpeed: laneVehicleMaxSpeed,
-            dt: _config!.StepLength);
+            dt: _config!.StepLength,
+            time: time,
+            accControlMode: ref v.AccControlMode,
+            accLastUpdateTime: ref v.AccLastUpdateTime);
     }
 
     // Execute phase: apply each vehicle's own MoveIntent and integrate position.

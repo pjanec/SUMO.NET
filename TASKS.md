@@ -1019,6 +1019,42 @@ A3) remain the byte-for-byte correctness anchor (same discipline as rungs 8b/10/
     `MSCFModel_ACC`/`_CACC` ports), IDMM (`myIDMM=true`'s adaptation-factor/level-of-service state),
     and IDM+junction/stop interplay beyond what `stopSpeed`'s port itself guarantees (ported but only
     anchored by this rung's follow/free scenario, not exercised end-to-end by a junction golden yet).
+  - **C11-ii. DONE. ACC (Adaptive Cruise Control).** Ported `sumo/src/microsim/cfmodels/
+    MSCFModel_ACC.cpp` (whole file) + `.h` (the `ACCVehicleVariables` state) as
+    `src/Sim.Core/AccModel.cs`: the stateful `_v` control-mode machine (`accelSpeedControl` =
+    `SC_GAIN(-0.4)*vErr`; `accelGapControl` selects gap/collision-avoidance/gap-closing mode by the
+    `|spacingErr|<0.2 && |vErr|<0.1` / `spacingErr<0` thresholds, gains `GC=(0.07,0.23)`,
+    `CA=(0.23,0.8)`, `GCC=(0.8,0.04)`; `_v` itself switches speed-control (`gap2pred>120`) vs.
+    gap-control (`gap2pred<100`) vs., in the `[100,120]` hysteresis band, the vehicle's OWN
+    *previous* mode — read/written via a per-vehicle `AccControlMode`/`AccLastUpdateTime` state
+    pair, guarded by a "written at most once per timestep" `lastUpdateTime` check exactly like the
+    vendored source); `followSpeed` (= `_v`'s result, overridden by `maximumSafeFollowSpeed()+2.0`
+    — `EMERGENCY_THRESHOLD` — whenever that safety floor is more than 2.0 below it, reusing
+    `KraussModel.MaximumSafeFollowSpeed` verbatim, not a distinct ACC safety formula); `stopSpeed`
+    (provably the SAME formula as `MSCFModel_Krauss::stopSpeed`, so `AccModel.StopSpeed` is a thin
+    pass-through to `KraussModel.StopSpeed`, not a duplicate). ACC does not override `freeSpeed` (the
+    `FreeFlowDesiredSpeedConstraint` dispatch's existing non-IDM `else` arm — plain
+    `laneVehicleMaxSpeed` — already covers it, no code change needed there) or `finalizeSpeed`/
+    `patchSpeedBeforeLC` (inherits the base class's dawdle-free clamp, i.e. the SAME formula
+    `IdmModel.FinalizeSpeed` already ports — `Engine.ComputeMoveIntent`'s dispatch now reads
+    `v.VType.CarFollowModel is "IDM" or "ACC"` for that one line). **STATE**: `VehicleRuntime` gained
+    `AccControlMode`(int)/`AccLastUpdateTime`(double), both default 0 (matching
+    `ACCVehicleVariables`' own ctor default), written ONLY by the owning vehicle from inside
+    `AccModel.FollowSpeed`, threaded `ref` through `FollowSpeedFor`'s three call sites
+    (`LeaderFollowSpeedConstraint`, `ObstacleConstraint`, `JunctionYieldConstraint`/
+    `AdaptToJunctionLeader` — all three now also thread `time`, the Plan-phase per-step timestamp,
+    as the analog of `MSNet::getCurrentTimeStep()`) — parallel-safe under `UseParallelPlan` by the
+    same per-entity-write argument as C1's dawdle-RNG mutation (that property's own header comment).
+    Krauss/IDM stay byte-identical: the two new `FollowSpeedFor` parameters are simply threaded
+    through unread/unwritten by their arms (100 pre-C11-ii parity tests unchanged, including
+    `Rung1`/`Rung9b`/`RungA2`/`RungB1`/`RungC11ParityTests` (IDM) — verified, plus the pre-existing
+    IDM anchor scenario 22). New anchor: `scenarios/23-acc-carfollow`
+    (`tests/Sim.ParityTests/RungC11AccParityTests.cs`, 70 steps, exact 1e-3) — both vTypes ACC,
+    leader maxSpeed=6 departs at pos 140 (initial gap ~132.5 > 120 → follower does SPEED CONTROL),
+    transitions through the 100-120 HYSTERESIS band, then GAP CONTROL (<100), settling behind the
+    slow leader. **Deferred**: CACC (`MSCFModel_CACC`), and ACC+junction/stop interplay beyond what
+    the ported `stopSpeed`/`AdaptToJunctionLeader` plumbing itself guarantees (not exercised
+    end-to-end by a junction golden yet).
 - **C12. Pedestrians & crossings; public transport.** Pedestrians already appear as junction foes in
   the ported `getLeaderInfo` (the `leader==nullptr` ped branch); add vehicles yielding at crosswalks,
   and bus stops / dwell times / schedules. Breadth; behavioral, with parity where a SUMO analog exists

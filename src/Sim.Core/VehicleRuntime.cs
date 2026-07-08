@@ -127,6 +127,19 @@ internal sealed class VehicleRuntime
     // never read/advanced again, exactly like RngState's own sigma==0 byte-identical argument.
     public double LookAheadSpeed;
 
+    // C11-ii: SUMO's MSCFModel_ACC::ACCVehicleVariables (MSCFModel_ACC.h:140-146) -- the
+    // per-vehicle ACC control-mode hysteresis state (0=speed control,1=gap control) plus the
+    // "written at most once per timestep" guard timestamp, both initialized to 0 (matching
+    // ACCVehicleVariables' own ctor / createVehicleVariables default). Only ever read/written
+    // from inside AccModel.FollowSpeed, threaded there `ref` from Engine.cs's FollowSpeedFor
+    // dispatch -- and ONLY when this vehicle's OWN VType.CarFollowModel=="ACC" (see AccModel.cs's
+    // own header comment). Written ONLY by the vehicle that owns it (never a leader's/foe's),
+    // exactly like RngState's own per-entity dawdle draw -- see Engine.UseParallelPlan's header
+    // comment for why that per-entity-write pattern is already established as parallel-safe.
+    // Byte-identical for every non-ACC vType: these two fields are simply never touched.
+    public int AccControlMode;
+    public double AccLastUpdateTime;
+
     // B3: live reroute-around-blockage bookkeeping (DESIGN.md "Two futures" -- not a SUMO
     // field). BlockedByObstacleSeconds accumulates dt while a FUTURE edge of this vehicle's
     // remaining route is sitting under an active external obstacle; reset to 0 the moment no
