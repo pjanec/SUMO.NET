@@ -833,8 +833,10 @@ A3) remain the byte-for-byte correctness anchor (same discipline as rungs 8b/10/
     FirstDivergenceStep=10 (pos err 85.7 m, ego stuck). INERT for genuinely-close foes: scenario 11 /
     19 / 32 (close/circulating foes) + right-before-left + every committed scenario stay green (140);
     D1 determinism hash unchanged. Single-foe-per-link scope unchanged (FindFoeVehicle still returns
-    the first route-matching foe). Parity-reviewer gate pending. UNBLOCKS the scaled-city benchmark
-    scaling ladder (single- AND multi-lane). *(original briefing retained below for context.)*
+    the first route-matching foe). Parity-reviewer ACCEPT (byte-identical to the already-accepted
+    merge-arm gate; MSVehicle.cpp:2238; forced-off fails at step 10; 140 green). UNBLOCKS the
+    scaled-city benchmark scaling ladder (single- AND multi-lane). *(original briefing retained below
+    for context.)*
     Priority-junction far-routed-foe false positive --
     `FindFoeVehicle` matches an approaching foe ANYWHERE on its route, not on its actual approach.
     A VERIFIED `Sim.Core` correctness bug (root-caused against `main`'s engine, reproduced on the
