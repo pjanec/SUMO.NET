@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<routes xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://sumo.dlr.de/xsd/routes_file.xsd">
+    <vType id="car" vClass="passenger" sigma="0"/>
+    <route id="ns" edges="SJ JN"/>
+    <route id="ew" edges="WJ JE"/>
+    <vehicle id="ns0" type="car" route="ns" depart="0" departPos="105" departSpeed="13.89"/>
+    <vehicle id="ns1" type="car" route="ns" depart="0" departPos="70"  departSpeed="13.89"/>
+    <vehicle id="ns2" type="car" route="ns" depart="0" departPos="35"  departSpeed="13.89"/>
+    <vehicle id="ns3" type="car" route="ns" depart="0" departPos="0"   departSpeed="13.89"/>
+    <vehicle id="ew0" type="car" route="ew" depart="0" departPos="120" departSpeed="0"/>
+</routes>

@@ -1,0 +1,21 @@
+sumo_version=1.20.0
+sumo_version_reported=Eclipse SUMO sumo Version 1.20.0
+generated_utc=2026-07-08T14:05:00Z
+command=sumo -c config.sumocfg --fcd-output golden.fcd.xml --fcd-output.acceleration --precision 6 --save-state.times 1 --save-state.files golden.state.xml --no-step-log true
+state_time=1
+fcd_precision=6
+# C6-ii actuated TLS (detector-driven) NON-TESTED ANCHOR (engine port not yet done -- see TASKS.md).
+#   A single traffic_light junction J with a netconvert-generated type="actuated" program (2 green
+#   phases Gr/rG, minDur 5 / maxDur 50, + 3s yellows). Four N-S vehicles (ns0..ns3, departPos
+#   105/70/35/0) stream over the SJ induction loop keeping the detector gap < max-gap 3.0, so phase 0
+#   (SJ green) EXTENDS from minDur 5 to t=13 before ending (vs the static duration=42); ew0 waits at
+#   the WJ red and is released when phase 2 (rG) turns green at t=16. The engine parses tlLogic as
+#   STATIC (ignores type="actuated" + minDur/maxDur), so it runs phase 0 for its full duration=42 and
+#   holds ew0 far too long -> divergence. Committed phase-timeline.txt records the golden's actuated
+#   phase sequence (ground truth for the future port). Euler, sigma=0, teleport off, seed 42.
+# net: netconvert --tls.default-type actuated, --no-turnarounds.
+# vtype defaults: golden.vtype.json (libsumo/TraCI dump)
+# input file hashes (sha256):
+input=net.net.xml sha256=13db23981b8a032d949bb8548ec65f9723697bc609e27bf18940d96aee341d79
+input=rou.rou.xml sha256=63cf97f0a00ee18cf6d28cb01fb7d97967ef46fd0606945e12669e2eae2ab3bd
+input=config.sumocfg sha256=fe000bd4608c185b9b7bd864a16a1e1dd64f89da6c344204c787e53059fa6cec

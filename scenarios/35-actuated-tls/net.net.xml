@@ -1,0 +1,73 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<!-- generated on 2026-07-08 13:57:23 by Eclipse SUMO netconvert Version 1.20.0
+<configuration xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://sumo.dlr.de/xsd/netconvertConfiguration.xsd">
+
+    <input>
+        <node-files value="nodes.nod.xml"/>
+        <edge-files value="edges.edg.xml"/>
+        <connection-files value="connections.con.xml"/>
+    </input>
+
+    <output>
+        <output-file value="net.net.xml"/>
+    </output>
+
+    <tls_building>
+        <tls.default-type value="actuated"/>
+    </tls_building>
+
+    <junctions>
+        <no-turnarounds value="true"/>
+    </junctions>
+
+</configuration>
+-->
+
+<net version="1.20" junctionCornerDetail="5" limitTurnSpeed="5.50" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://sumo.dlr.de/xsd/net_file.xsd">
+
+    <location netOffset="150.00,150.00" convBoundary="0.00,0.00,300.00,300.00" origBoundary="-150.00,-150.00,150.00,150.00" projParameter="!"/>
+
+    <edge id=":J_0" function="internal">
+        <lane id=":J_0_0" index="0" speed="13.89" length="11.20" shape="151.60,142.80 151.60,154.00"/>
+    </edge>
+    <edge id=":J_1" function="internal">
+        <lane id=":J_1_0" index="0" speed="13.89" length="11.20" shape="146.00,148.40 157.20,148.40"/>
+    </edge>
+
+    <edge id="JE" from="J" to="E" priority="-1">
+        <lane id="JE_0" index="0" speed="13.89" length="142.80" shape="157.20,148.40 300.00,148.40"/>
+    </edge>
+    <edge id="JN" from="J" to="N" priority="-1">
+        <lane id="JN_0" index="0" speed="13.89" length="146.00" shape="151.60,154.00 151.60,300.00"/>
+    </edge>
+    <edge id="SJ" from="S" to="J" priority="-1">
+        <lane id="SJ_0" index="0" speed="13.89" length="142.80" shape="151.60,0.00 151.60,142.80"/>
+    </edge>
+    <edge id="WJ" from="W" to="J" priority="-1">
+        <lane id="WJ_0" index="0" speed="13.89" length="146.00" shape="0.00,148.40 146.00,148.40"/>
+    </edge>
+
+    <tlLogic id="J" type="actuated" programID="0" offset="0">
+        <phase duration="42" state="Gr" minDur="5" maxDur="50"/>
+        <phase duration="3"  state="yr"/>
+        <phase duration="42" state="rG" minDur="5" maxDur="50"/>
+        <phase duration="3"  state="ry"/>
+    </tlLogic>
+
+    <junction id="E" type="dead_end" x="300.00" y="150.00" incLanes="JE_0" intLanes="" shape="300.00,146.80 300.00,150.00"/>
+    <junction id="J" type="traffic_light" x="150.00" y="150.00" incLanes="SJ_0 WJ_0" intLanes=":J_0_0 :J_1_0" shape="150.00,154.00 153.20,154.00 153.64,151.78 154.20,151.00 154.98,150.44 155.98,150.11 157.20,150.00 157.20,146.80 154.98,146.36 154.20,145.80 153.64,145.02 153.31,144.02 153.20,142.80 150.00,142.80 149.56,145.02 149.00,145.80 148.22,146.36 147.22,146.69 146.00,146.80 146.00,150.00 148.22,150.44 149.00,151.00 149.56,151.78 149.89,152.78">
+        <request index="0" response="00" foes="10" cont="0"/>
+        <request index="1" response="01" foes="01" cont="0"/>
+    </junction>
+    <junction id="N" type="dead_end" x="150.00" y="300.00" incLanes="JN_0" intLanes="" shape="153.20,300.00 150.00,300.00"/>
+    <junction id="S" type="dead_end" x="150.00" y="0.00" incLanes="" intLanes="" shape="150.00,0.00 153.20,0.00"/>
+    <junction id="W" type="dead_end" x="0.00" y="150.00" incLanes="" intLanes="" shape="0.00,150.00 0.00,146.80"/>
+
+    <connection from="SJ" to="JN" fromLane="0" toLane="0" via=":J_0_0" tl="J" linkIndex="0" dir="s" state="O"/>
+    <connection from="WJ" to="JE" fromLane="0" toLane="0" via=":J_1_0" tl="J" linkIndex="1" dir="s" state="o"/>
+
+    <connection from=":J_0" to="JN" fromLane="0" toLane="0" dir="s" state="M"/>
+    <connection from=":J_1" to="JE" fromLane="0" toLane="0" dir="s" state="M"/>
+
+</net>

@@ -1013,11 +1013,33 @@ A3) remain the byte-for-byte correctness anchor (same discipline as rungs 8b/10/
     at 25 (the pre-C6 engine wrongly halted it at the stop line -- stash-test confirms). Byte-
     identical for rung 10 (scenario 09) and emergency-red (scenario 16): those vehicles always
     approach from far enough that the gate never fires. Parity-reviewer gated.
-  - **C6-ii. TODO. Actuated / `delay_based` programs.** `MSActuatedTrafficLightLogic` is ~1436 lines
-    with heavy induction-loop detector dependency (`MSInductLoop`, ~87 refs) -- the phase extension
-    is driven by per-detector time-gaps, so this rung needs the detector subsystem modeled first
-    (vehicle presence + time-since-detection per approach lane), then the gap-based `duration`/
-    `maxDur` phase-switch logic. Large own rung. SUMO is available in-session for golden regen.
+  - **C6-ii. SCOPED + ANCHOR BUILT (this session); port staged on a trace.** Actuated
+    (detector-driven) programs. `MSActuatedTrafficLightLogic` (~1436 lines) + `MSInductLoop`. Unlike
+    the STATIC TLS (a pure function of time, `Sim.Core.TrafficLightState`), an actuated program is
+    STATEFUL: each green phase EXTENDS while an induction-loop detector keeps seeing vehicles
+    (`gapControl` returns `detectionGap < maxGap`) and ENDS when the gap opens, bounded by
+    minDur/maxDur. Core algorithm (`trySwitch` :710 -> `gapControl` :834 -> `duration` :814): per
+    step, `detectionGap = min over the phase's loops of getTimeSinceLastDetection (< maxGap, not
+    jammed)`; if finite, `duration()` extends the phase (`newDuration = MAX3(minDur-actDur,
+    TIME2STEPS(detectorGap - detectionGap), 1)`, integer-rounded, capped to maxDur-actDur/latest);
+    else switch to the next phase. Detectors placed at `laneLength - MIN2(detectorGap*speed,
+    (minDur/passingTime + 0.5)*7.5)`. Defaults: max-gap 3.0, detector-gap 2.0, passing-time 1.9.
+    **ANCHOR `scenarios/35-actuated-tls`** (committed, NON-TESTED): a single actuated junction J (2
+    green phases Gr/rG, minDur 5 / maxDur 50, + 3s yellows). Four N-S vehicles stream over the SJ
+    detector so phase 0 EXTENDS from minDur 5 to t=13 (vs the static duration=42) before ending; ew0
+    waits at the WJ red and is released when phase 2 turns green at t=16. `phase-timeline.txt` records
+    the golden's actuated phase sequence (ground truth). The engine parses tlLogic as STATIC (ignores
+    `type="actuated"` + minDur/maxDur), so it holds ew0 far too long -> divergence.
+    **PORT SCOPE (large, stateful -- the bulk is architecture, not numbers):** (1) an induction-loop
+    detector model with `getTimeSinceLastDetection` updated each step from vehicle positions; (2)
+    per-TLS runtime state (`myStep`/`myLastSwitch`) -- the FIRST stateful TLS, so a new per-step
+    system phase that updates detectors + runs `trySwitch` (the current TLS is a pure plan-phase
+    recompute); (3) `gapControl`/`duration`/`trySwitch`; (4) parser support for `type="actuated"` +
+    per-phase `minDur`/`maxDur`. Trace handoff prepared:
+    `scripts/sumo-actuated-tls-trace-instructions.md` (`DEBUG_DETECTORS` + `DEBUG_PHASE_SELECTION`
+    gated to `J`) + `actuated-tls-trace.zip` -- pins the detector positions and the per-step
+    gap/duration decisions. Port lands once the trace resolves those. SUMO available in-session for
+    golden regen.
 - **C7. `speedFactor` distribution (heterogeneous desired speeds).** Per-vehicle desired-speed
   variation (`speedFactor` = `normc(1.0, dev)`, `default.speeddev`); today everyone wants exactly the
   limit (mean 1.0, dev forced 0). Depends on C1 (seeded RNG). Statistical parity. Produces realistic
