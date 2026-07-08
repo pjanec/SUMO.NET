@@ -886,6 +886,61 @@ A3) remain the byte-for-byte correctness anchor (same discipline as rungs 8b/10/
   variation (`speedFactor` = `normc(1.0, dev)`, `default.speeddev`); today everyone wants exactly the
   limit (mean 1.0, dev forced 0). Depends on C1 (seeded RNG). Statistical parity. Produces realistic
   speed spread and overtaking pressure.
+
+  **Decomposed (like C1/B5/9b):**
+  - **C7-i. DONE (OFFLINE, no SUMO). `speedFactor` sampler + per-vehicle draw.** New
+    `NormcDistribution` (`src/Sim.Core/NormcDistribution.cs`), porting
+    `Distribution_Parameterized::sample` (`sumo/src/utils/distribution/Distribution_Parameterized.cpp:107-120`,
+    the `normc`/4-param `(mean,dev,min,max)` branch: `dev<=0` returns `mean` with NO draw at all;
+    otherwise `randNorm` + a reject-resample `while(val<min||val>max)` clamp loop),
+    `RandHelper::randNorm` (`sumo/src/utils/common/RandHelper.cpp:137-147`, the polar/Marsaglia
+    method incl. the `ceil(log(q)*1e14)/1e14` quantized log term), and
+    `MSVehicleType::computeChosenSpeedDeviation` (`sumo/src/microsim/MSVehicleType.cpp:89-91`:
+    `roundDecimal(MAX2(minDev, sample), gPrecisionRandom)`). **Source correction (CLAUDE.md rule
+    1):** `gPrecisionRandom` is **4**, not 6 as an earlier draft assumed — `sumo/src/utils/common/StdDefs.cpp:28`
+    sets `int gPrecisionRandom = 4;` outright; ported from the source, not the stale assumption.
+    `roundDecimal` (`StdDefs.cpp:52-56`, round-half-away-from-zero, NOT banker's rounding) ported
+    verbatim as `NormcDistribution.RoundDecimal`. OWNER DECISION (mirrors C1): the distribution
+    SHAPE is ported faithfully; the RNG STREAM is ours (`VehicleRng`/SplitMix64), never SUMO's
+    RandHelper/MT19937.
+    New `VehicleRng.SeedFor(globalSeed, entityIndex, salt)` 3-arg overload (`src/Sim.Core/VehicleRng.cs`)
+    derives a SECOND, fully independent per-entity stream from the same `(Seed, entityIndex)` pair
+    via an XOR salt — used ONLY for the once-at-creation `speedFactor` draw
+    (`Engine.LoadScenario`, salt = the ASCII bytes of `"SpeedFac"` packed into a `ulong`), NEVER
+    for `VehicleRuntime.RngState` (C1's per-step dawdle stream), so the two draws can never alias
+    or steal from each other regardless of `default.speeddev`. New `VehicleRuntime.SpeedFactor`
+    (plain `double`, D3-clean unmanaged field) holds the drawn value, computed ONCE at vehicle
+    creation from `NormcDistribution.ComputeChosenSpeedDeviation(vType.SpeedFactor /*mean*/,
+    ScenarioConfig.SpeedDev /*dev*/, min: 0.2, max: 2.0, ref speedFactorRng)` — `vType.SpeedFactor`
+    is now purely the distribution MEAN fed into the sampler (still 1.0 for every existing
+    scenario/vType), not the vehicle's actual desired-speed multiplier.
+    `KraussModel.LaneVehicleMaxSpeed` gained a `speedFactor` parameter (`Math.Min(laneSpeed *
+    speedFactor, vType.MaxSpeed)`); all four `Engine.cs` call sites (~817, 1727, 1728, 1879) now
+    pass `v.SpeedFactor` instead of reading `vType.SpeedFactor` directly.
+    **Byte-identical when `speeddev<=0`:** every existing scenario's `default.speeddev="0"` makes
+    `NormcDistribution.SampleNormc`'s `dev<=0` branch return `mean` (1.0) immediately — no draw of
+    any kind, from either RNG — so `v.SpeedFactor` is exactly `vType.SpeedFactor` (1.0) and
+    `LaneVehicleMaxSpeed` is bit-for-bit its pre-C7 formula. Confirmed via the full `dotnet test`
+    run (98 passed, 0 failed, up from 94) AND by name-checking `Rung1ParityTests`/
+    `Rung9bParityTests` (real `golden.fcd.xml`/`tolerance.json` comparisons) still pass unchanged.
+    New fixtures `scenarios/_fixtures/speedfactor-single-lane` (single vehicle, `sigma=0`,
+    `default.speeddev=0.1`, isolating the speedFactor effect from dawdle) and
+    `scenarios/_fixtures/speedfactor-independence` (a matched LOW-mean/HIGH-mean vType pair,
+    `sigma=0.5`, `default.speeddev=0.05`, sharing one net/config) +
+    `tests/Sim.ParityTests/RungC7SpeedFactorTests.cs` (4 new behavioral/property tests, no
+    golden): (1) `speeddev=0` control reaches exactly the lane free-flow speed, no draw; (2)
+    same-seed determinism with `speeddev>0`; (3) a 50-seed ensemble of single-vehicle
+    `sigma=0`/`speeddev=0.1` runs shows positive cross-seed variance in steady-state speed, a mean
+    near the lane's free-flow speed, and every sample bounded by the `normc` clamp
+    `[0.2*laneMax, 2.0*laneMax]`; (4) **C1 independence** — because
+    `KraussModel.FinalizeSpeed`'s own formula reduces to `vMax = MaxNextSpeed(oldV)` (accel-only,
+    target-independent) during the depart-from-rest accel ramp, a same-seed LOW-mean-target
+    (~13.89 m/s) vs HIGH-mean-target (~25 m/s) run pair — otherwise identical vType/sigma, both
+    with a REAL (`dev=0.05>0`) speedFactor draw — MUST produce byte-identical dawdle-perturbed
+    speeds for t∈[1,3]s unless the speedFactor sampler's salted RNG leaked into `RngState`; the
+    test asserts exactly that equality (and it holds, confirming the two streams never alias).
+    **C7-ii (a SUMO ensemble golden + statistical parity test, `[net]`) is a separate, still-TODO
+    sub-rung** — deliberately not attempted here (this rung is fully offline, no SUMO).
 - **C8. Ballistic integration + `actionStepLength > 1` (reaction time).** SUMO's ballistic update
   (more accurate than Euler) and sub-second/multi-second reaction time. The integration method is
   already a config flag (DESIGN.md seam); this ports the ballistic `finalizeSpeed`/position update and

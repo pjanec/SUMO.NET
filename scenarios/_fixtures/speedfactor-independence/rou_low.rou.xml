@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- C7-i C1-independence fixture, LOW-MEAN half of the pair (see config.sumocfg's own comment
+     and rou_high.rou.xml). vType speedFactor mean is left at its default 1.0 (no override) -
+     target cruise speed ~13.89 m/s (scaled +-dev by the speedFactor draw). sigma=0.5 so RngState
+     draws every step (KraussModel.Dawdle2); accel is left at its passenger default (2.6 m/s^2)
+     so the depart-from-rest accel ramp takes ~5.3s to reach a ~13.89 target, comfortably longer
+     than the 3s comparison window RungC7SpeedFactorTests uses. -->
+<routes xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://sumo.dlr.de/xsd/routes_file.xsd">
+    <vType id="lowMean" vClass="passenger" sigma="0.5"/>
+    <route id="r0" edges="e0"/>
+    <vehicle id="dawdler" type="lowMean" route="r0" depart="0" departSpeed="0" departPos="0" departLane="0"/>
+</routes>

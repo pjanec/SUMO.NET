@@ -44,6 +44,25 @@ public struct VehicleRng
         }
     }
 
+    // C7-i (TASKS.md "speedFactor distribution"): a SALTED variant of SeedFor, used to derive a
+    // SECOND, fully independent per-entity stream from the same (globalSeed, entityIndex) pair --
+    // e.g. the once-at-creation speedFactor draw (Engine.LoadScenario / NormcDistribution) must
+    // NEVER share state with (or advance) VehicleRuntime.RngState, C1's per-step dawdle stream,
+    // even though both derive from the same Engine.Seed. XOR-ing a distinct, caller-supplied
+    // `salt` into globalSeed BEFORE the entityIndex mix below guarantees the two streams start
+    // from different SplitMix64 states for every entityIndex (the salt shifts every subsequent
+    // output), so a bug that accidentally called the wrong overload would be caught by
+    // RungC7SpeedFactorTests' independence test (divergent dawdle sequence) rather than silently
+    // aliasing streams.
+    public static VehicleRng SeedFor(ulong globalSeed, int entityIndex, ulong salt)
+    {
+        unchecked
+        {
+            var mixedSeed = (globalSeed ^ salt) ^ ((ulong)(uint)entityIndex * 0x9E3779B97F4A7C15UL);
+            return new VehicleRng(SplitMix64Next(ref mixedSeed));
+        }
+    }
+
     // Draws the next uniform double in [0,1) -- matches dawdle2's own comment ("generate random
     // number out of [0,1)") for MSCFModel_Krauss.cpp's `RandHelper::rand(rng)` call. Advances
     // this instance's private state by exactly one SplitMix64 step per call (`ref this` field

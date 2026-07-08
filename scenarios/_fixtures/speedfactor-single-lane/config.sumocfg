@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- C7-i behavioral fixture config (TASKS.md "speedFactor distribution"): mirrors
+     scenarios/_fixtures/dawdle-single-lane/config.sumocfg's phase-1 settings (action-step-
+     length=1, ballistic off, teleport off) EXCEPT default.speeddev, which THIS fixture sets
+     >0 - its whole point is exercising NormcDistribution's per-vehicle draw (RungC1DawdleTests'
+     sigma>0 fixture is the analogous "the one setting this rung is about" precedent). sigma=0 for
+     every vehicle here (see rou.rou.xml) so the steady-state speed measured by
+     RungC7SpeedFactorTests is driven ONLY by the drawn speedFactor, not by dawdle noise - the
+     two effects (C1 dawdle, C7 speedFactor) are isolated from each other by construction, not
+     just by the separate-RNG-stream argument. No golden is regenerated against this config
+     (speeddev>0 is outside CLAUDE.md's phase-1 exact-parity determinism ladder, same as C1's
+     sigma>0 fixture); validated purely behaviorally. seed=42 here is the sumocfg's own declared
+     value (ScenarioConfig.Seed, unused - see Engine.Seed's header comment); tests set
+     Engine.Seed explicitly before LoadScenario. -->
+<configuration xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://sumo.dlr.de/xsd/sumoConfiguration.xsd">
+    <input>
+        <net-file value="net.net.xml"/>
+        <route-files value="rou.rou.xml"/>
+    </input>
+    <time>
+        <begin value="0"/>
+        <end value="80"/>
+        <step-length value="1"/>
+    </time>
+    <processing>
+        <step-method.ballistic value="false"/>
+        <time-to-teleport value="-1"/>
+        <default.action-step-length value="1"/>
+        <default.speeddev value="0.1"/>
+    </processing>
+    <random_number>
+        <seed value="42"/>
+    </random_number>
+</configuration>

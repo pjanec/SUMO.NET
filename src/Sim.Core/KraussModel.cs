@@ -260,8 +260,15 @@ public static class KraussModel
     // MSLane.h getVehicleMaxSpeed (no-restriction branch): MIN2(veh->getMaxSpeed(), laneSpeed *
     // veh->getChosenSpeedFactor()). This is the "desired free-flow speed" constraint fed into
     // the leader/junction/stop-line reducer as the no-obstruction case.
-    public static double LaneVehicleMaxSpeed(double laneSpeed, ResolvedVType vType) =>
-        Math.Min(laneSpeed * vType.SpeedFactor, vType.MaxSpeed);
+    //
+    // C7-i: `speedFactor` is the CALLER's per-vehicle chosen speedFactor
+    // (VehicleRuntime.SpeedFactor -- MSVehicleType::computeChosenSpeedDeviation's result, drawn
+    // once at creation), NOT vType.SpeedFactor (that field is now only the DISTRIBUTION MEAN fed
+    // into the sampler -- see NormcDistribution.cs / VehicleRuntime.SpeedFactor's own comments).
+    // Every existing (speeddev=0) scenario has SpeedFactor==vType.SpeedFactor==1.0 exactly, so
+    // this stays byte-identical to the pre-C7 `vType.SpeedFactor`-only formula.
+    public static double LaneVehicleMaxSpeed(double laneSpeed, double speedFactor, ResolvedVType vType) =>
+        Math.Min(laneSpeed * speedFactor, vType.MaxSpeed);
 
     // MSCFModel.cpp: finalizeSpeed(veh, vPos). vPos is the MIN over the (already-reduced)
     // leader/junction/stop-line constraint collection computed by the caller; laneVehicleMaxSpeed

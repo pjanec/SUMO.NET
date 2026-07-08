@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- C7-i behavioral fixture config (TASKS.md "speedFactor distribution" - C1-independence
+     check): default.speeddev=0.05 here is DELIBERATELY nonzero and SMALL - small enough that
+     rou_high.rou.xml's speedFactor mean (1.8, close to the normc clamp's upper bound 2.0) rarely
+     needs more than one reject-resample loop in NormcDistribution.SampleNormc, so the salted
+     speedFactor draw's own draw COUNT stays small/bounded for every seed this rung's tests use,
+     while still being a REAL draw (dev>0, unlike the speeddev=0 byte-identical control case) -
+     i.e. the exact code path capable of stealing extra draws from VehicleRuntime.RngState IF
+     Engine.LoadScenario had a bug that reused the wrong VehicleRng instance. sigma=0.5 (both
+     rou_*.rou.xml vTypes) so RngState's own per-step dawdle draw is exercised too - see
+     RungC7SpeedFactorTests.SpeedFactorDraw_DoesNotConsumeDawdleRngState's own comment for the
+     mathematical argument this fixture pair is built to support (the accel-limited-ramp window
+     is provably independent of target speed, hence of speedFactor, hence a perfect witness for
+     "did the speedFactor draw touch the dawdle stream"). Otherwise mirrors
+     scenarios/_fixtures/speedfactor-single-lane/config.sumocfg's phase-1 settings. -->
+<configuration xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://sumo.dlr.de/xsd/sumoConfiguration.xsd">
+    <input>
+        <net-file value="net.net.xml"/>
+        <route-files value="rou_low.rou.xml"/>
+    </input>
+    <time>
+        <begin value="0"/>
+        <end value="10"/>
+        <step-length value="1"/>
+    </time>
+    <processing>
+        <step-method.ballistic value="false"/>
+        <time-to-teleport value="-1"/>
+        <default.action-step-length value="1"/>
+        <default.speeddev value="0.05"/>
+    </processing>
+    <random_number>
+        <seed value="42"/>
+    </random_number>
+</configuration>

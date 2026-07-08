@@ -81,6 +81,20 @@ internal sealed class VehicleRuntime
     // property's own header comment).
     public VehicleRng RngState;
 
+    // C7-i (TASKS.md "speedFactor distribution (heterogeneous desired speeds)"): this vehicle's
+    // own chosen speedFactor (MSVehicleType::computeChosenSpeedDeviation -- see
+    // NormcDistribution.cs), drawn ONCE at creation (Engine.LoadScenario) from a SEPARATE,
+    // SALTED VehicleRng (VehicleRng.SeedFor(Seed, EntityIndex, salt) -- never RngState above, and
+    // never persisted/re-seeded after this one draw, matching SUMO's own once-at-vehicle-build
+    // call site, MSVehicleControl.cpp:113). Threaded into KraussModel.LaneVehicleMaxSpeed at
+    // every one of its four Engine.cs call sites in place of the old `vType.SpeedFactor`-only
+    // read. When ScenarioConfig.SpeedDev<=0 (every pre-C7 scenario's `default.speeddev="0"`),
+    // NormcDistribution.SampleNormc's `dev<=0` branch returns the vType's mean speedFactor
+    // (1.0 for every existing scenario) WITHOUT any draw at all -- this field is then simply
+    // `vType.SpeedFactor` exactly, which is exactly why every sigma=0/speeddev=0 scenario stays
+    // byte-identical to every pre-C7 rung.
+    public double SpeedFactor;
+
     // D3: this vehicle's scheduled stops (Sim.Ingest.VehicleDef.Stops) moved to Engine's
     // `_stopsByEntity` side table (keyed by EntityIndex), populated once at LoadScenario only
     // for vehicles that actually have stops -- the managed `Queue<StopRuntime>` no longer lives

@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- C7-i behavioral fixture (TASKS.md "speedFactor distribution"). NOT a golden scenario - see
+     config.sumocfg's own header comment. net.net.xml is copied verbatim from
+     scenarios/_fixtures/dawdle-single-lane (itself copied from scenarios/01-single-free-flow):
+     single 1000m lane "e0_0", speed=13.89 m/s, no leader/junction/stop, isolating the speedFactor
+     effect on steady-state cruise speed from every other constraint. A single vehicle "veh0" with
+     sigma="0" explicit (no dawdle - see config.sumocfg's own comment) and no vType-level
+     speedFactor override, so its MEAN speedFactor resolves to VTypeDefaults' default 1.0
+     (SUMOVTypeParameter.cpp:70's `normc(1.0, dev, 0.2, 2.0)`) and only config.sumocfg's
+     default.speeddev=0.1 supplies the (nonzero) dev fed into NormcDistribution.SampleNormc. -->
+<routes xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://sumo.dlr.de/xsd/routes_file.xsd">
+    <vType id="car0" vClass="passenger" sigma="0"/>
+    <route id="r0" edges="e0"/>
+    <vehicle id="veh0" type="car0" route="r0" depart="0" departSpeed="0" departPos="0" departLane="0"/>
+</routes>

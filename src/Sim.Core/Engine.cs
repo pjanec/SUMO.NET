@@ -159,6 +159,16 @@ public sealed class Engine : IEngine
     // (see VehicleRng's own header comment).
     public ulong Seed { get; set; } = 42;
 
+    // C7-i (TASKS.md "speedFactor distribution"): the salt XOR'd into Seed (via
+    // VehicleRng.SeedFor's 3-arg overload) to derive the once-at-creation per-vehicle speedFactor
+    // draw's RNG from a stream that is guaranteed distinct from RngState's dawdle stream, for
+    // every entityIndex, even though both derive from the same Seed -- see VehicleRng.SeedFor's
+    // own header comment and VehicleRuntime.SpeedFactor's. The literal value is simply the ASCII
+    // bytes of "SpeedFac" (0x53='S',0x70='p',0x65='e',0x65='e',0x64='d',0x46='F',0x61='a',
+    // 0x63='c') packed big-endian into a ulong -- memorable and self-documenting, not itself
+    // load-bearing (any nonzero salt distinct across call sites would do).
+    private const ulong SpeedFactorRngSalt = 0x5370656564466163UL;
+
     // D9 (FastDataPlane ECS readiness -- info/replication export SEAM, TASKS.md line ~651):
     // the registered `ISimExportObserver`s notified once per active vehicle, once per
     // Export-phase frame, from EmitTrajectory below. Empty by default -- with no observer
@@ -285,7 +295,30 @@ public sealed class Engine : IEngine
             // vehicle gets an independent stream regardless of insertion/plan order or thread
             // scheduling (UseParallelPlan's parallel-safety argument).
             var rngState = VehicleRng.SeedFor(Seed, entityIndex);
-            var runtime = new VehicleRuntime { Def = def, VType = vType, EntityIndex = entityIndex, Entity = new Entity(entityIndex, 0), RngState = rngState };
+
+            // C7-i: the per-vehicle speedFactor draw (MSVehicleType::computeChosenSpeedDeviation,
+            // MSVehicleControl.cpp:113's once-at-build call site) -- drawn from its OWN salted,
+            // local RNG (never stored/reused after this one draw, matching SUMO's own one-shot
+            // call), completely independent of `rngState` above (VehicleRuntime.RngState / C1's
+            // per-step dawdle stream -- see VehicleRng.SeedFor's 3-arg overload and
+            // VehicleRuntime.SpeedFactor's own comments for why this independence matters).
+            // ScenarioConfig.SpeedDev is the dev SUMOVTypeParameter.cpp:374-378's
+            // `default.speeddev` override resolves to (every existing scenario sets it to 0, so
+            // NormcDistribution.SampleNormc's dev<=0 branch returns `vType.SpeedFactor` --
+            // 1.0 -- with NO draw at all, byte-identical to every pre-C7 rung).
+            var speedFactorRng = VehicleRng.SeedFor(Seed, entityIndex, SpeedFactorRngSalt);
+            var speedFactor = NormcDistribution.ComputeChosenSpeedDeviation(
+                mean: vType.SpeedFactor, dev: _config.SpeedDev, min: 0.2, max: 2.0, rng: ref speedFactorRng);
+
+            var runtime = new VehicleRuntime
+            {
+                Def = def,
+                VType = vType,
+                EntityIndex = entityIndex,
+                Entity = new Entity(entityIndex, 0),
+                RngState = rngState,
+                SpeedFactor = speedFactor,
+            };
 
             // Rung 5 (D3: side table): seed this vehicle's own stop queue (StopRuntime) from its
             // immutable Def, ONLY when it actually has stops. Reached/RemainingDuration start at
@@ -781,7 +814,7 @@ public sealed class Engine : IEngine
         // (not silently assumed == dt) since MSCFModel.cpp divides by it separately from TS.
         var actionStepLengthSecs = _config.ActionStepLength > 0 ? _config.ActionStepLength : dt;
 
-        var laneVehicleMaxSpeed = KraussModel.LaneVehicleMaxSpeed(lane.Speed, v.VType);
+        var laneVehicleMaxSpeed = KraussModel.LaneVehicleMaxSpeed(lane.Speed, v.SpeedFactor, v.VType);
 
         // D4 (FDP zero-alloc `OnUpdate` rule): the multi-constraint reducer is still a MINIMUM
         // over the same six constraints, in the same call order (DESIGN.md seam 1) -- just
@@ -1691,8 +1724,8 @@ public sealed class Engine : IEngine
 
             var leftLane = _network.LanesByHandle[lane.LeftNeighbor];
 
-            var vMax = KraussModel.LaneVehicleMaxSpeed(lane.Speed, v.VType);
-            var neighVMax = KraussModel.LaneVehicleMaxSpeed(leftLane.Speed, v.VType);
+            var vMax = KraussModel.LaneVehicleMaxSpeed(lane.Speed, v.SpeedFactor, v.VType);
+            var neighVMax = KraussModel.LaneVehicleMaxSpeed(leftLane.Speed, v.SpeedFactor, v.VType);
 
             // MSLCM_LC2013.cpp:1109-1136's best-lanes continuation distance, simplified per the
             // A2 briefing's scope note to this single-edge dead-end scenario: laneLength minus
@@ -1843,7 +1876,7 @@ public sealed class Engine : IEngine
         const double keepRightParam = 1.0; // ctor default (LCA_KEEPRIGHT_PARAM)
         var actionStepLengthSecs = _config!.ActionStepLength > 0 ? _config.ActionStepLength : dt;
 
-        var vMax = KraussModel.LaneVehicleMaxSpeed(lane.Speed, v.VType);
+        var vMax = KraussModel.LaneVehicleMaxSpeed(lane.Speed, v.SpeedFactor, v.VType);
         var roadSpeedFactor = vMax / lane.Speed; // getSpeedLimit() of ego's OWN (current) lane
 
         // Legacy behavior (myKeepRightAcceptanceTime == -1, SUMO's default): acceptanceTime scales

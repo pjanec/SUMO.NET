@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- C7-i C1-independence fixture, HIGH-MEAN half of the pair (see config.sumocfg's own comment
+     and rou_low.rou.xml). vType speedFactor mean is overridden to 1.8 (near the normc clamp's
+     upper bound 2.0) - target cruise speed ~25 m/s, so this run's own accel ramp ALSO stays
+     independent of its (much higher) target for well beyond the 3s comparison window (accel*3s
+     = ~7.8 m/s << 25 m/s). Same vClass/sigma/accel as rou_low.rou.xml's "lowMean" vType -
+     speedFactor mean is the ONLY difference between the two vTypes, so the two runs' RngState
+     (dawdle) draw sequences MUST be byte-identical during the ramp window unless something wired
+     the (here, real - dev=0.05>0) speedFactor draw into the wrong VehicleRng instance. -->
+<routes xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://sumo.dlr.de/xsd/routes_file.xsd">
+    <vType id="highMean" vClass="passenger" sigma="0.5" speedFactor="1.8"/>
+    <route id="r0" edges="e0"/>
+    <vehicle id="dawdler" type="highMean" route="r0" depart="0" departSpeed="0" departPos="0" departLane="0"/>
+</routes>
