@@ -386,6 +386,12 @@ public sealed class ActuatedTrafficLightLogic
             {
                 if (_onDet.Remove(entityIndex))
                 {
+                    // Last-wins on _lastLeaveTime: if two vehicles' backs cross this line in the
+                    // SAME step, the final stamp follows ExecuteMoves' iteration order (which is
+                    // insertion/EntityIndex order) rather than SUMO's lane/position order. Not
+                    // exercised by the committed anchor (one vehicle clears the detector per step,
+                    // exact @1e-3); a multi-vehicle-per-detector-per-step scenario would need the
+                    // MAX of the two leave times (SUMO keeps the most recent) -- flagged for then.
                     var leaveTime = newTime + PassingTime(oldBackPos, _position, newBackPos, newSpeed);
                     _lastLeaveTime = leaveTime;
                 }
