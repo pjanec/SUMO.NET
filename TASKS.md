@@ -858,16 +858,18 @@ A3) remain the byte-for-byte correctness anchor (same discipline as rungs 8b/10/
     behavior-identical. (5) parity-reviewer ACCEPT; faithful to `MSVehicle.cpp` (not a curve-fit).
     Fits the C-track after the merge/junction rungs; portable in-session (deterministic net-graph
     algorithm, SUMO golden as oracle -- no runtime DEBUG trace needed, unlike the timing rungs).
-  - **C2-iv (optional, ingest-robustness -- NOT parity-critical). `DemandParser` stock-output
-    loading.** Two things the benchmark works around at the generation layer; fixing them in
-    `Sim.Ingest.DemandParser` would let stock `duarouter`/`randomTrips` output load directly.
-    (a) **Embedded routes:** `duarouter`'s default output nests `<route edges="..."/>` INSIDE
-    `<vehicle>`; `DemandParser` only accepts the two-part `<route id=.../>` + `<vehicle route="id"/>`
-    form (benchmark forces the supported form with `duarouter --named-routes`). (b) **`DEFAULT_VEHTYPE`
-    synthesis:** a `<vehicle>` with no `type=` should fall back to SUMO's built-in `DEFAULT_VEHTYPE`;
-    `DemandParser`/`Engine.LoadScenario` instead throw `KeyNotFoundException` on `VTypesById[""]`
-    (benchmark post-processes an explicit `DEFAULT_VEHTYPE` vType in). Both are ingest ergonomics for
-    the benchmark, not parity axes; pick up alongside C2-iii if convenient.
+  - **C2-iv. DONE (ingest-robustness -- NOT a parity axis). `DemandParser` stock-output loading.**
+    Both forms the benchmark used to work around at the generation layer now load directly
+    (`RungC2ivIngestRobustnessTests`, 4 offline unit tests). (a) **Embedded routes:** a
+    `<route edges="..."/>` nested inside `<vehicle>` (duarouter's default output) is synthesized into
+    a named Route keyed `!<vehId>` and referenced by the vehicle, so the route-by-id pipeline is
+    unchanged. (b) **`DEFAULT_VEHTYPE` synthesis:** a `<vehicle>` with no `type=` falls back to
+    `DEFAULT_VEHTYPE`, synthesized (once, if referenced-but-undeclared) as SUMO's built-in default
+    (vClass passenger, sigma 0.5, class param table via `VTypeDefaults.Resolve`) instead of throwing
+    `KeyNotFoundException` on `VTypesById[""]`; a user-declared `DEFAULT_VEHTYPE` still wins. INERT for
+    every committed scenario (all use explicit `type=` + top-level routes) -- suite 128 -> 132 green.
+    No golden/parity-reviewer gate (not a behavioral parity change). Lets the benchmark drop its
+    `--named-routes` + explicit-`DEFAULT_VEHTYPE` post-processing workarounds.
 - **C3. Merging / on-ramp / zipper. DONE (exact parity @1e-3).** Minor-link CAUTIOUS APPROACH —
   the "slow to the stop line, then go once the gap is confirmed" half of the priority-junction
   mechanism that 9b did not cover (9b ported only yield-to-a-present-foe). Test:
