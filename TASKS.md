@@ -823,13 +823,35 @@ A3) remain the byte-for-byte correctness anchor (same discipline as rungs 8b/10/
   `rA` distance-to-stop-line → speed: t=7 dist 22.32 → 13.89 (not yet braking); t=8 dist 10.41 →
   11.906; t=9 dist 3.01 → 7.406; then RELEASES (t=10 on `:J_0_0` at 10.006, accelerating). **It is
   NOT a plain stop-at-stop-line brake** — `KraussModel.StopSpeed(dist=10.41)` ≈ 6.2 m/s, far below
-  the golden's 11.906, so the approach speed is GENTLER than braking-to-full-stop. This is SUMO's
-  arrival-time approach speed (arrive at the link able to yield to a foe arriving at time X; with
-  `mA` ~390 m / ~28 s away the permitted arrival speed is high, hence the gentle 11.9→7.4 dip then
-  release), NOT the `StopSpeed`-to-stop-line the 9b approaching-foe branch uses. So the port needs
-  the actual `MSLink` arrival-time/`opened()` machinery (arrivalTime/leaveTime vs foe arrivalTime,
-  `myFoeVisibilityDistance`), likely with a DEBUG-build instrument pass to extract the exact
-  per-step approach speed — this is the reverse-engineering the rung turns on.
+  the golden's 11.906, so the approach speed is GENTLER than braking-to-full-stop.
+
+  **REVERSE-ENGINEERED FROM SOURCE (this session — NO DEBUG build needed; `/sumo/` is vendored and
+  the golden pins it).** The mechanism is the "slow down when approaching a minor link" block in
+  `MSVehicle::planMoveInternal` (`sumo/src/microsim/MSVehicle.cpp:2786-2812`):
+  ```
+  seen              = distance from the vehicle to the link (stop line)
+  brakeDist         = the vehicle's braking distance at current speed
+  visibilityDistance= link.getFoeVisibilityDistance()               // = 4.5 for an unspecified
+                                                                     //   non-zipper MINOR link
+                                                                     //   (NLHandler.cpp:1413)
+  couldBrakeForMinor    = !link.havePriority() && brakeDist < seen && !link.lastWasContMajor()
+  determinedFoePresence = (seen <= visibilityDistance)
+  if (couldBrakeForMinor && !determinedFoePresence):                // still too far to SEE foes
+      maxSpeedAtVisDist = maximumSafeStopSpeed(visibilityDistance, maxDecel, speed, ...)
+      maxArrivalSpeed   = estimateSpeedAfterDistance(visibilityDistance, maxSpeedAtVisDist, maxAccel)
+      arrivalSpeed      = MIN2(vLinkPass, maxArrivalSpeed)          // cap: arrive able to stop once
+                                                                    //   a foe first becomes visible
+  ```
+  The vehicle then brakes toward `arrivalSpeed` via car-following free-speed at distance `seen`
+  (`DriveProcessItem`, `.cpp:2842+`). Once `seen <= visibilityDistance(4.5)` the vehicle can SEE the
+  junction is clear ⇒ `determinedFoePresence` true ⇒ no cap ⇒ it accelerates through. **Verified
+  against the golden:** the release is exactly at `seen<=4.5` — t=9 `seen=3.01<=4.5` ⇒ `rA` stops
+  slowing and accelerates (7.41→10.01 at t=10). So the port is a NEW multi-constraint-reducer term
+  (a "minor-link cautious-approach" speed cap), NOT the `MSLink::opened()` foe-arrival machinery
+  (that only matters when a foe is actually near; here `mA` is far and the cap is purely the
+  visibility-distance approach). Needs `estimateSpeedAfterDistance` + the arrive-at-distance-at-speed
+  free-speed in `KraussModel` (port if absent). Fully specified — ready to port + verify to 1e-3;
+  no DEBUG build, no multi-GB clone.
 - **C4. Remaining right-of-way: right-before-left, roundabouts, stop signs.** 9b did PRIORITY
   junctions only. Right-before-left (uncontrolled symmetric), roundabout yielding (+
   `myRoundaboutBonus`/cooperative), all-way-stop (`LINKSTATE_ALLWAY_STOP`). Reuses 9b's `<request>`
