@@ -1023,7 +1023,13 @@ A3) remain the byte-for-byte correctness anchor (same discipline as rungs 8b/10/
     logic throws `No <connection> found from edge 'E0' lane 1 to edge 'E1'` (the exact C1B1 bug).
     SIMPLIFICATION (documented): two equidistant connecting lanes tie-break to the lower index (a
     betterContinuation rank would be more faithful; no committed scenario has such a tie). Parity-
-    reviewer gate pending. **UNBLOCKS the scaled-city benchmark's multi-lane rungs.**
+    reviewer ACCEPT (rigorous byte-identical case analysis: the connecting-lane-nearest-target rule
+    collapses to the old exit lane for every route the old code didn't throw on; faithful to
+    MSVehicle.cpp:updateBestLanes). **RE-GATE FLAG (reviewer, not reached by any committed scenario):**
+    if a future `-L2` golden lands with `offset != 0 && !targetExists` on a multi-lane edge where a
+    NON-arrival lane connects strictly nearer the clamped target, the new rule picks that lane where
+    the old returned `arrivalIndex` -- re-gate that specific branch then. **UNBLOCKS the scaled-city
+    benchmark's multi-lane rungs.**
     *(original briefing retained below for context.)*
     Complete route->lane resolution for a general
     `netgenerate -L 2` city -- the LAST multi-lane routing blocker. C2-iii (multi-hop best-lanes)
