@@ -846,6 +846,27 @@ A3) remain the byte-for-byte correctness anchor (same discipline as rungs 8b/10/
     straight-through vehicle, NO real conflicting traffic -- confirm it still brakes to the stop line
     and never proceeds, then read WHICH foe/link `JunctionYieldConstraint` yields to and why (the
     `<request>` response/foes bits at the multi-lane link indices vs SUMO's `MSLink`).
+    **DIAGNOSIS CONFIRMED (this session, instrumented the priority `--tls.set ""` repro):** the
+    deadlock is a GRIDLOCK CYCLE, not a single false foe. veh 0 (stuck on E3D3_0 approaching D3, link
+    6/7) yields to foe 11 which is STOPPED (speed 0) on D4D3_0 (link 2; the response matrix is
+    asymmetric -- 6/7 yields to 2, 2 does NOT yield back, so no direct 2-cycle). Foe 11 is stopped
+    because IT yields to links 8/18, whose vehicles yield onward -> a rotational cycle around the
+    junction that never unwinds. **SUMO does NOT gridlock here (runs free-flow) because `MSLink::opened`
+    /`blockedByFoe` gates the yield on the foe's `willPass` (MSLink.cpp: `if (!avi.willPass) return
+    false`) + arrival/leave-time overlap: a foe that is ITSELF yielding (stopped, not requesting
+    passage this step) has `willPass=false` and does NOT block ego, so the cycle unwinds.** The engine's
+    crossing approaching-foe arm (`JunctionYieldConstraint`, ~Engine.cs:1698) yields to ANY approaching
+    foe within the C4-vi reservation distance REGARDLESS of whether that foe will actually pass -- the
+    C5-willPass gate (`FoeKeepClearBlocked`) only catches the keepClear-downstream-jam case, not a foe
+    that is yielding to ITS OWN priority foe. **FIX SHAPE (structural, faithful):** port SUMO's
+    `willPass` signal. SUMO computes it in a SEPARATE phase (`setApproaching` during planMove registers
+    each vehicle's link request BEFORE the `opened()` yield checks read foes' `willPass`); the engine
+    does yield decisions in one PlanMovements pass reading start-of-step state, so this needs a
+    willPass PRE-PASS: compute, from start-of-step state, whether each vehicle intends to cross its
+    upcoming junction link this step (not stop-line-gated), then the crossing yield only blocks on a
+    foe whose `willPass` is true. HIGH REGRESSION RISK (touches the verified 9b/C4 RoW core underpinning
+    ~30 scenarios) -- build a minimal deterministic multi-vehicle crossing anchor to pin the exact
+    yield before/after, and gate hard.
     **Done-condition:** (1) the `-L2` repro flows (stuck-count comparable to SUMO's ~0). (2) NEW anchor:
     a minimal 2-lane junction where a through vehicle is granted passage against correctly-resolved
     multi-lane foes (distinct from the single-lane 9b/C4 anchors); sigma=0, SUMO golden `--precision 6`,
