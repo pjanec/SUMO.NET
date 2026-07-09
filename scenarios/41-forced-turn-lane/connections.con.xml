@@ -1,0 +1,6 @@
+<connections>
+  <connection from="E0" to="E1" fromLane="0" toLane="0"/>
+  <connection from="E0" to="DA" fromLane="1" toLane="1"/>
+  <connection from="E1" to="E2" fromLane="1" toLane="0"/>
+  <connection from="E1" to="DB" fromLane="0" toLane="0"/>
+</connections>

@@ -1000,8 +1000,33 @@ A3) remain the byte-for-byte correctness anchor (same discipline as rungs 8b/10/
     behavior-identical. (5) parity-reviewer ACCEPT; faithful to `MSVehicle.cpp` (not a curve-fit).
     Fits the C-track after the merge/junction rungs; portable in-session (deterministic net-graph
     algorithm, SUMO golden as oracle -- no runtime DEBUG trace needed, unlike the timing rungs).
-  - **C2-vi. TODO (parity-track, exact @1e-3). Complete route->lane resolution for a general
-    `netgenerate -L 2` city -- the LAST multi-lane routing blocker.** C2-iii (multi-hop best-lanes)
+  - **C2-vi. DONE (parity-track, exact @1e-3). Complete route->lane resolution for a general
+    `netgenerate -L 2` city -- the LAST multi-lane routing blocker.** Root cause (found by
+    instrumenting the real repro): `ResolveSequenceCore` computed the exit lane as
+    `arrivalLane + bestLaneOffset` and applied it whenever the target lane EXISTED -- but
+    `bestLaneOffset` is a per-edge DOWNSTREAM hint that can point at a sibling with NO connection to
+    the route's immediate next edge (real case: route `C1B1 B1B2 B2A2`; `C1B1` lane 0 is the ONLY
+    lane connecting to `B1B2` yet inherits offset +1 from `B1B2`'s downstream best lane, so the old
+    code chose the non-connecting lane 1 and threw). FIX (`NetworkModel.ResolveSequenceCore`): the
+    exit lane MUST connect to the route's next edge -- among the lanes that DO connect, pick the one
+    nearest the `bestLaneOffset` target. This subsumes the old `targetExists` clamp (an off-edge or
+    non-connecting target naturally falls back to the nearest connecting lane) and reconciles both
+    prior cases: scenario 36 (E0_0 redirected TO a connecting sibling because its own path dead-ends)
+    and C2-vi (E0_0 NOT redirected because the offset target doesn't connect). Verified: all 100
+    routes of the actual `netgenerate --grid --grid.number=3 -L 2 --seed 42` + `randomTrips --seed 42`
+    demand now resolve (was 8 throws). **TEST `RungC2viForcedTurnLaneParityTests`**
+    (`scenarios/41-forced-turn-lane`, Run 44) passes exact @1e-3: E0_0 (t<=13), :J_0_0 (t=14), E1_1
+    (t=15, the immediate post-junction strategic LC off the dead-end E1_0), :K_1_0 (t=29), E2_0
+    (t=30) -- matching SUMO. Suite 151/153 -> 153. INERT: byte-identical for every route whose offset
+    target already connects (single connecting lane, or target is a connecting lane) -- scenarios
+    18/36/37 + all committed + the D1 hash stay green. NON-VACUOUS: reverting to the old `targetExists`
+    logic throws `No <connection> found from edge 'E0' lane 1 to edge 'E1'` (the exact C1B1 bug).
+    SIMPLIFICATION (documented): two equidistant connecting lanes tie-break to the lower index (a
+    betterContinuation rank would be more faithful; no committed scenario has such a tie). Parity-
+    reviewer gate pending. **UNBLOCKS the scaled-city benchmark's multi-lane rungs.**
+    *(original briefing retained below for context.)*
+    Complete route->lane resolution for a general
+    `netgenerate -L 2` city -- the LAST multi-lane routing blocker. C2-iii (multi-hop best-lanes)
     and C2-v (intra-edge lane change) closed most of the multi-lane route->lane gap and their anchors
     (scenarios 36, 37) pass, but a GENERAL `-L 2` grid still throws at insertion. Verified on
     `main@7718953`. Briefing transcribed from `NEED-C2iii-followup-intraedge-lanechange.md` (refreshed

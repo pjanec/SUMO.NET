@@ -1,0 +1,26 @@
+sumo_version=1.20.0
+sumo_version_reported=Eclipse SUMO sumo Version 1.20.0
+generated_utc=2026-07-09T05:45:00Z
+command=sumo -c config.sumocfg --fcd-output golden.fcd.xml --fcd-output.acceleration --precision 6 --save-state.times 1 --save-state.files golden.state.xml --no-step-log true
+state_time=1
+fcd_precision=6
+# C2-vi FORCED-TURN-LANE PARITY ANCHOR (RungC2viForcedTurnLaneParityTests, exact @1e-3).
+#   E0(2 lanes)->E1(2 lanes)->E2(1 lane). E0_0 is the ONLY lane connecting to the route's next edge
+#   E1 (E0_1 connects only to the off-route decoy DA). Yet ComputeBestLanes gives E0_0 a nonzero
+#   bestLaneOffset +1 -- it inherits it from E1_0's own +1 (E1_0 dead-ends off-route via DB; only
+#   E1_1->E2 continues the route), a PER-EDGE downstream hint. The pre-C2-vi ResolveSequenceCore
+#   applied that offset and picked E0's lane 1 as the exit -> lane 1 has NO connection to E1 ->
+#   throws "No <connection> found from edge 'E0' lane 1 to edge 'E1'" at insertion (the exact bug a
+#   general netgenerate -L2 city hits, e.g. route C1B1 B1B2 B2A2). C2-vi enforces the invariant: the
+#   exit lane must connect to the route's next edge; among connecting lanes pick the one nearest the
+#   bestLaneOffset target. So E0's exit stays lane 0 (the only connecting lane), the vehicle arrives
+#   E1_0 and strategic-LCs to E1_1 for the E2 turn. SUMO golden: E0_0 (t<=13), :J_0_0 (t=14), E1_1
+#   (t=15 -- the immediate post-junction strategic LC off the dead-end E1_0), :K_1_0 (t=29), E2_0
+#   (t=30). DISTINCT from scenario 36 (E0_0 redirected TO a connecting sibling) and 37 (1-lane depart
+#   edge, mid-edge change). Euler, sigma=0, teleport off, seed 42.
+# net: netconvert from nodes/edges/connections, --no-turnarounds.
+# vtype defaults: golden.vtype.json (libsumo/TraCI dump)
+# input file hashes (sha256):
+input=net.net.xml sha256=edd055042a48bb23736d1549358d3f052ae59d2a4db1022cd8079cd7cae73687
+input=rou.rou.xml sha256=d3dd60b6f522fa073051e69cb133db75ee9dc82e942660b17e850f9ef747e309
+input=config.sumocfg sha256=018122b18ffb3e022d4a7ebb264d78e2fa66f8d50743467c31be0f2b8789a604

@@ -303,19 +303,23 @@ public sealed record NetworkModel(
             var edge = EdgesById[edgeId];
             var isLast = i == routeEdges.Count - 1;
 
-            // Determine this edge's EXIT lane: steer from the arrival lane onto the route-wide
-            // best-continuing sibling via its bestLaneOffset (MSVehicle::updateBestLanes). The offset
-            // is a PER-EDGE quantity that is nonzero whenever the arrival lane's downstream
-            // continuation is worse than a sibling's -- even when the arrival lane DOES connect to the
-            // immediate next edge but that path dead-ends further along (scenario 36: E0_0 connects to
-            // E1_0, but only E0_1->E1_1 continues to E2, so E0_0's offset is +1). CLAMP to the edge's
-            // own lane range: an offset that points off this edge (scenario 37: E1_1's offset -1
-            // propagates back to the 1-lane E0_0 as -1) is a DOWNSTREAM change the vehicle cannot make
-            // on this edge, so it stays on the arrival lane and the change happens on a later edge
-            // where the target lane exists. The last edge has no onward connection, so exit == arrival.
-            // (SIMPLIFICATION, documented: a |offset| > 1 that clamps stays put rather than moving one
-            // lane toward the target per edge -- no committed scenario needs a 2+-lane mid-route
-            // change; the anchors use single-lane offsets that either fit or point off a 1-lane edge.)
+            // Determine this edge's EXIT lane. THE INVARIANT: the exit lane MUST have a <connection>
+            // to the route's next edge (else the vehicle physically cannot make the hop). Among the
+            // lanes that connect, steer toward the route-wide best-continuing lane via `bestLaneOffset`
+            // (MSVehicle::updateBestLanes) -- the offset is a per-edge downstream HINT, not a hard
+            // target. Two failure modes this must reconcile:
+            //   * The arrival lane connects to the next edge but that path dead-ends further along, so
+            //     the offset points to a BETTER-continuing sibling that ALSO connects (scenario 36:
+            //     E0_0->E1_0 connects but dead-ends; E0_1->E1_1 continues; offset +1 -> exit E0_1).
+            //   * The offset points to a sibling that does NOT connect to the next edge, because it is
+            //     a hint for a change to make on a LATER edge (C2-vi: C1B1 lane 0 is the only lane
+            //     connecting to B1B2, yet inherits offset +1 from B1B2's downstream best lane; the
+            //     +1 target (lane 1) doesn't connect to B1B2, so the vehicle must STAY on lane 0 here
+            //     and change on B1B2). SUMO never resolves a fixed exit lane -- it follows whatever
+            //     connection leaves its current lane and lane-changes opportunistically toward
+            //     bestLaneOffset; picking the CONNECTING lane closest to (arrival + offset) reproduces
+            //     that exit-lane choice.
+            // The last edge has no onward connection, so exit == arrival.
             int exitIndex;
             if (isLast)
             {
@@ -323,11 +327,32 @@ public sealed record NetworkModel(
             }
             else
             {
+                var nextEdgeId = routeEdges[i + 1];
                 var best = ComputeBestLanes(routeEdges, edgeId);
                 var offset = best.First(q => q.LaneIndex == arrivalIndex).BestLaneOffset;
                 var target = arrivalIndex + offset;
-                var targetExists = edge.Lanes.Any(l => l.Index == target);
-                exitIndex = offset != 0 && targetExists ? target : arrivalIndex;
+
+                // Lanes on this edge that actually connect to the route's next edge.
+                var connecting = edge.Lanes
+                    .Where(l => ConnectionsByFromEdgeLane.TryGetValue((edgeId, l.Index), out var cc)
+                                && cc.Any(c => c.To == nextEdgeId))
+                    .Select(l => l.Index)
+                    .ToList();
+
+                if (connecting.Count == 0)
+                {
+                    throw new InvalidDataException(
+                        $"No lane on edge '{edgeId}' has a <connection> to '{nextEdgeId}' (route unroutable).");
+                }
+
+                // The connecting lane nearest the bestLaneOffset target; on a tie, the lower index
+                // (SIMPLIFICATION, documented: no committed scenario has two equidistant connecting
+                // lanes with differing downstream quality -- when they do, a betterContinuation rank
+                // would be more faithful, but every anchor here has a unique nearest connecting lane).
+                exitIndex = connecting
+                    .OrderBy(l => Math.Abs(l - target))
+                    .ThenBy(l => l)
+                    .First();
             }
 
             var arrivalLane = edge.Lanes.First(l => l.Index == arrivalIndex);

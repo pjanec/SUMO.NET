@@ -1,0 +1,8 @@
+<nodes>
+  <node id="A" x="0"   y="0"/>
+  <node id="J" x="200" y="0" type="priority"/>
+  <node id="K" x="400" y="0" type="priority"/>
+  <node id="L" x="600" y="0"/>
+  <node id="P" x="200" y="-200"/>
+  <node id="Q" x="400" y="-200"/>
+</nodes>
