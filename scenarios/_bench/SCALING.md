@@ -10,37 +10,44 @@ sized once at the 15,000-concurrent rung per `BENCHMARK_SPEC.md`'s stated prefer
 that led to this size. `city-30` keeps its original small dedicated 3x3/200m net (unchanged,
 already committed).
 
-**Headline finding (read before the table): a genuine `Sim.Core` engine defect, not a benchmark
-artifact.** Starting at rung 2 (~300 concurrent), the engine's aggregate comparison against SUMO
-fails hard, and the failure is dominated by a specific, root-caused bug —
-`Engine.FindFoeVehicle` (`src/Sim.Core/Engine.cs:2279`) treats ANY vehicle whose route passes
-through a priority-junction foe lane AT ANY FUTURE POINT as an "approaching foe," with no
-proximity or time-window filter. On a small net (city-30, 9 junctions) this rarely fires; on the
-576-junction shared net it fires almost everywhere, almost always, producing large stuck-vehicle
-counts that are NOT a capacity/gridlock effect (SUMO runs the identical demand at
-near-free-flow-to-moderate congestion, never anything like the engine's stuck fraction). Full
-write-up, repro, and root cause: `/NEED-priorityjunction-farrouted-foe-falsepositive.md` (repo
-root). Per `CLAUDE.md`, this is reported here, not patched — benchmark work does not touch
-`Sim.Core`.
+**Headline (FIXED): the benchmark surfaced a genuine `Sim.Core` defect, which is now patched.**
+The first `-L 1` scale-up (at ~300 concurrent) exposed a real engine bug — `Engine.FindFoeVehicle`
+treated ANY vehicle whose route passed through a priority-junction foe lane AT ANY FUTURE POINT as
+an "approaching foe" with no proximity/time-window filter, so on the 576-junction net almost every
+approach lane found a false foe and vehicles stalled (city-300: engine 46 arrived vs SUMO 238; SUMO
+ran the identical demand at free flow). It was reported (not patched here) via
+`/NEED-priorityjunction-farrouted-foe-falsepositive.md` and subsequently **fixed on `main` as
+`C4-vi` (gate the approaching-foe yield by reservation distance).** Post-fix, the engine tracks
+SUMO's aggregates across the ladder (see the table + "Headline update" below) — the benchmark did
+its job: surfacing a correctness gap the small parity scenarios can't reach, then confirming the fix
+at scale.
 
 ## Scaling table
 
 | rung | target N | measured peak concurrent (SUMO) | tuned period (s) | engine RTF | engine steps/s | engine peak RSS | engine stuck (ever / still-at-end) | SUMO teleports | arrived (SUMO / engine) | mean duration s (SUMO / engine) | KS distance | PASS/FAIL |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|
-| city-30   | 30    | 41    | 2.0736  | ~1300-2300x | n/a | ~55 MiB  | 0 / 0     | 0 | 255 / 256 | 67.60 / 63.74  | 0.2175 | **PASS** |
-| city-300  | 300   | 485   | 1.2448  | 31.3x | 31.3 | 159.1 MiB | 425 / 404 | 0 | 238 / 46  | 424.65 / 387.98 | 0.1659 | **FAIL** (arrived, meanSpeed) |
-| city-3000 | 3000  | 4365  | 0.15725 | DEFERRED | — | — | — | 0 | 3260 / — | 514.49 / — | — | DEFERRED |
-| city-15000| 15000 | 17639 | 0.05837 | DEFERRED | — | — | — | 0 | 8010 / — | 616.33 / — | — | DEFERRED |
+| rung | target N | peak concurrent | period (s) | engine RTF | peak RSS | stuck (ever/end) | arrived (SUMO/engine) | mean dur s (SUMO/engine) | KS | result |
+|---|---|---|---|---|---|---|---|---|---|---|
+| city-30   | 30    | 41 (S) / 37 (E)     | 2.0736  | ~1300-2300x | ~55 MiB   | 0 / 0 | 255 / 256  | 67.60 / 63.74   | 0.218 | **PASS** |
+| city-300  | 300   | 485 (S)             | 1.2448  | 35.9x†      | 159 MiB   | 0 / 0 | 238 / 241  | 424.65 / 426.30 | pass  | **PASS** |
+| city-3000 | 3000  | 4365 (S) / 4175 (E) | 0.15725 | 0.28x†      | 624 MiB   | 0 / 0 | 3260 / 3458 | 514.49 / 508.05 | 0.028 | **PASS** |
+| city-15000| 15000 | 17639 (S)           | 0.05837 | RUNNING     | —         | —     | 8010 / —   | 616.33 / —      | —     | RUNNING |
 
-**city-3000 / city-15000 engine runs are DEFERRED**, not pending. Their SUMO references
-(`summary.xml`/`tripinfo.xml`) are committed as ground truth, but running the ENGINE at those rungs
-is postponed until the `FindFoeVehicle` defect (headline finding above,
-`/NEED-priorityjunction-farrouted-foe-falsepositive.md`) is fixed: with that bug present, a larger
-rung only measures a worse false-positive-yield stall, so the aggregate comparison carries no signal
-and the (expensive) runs aren't worth the wall-clock yet. Re-run them once the fix lands — the
-committed net/rou/config/SUMO-refs make each a one-command engine run. city-300 was run to
-completion because it is the smallest rung that already exhibits the defect unambiguously (the
-proof-of-bug rung).
+(S)=SUMO reference, (E)=engine. All SUMO references show 0 teleports.
+
+**Headline update (post-`C4-vi` fix):** the `FindFoeVehicle` false-positive-foe defect that this
+benchmark surfaced is FIXED on `main` (`C4-vi`: gate the priority-junction approaching-foe yield by
+reservation distance). Re-running the rungs shows the engine now tracks SUMO's aggregates across two
+orders of magnitude of concurrency: **city-300 went from 46 arrived (FAIL) to 241** (SUMO 238), and
+**city-3000 passes at ~4,175 peak concurrent** (arrived 3458 vs 3260, mean duration within 1.3%, KS
+0.028) with **0 stuck vehicles** — no gridlock. city-15000 (the headline rung) is running.
+
+**† perf numbers are provisional.** RTF/RSS for city-300 and especially city-3000 were measured with
+engine-FCD writing on and/or under concurrent CPU load (viz work in the same container), so the
+throughput figures understate real performance — the 0.28x at city-3000 is not a clean number. The
+correctness/stability columns (arrived, stuck, aggregate) are deterministic and unaffected. A clean
+perf pass (`--fcd-out ""`, no concurrent load) is pending to produce a trustworthy RTF-vs-scale curve;
+city-15000 is being run that way.
 
 ## Net-capacity / stability findings (SUMO reference side)
 
