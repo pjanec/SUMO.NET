@@ -1,0 +1,47 @@
+sumo_version=1.20.0
+sumo_version_reported=Eclipse SUMO sumo Version 1.20.0
+generated_utc=2026-07-09T07:57:39Z
+command=sumo -c config.sumocfg --fcd-output golden.fcd.xml --fcd-output.acceleration --precision 6 --save-state.times 1 --save-state.files golden.state.xml --no-step-log true
+state_time=1
+fcd_precision=6
+# C4-vii (multi-lane junction passage) PENDING diagnostic anchor -- NOT yet green (the engine
+# currently diverges; the paired parity test is [Fact(Skip=...)] until C4-vii lands). This is the
+# committed, network-free, deterministic minimal repro the C4-vii done-condition asks to "build
+# FIRST". It survives VM death (CLAUDE.md rule 2) so the multi-lane track has a fixed target.
+#
+# NET: a single symmetric 2-lane priority crossroads (netconvert --no-turnarounds). Node C is a
+# priority junction where the N-S road (NC/SC) is major and the E-W road (WC/EC) is minor (netconvert's
+# symmetric-+ heuristic). Each edge is 200 m, 2 lanes, 13.89 m/s. Left turns leave from lane 1
+# (fromLane=1 -> toLane=1) via a two-part internal path (e.g. NC->CE traverses :C_3_0 then the
+# internal-junction lane :C_16_0, request index 3 cont="1").
+# DEMAND: four vehicles, one per approach, ALL turning LEFT, departing together from rest
+# (departPos=0, departSpeed=0, sigma=0): vW=WC->CN, vN=NC->CE, vE=EC->CS, vS=SC->CW -- the classic
+# rotating 4-way-left conflict. SUMO resolves it by priority+timing: all four enter the junction
+# staggered (t=17..20) and every one clears, exiting at ~13 m/s by t=38. NO teleports, NO deadlock.
+#
+# ENGINE DIVERGENCE REPRODUCED (baseline f378d3a, THIS anchor):
+#  (bug A) multi-internal-lane "cont" path collapse: the engine routes the left turn through a SINGLE
+#          internal lane (:C_3_0) then straight to the exit edge, skipping the internal-junction lane
+#          (:C_16_0) SUMO waits on -- the junction internal path is not fully modeled for cont links.
+#  (bug B) state-dependent spurious final-edge lane change breaking ARRIVAL: with conflicting traffic,
+#          vN (NC->CE, arrival lane CE_1) is moved CE_1 -> CE_0 mid-edge (~t=29) and then brakes to a
+#          full stop at the CE_0 lane end (pos 189.6, speed 0) and NEVER arrives -- permanently stuck.
+#          A LONE left-turner (no conflict) does NOT reproduce this: it stays on CE_1 and exits. So bug
+#          B is an INTERACTION bug, not a static arrival-lane-resolution error.
+#  (bug C, from the -L2 grid, NOT reproduced by this straight-priority anchor) the willPass gridlock:
+#          ego yields forever to a foe that is itself stopped/yielding. SUMO unwinds it because a foe
+#          approaching its own MINOR link from beyond the link foe-visibility distance has
+#          slowedDownForMinor -> abortRequestAfterMinor -> setRequest=false (MSVehicle.cpp:2730-2732),
+#          i.e. willPass=false, so it does not block ego (MSLink.cpp:935: if !avi.willPass return
+#          false). The correct willPass proxy is VISIBILITY-DISTANCE based (foe within its own 4.5 m
+#          foe-visibility AND moving), NOT a bare speed<=eps test. A cyclic anchor (>=3 turning foes)
+#          is needed to reproduce bug C deterministically; this straight-priority 4-left anchor
+#          exercises bugs A+B only.
+#
+# Euler, sigma=0, teleport off, seed 42.
+sha256  net.net.xml        4e1ca929494bf6d9b1bd8c87dce0080a014633b218b9d01695ad26ee4aafff24
+sha256  rou.rou.xml        db041a87a39c0808b42a1077949b97d39da2a4cb7cc8db01995af1562a828deb
+sha256  config.sumocfg     2421eb507d7ad72e489df432666767d508b00a5876d8a293f0abb122703eb5c7
+sha256  golden.fcd.xml     1b6f57040e9ee5f67e11554c196514a4e5b805873c07a8107a53d3aa0b155aa5
+sha256  golden.state.xml   fb21537aa67f0299f4e33806bc1402d1c210509592ed6a3d42436234c89bfe07
+sha256  golden.vtype.json  971c5d021ac911f98f5cccf6b761e65f72d335a64c07d197b1a9ad43f90f55b7

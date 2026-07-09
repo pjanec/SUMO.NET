@@ -873,6 +873,41 @@ A3) remain the byte-for-byte correctness anchor (same discipline as rungs 8b/10/
     exact @1e-3. (3) INERT: all committed single-lane junction scenarios (9b/C3/C4/rung10/36/37) +
     everything stay green (158); `Sim.Bench` hash unchanged. (4) parity-reviewer ACCEPT, faithful to
     `MSLink`/`MSRightOfWayJunction`/`MSVehicle`. Build the anchor + golden FIRST, then instrument + fix.
+    **SESSION UPDATE (anchor built; scope RE-DIAGNOSED as a CLUSTER, not a one-line willPass gate).**
+    Committed the deterministic, network-free minimal anchor `scenarios/44-multilane-junction-turn`
+    (single symmetric 2-lane priority crossroads; 4 vehicles, one per approach, ALL turning left,
+    departing together from rest; SUMO flows all four staggered t=17..20 and every one clears by t=38,
+    0 teleports) + its `--precision 6` golden + `provenance.txt` (full diagnosis) +
+    `RungC4viiMultilaneJunctionParityTests` gated `[Fact(Skip=...)]` until this lands (suite 159 green +
+    1 skipped). Instrumenting this anchor + the -L2 grid this session showed **C4-vii is at least THREE
+    entangled multi-lane bugs, and the willPass gate alone does NOT fix it** -- each needs its own
+    isolated sub-anchor. Recommend DECOMPOSING into:
+      - **C4-vii-a (multi-internal-lane "cont" path).** SUMO's left turn traverses TWO internal lanes
+        (e.g. `NC->CE` = `:C_3_0` then the internal-junction lane `:C_16_0`, `<request>` index 3
+        `cont="1"`); the engine collapses it to `:C_3_0` -> exit edge, never modeling `:C_16_0`. Port
+        the internal-junction (via-lane chain) so multi-part junction paths resolve fully. A LONE
+        left-turner still arrives (collapse alone is not fatal), so anchor this against the internal-
+        lane SEQUENCE, not arrival.
+      - **C4-vii-b (spurious final-edge lane change breaks arrival).** With conflicting traffic, `vN`
+        (`NC->CE`, arrival lane `CE_1`) is moved `CE_1 -> CE_0` mid-edge (~t=29) then brakes to a dead
+        stop at the `CE_0` lane end (pos 189.6) and NEVER arrives -- permanent stuck. A LONE left-turner
+        does NOT reproduce it (stays on `CE_1`, exits), so this is an INTERACTION-triggered lane-change
+        bug, not static arrival-lane resolution. This (not willPass) is what strands vehicles in the 4-
+        left anchor. Isolate WHICH lane-change decision fires on a downstream-less final edge with no
+        neighbour on the target lane.
+      - **C4-vii-c (willPass gridlock, the ORIGINAL -L2 grid symptom).** Ego yields forever to a foe
+        that is itself stopped/yielding. **CORRECTED port target:** the willPass signal is NOT
+        `speed<=eps` -- it is VISIBILITY-DISTANCE based. A foe approaching its own MINOR link from
+        BEYOND that link's foe-visibility distance (4.5 m default) has `slowedDownForMinor` ->
+        `abortRequestAfterMinor` (`MSVehicle.cpp:2730`) -> `setRequest=false`, i.e. `willPass=false`, so
+        `MSLink::blockedByFoe` returns false (`MSLink.cpp:935`) and it does NOT block ego. So the gate
+        is: an approaching foe blocks ego only once the foe is WITHIN its own link's foe-visibility AND
+        still moving. A bare `speed<=eps` proxy (tried this session) is unfaithful AND insufficient --
+        REVERTED, not committed. Reproducing bug C deterministically needs a CYCLIC anchor (>=3 turning
+        foes forming a yield loop); the straight-priority 4-left anchor exercises a+b only (priority
+        breaks the straight-4-way symmetry so it never gridlocks).
+    Sequence a -> b -> c (each isolated, gated, parity-reviewed); c is the highest-regression-risk piece
+    (touches the RoW core underpinning ~30 scenarios). Anchor `44` is committed and ready to unskip.
   - **C4-vi. DONE (parity-track, exact @1e-3). Priority-junction far-routed-foe false positive fixed.**
     The crossing approaching-foe arm of `JunctionYieldConstraint` (`Engine.cs`, the
     `foeInternalSeqIndex > foe.LaneSeqIndex` branch) now gates the yield by the foe's

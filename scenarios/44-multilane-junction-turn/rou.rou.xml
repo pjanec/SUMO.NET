@@ -1,0 +1,7 @@
+<routes>
+  <vType id="car" accel="2.6" decel="4.5" sigma="0" length="5" minGap="2.5" maxSpeed="13.89" tau="1.0"/>
+  <vehicle id="vW" type="car" depart="0" departLane="1" departPos="0" departSpeed="0"><route edges="WC CN"/></vehicle>
+  <vehicle id="vN" type="car" depart="0" departLane="1" departPos="0" departSpeed="0"><route edges="NC CE"/></vehicle>
+  <vehicle id="vE" type="car" depart="0" departLane="1" departPos="0" departSpeed="0"><route edges="EC CS"/></vehicle>
+  <vehicle id="vS" type="car" depart="0" departLane="1" departPos="0" departSpeed="0"><route edges="SC CW"/></vehicle>
+</routes>
