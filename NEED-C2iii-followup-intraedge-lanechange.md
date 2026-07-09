@@ -1,91 +1,77 @@
-# NEED (follow-up to C2-iii) — intra-edge lane change to reach a mid-route connection
+# NEED — complete route→lane resolution for a general multi-lane (`-L 2+`) city
 
-**For the SUMO parity coding session.** C2-iii (`40e53f4`, route-wide best-lanes backward pass)
-is real and its anchor `scenarios/36-multihop-lanes` passes — but its claim to **"UNBLOCK the
-scaled-city benchmark's multi-lane rungs (`-L 2+`)"** is **not yet true for a general netgenerate
-city**. Verified on `main@40e53f4`: a plain `netgenerate -L 2` grid still throws at insertion. This
-is the precise remaining case. Same parity-track bar (exact `@1e-3`, anchor + golden + gate).
+**For the SUMO parity coding session.** This is the **remaining** multi-lane route→lane gap after
+`C2-iii` (multi-hop best-lanes) and `C2-v` (intra-edge mid-route lane change) both landed. Those two
+closed most of it and their anchors (`scenarios/36-multihop-lanes`, `scenarios/37-intraedge-lanechange`)
+pass — but a **general `netgenerate -L 2` city still throws at insertion**. Verified on the current
+engine (`main@7718953`). Same parity-track bar: exact `@1e-3`, new anchor + SUMO golden +
+parity-reviewer gate.
 
-## What C2-iii fixed vs. what's still open
+## Exact failing case (reproduced on current `main`)
 
-C2-iii's `ResolveLaneSequence` redirects the pool onto the best-continuing lane **only at the
-departure edge** (the `if (routeEdges.Count > 1)` block redirects `currentLaneIndex` once, for
-`routeEdges[0]`), and threads multi-connection hops through the best downstream lane. At every
-**intermediate** edge it still follows `connection.ToLane` rigidly and **hard-throws** if the lane
-it was dumped on has no onward connection (`NetworkModel.cs:~296-303`):
+`netgenerate --grid --grid.number=3 --grid.length=200 -L 2 --tls.guess --seed 42` +
+`randomTrips.py --fringe-factor 5 --seed 42` + `duarouter --named-routes` → the engine throws:
 
 ```
-var candidates = ConnectionsByFromEdgeLane[(fromEdgeId, currentLaneIndex)].Where(c => c.To == toEdgeId)…
-if (candidates.Count == 0)
-    throw new InvalidDataException($"No <connection> found from edge '{fromEdgeId}' lane {currentLaneIndex} to edge '{toEdgeId}'.");
+System.IO.InvalidDataException: No <connection> found from edge 'C1B1' lane 1 to edge 'B1B2'.
+  at Sim.Ingest.NetworkModel.ResolveSequenceCore(...)                NetworkModel.cs:350
+  at Sim.Ingest.NetworkModel.ResolveLaneSequenceHandlesWithArrival(...) NetworkModel.cs:415
+  (via Engine.TryInsertOnLane -> InsertDepartingVehicles at insertion)
 ```
 
-The missing case: a vehicle **enters an intermediate edge on lane A** (forced by the incoming
-connection's `toLane`) but the **only onward connection to the next route edge leaves from lane B ≠
-A**, so it must **lane-change from A to B while traversing that edge**, before the junction. SUMO
-does this routinely (arrival lane ≠ departure lane on an edge; `bestLaneOffset` steers it). The
-engine can't: `ResolveLaneSequence` never applies best-lane redirection at a non-departure edge, so
-it throws instead of recording lane B as the edge's exit lane and letting strategic LC move the
-vehicle over.
+The topology (route `C1B1 B1B2 B2C2`, `C1B1` is the route's first edge):
 
-## Exact failing topology (verified, SUMO runs it, engine throws)
+- The only connection from `C1B1` onward to the route's next edge `B1B2` is
+  `fromLane="0" toLane="0" dir="r"` (a right turn) — **lane 0 only**.
+- `C1B1` lane 1 connects to `B1A1` (straight), `B1B0` (left), `B1C1` (uturn) — **never `B1B2`**.
+- So the vehicle must be on **`C1B1` lane 0** to make the turn; whatever put it on lane 1 (the
+  depart-lane choice, or an incoming `toLane=1` connection for a longer route that also crosses this
+  hop) is not being redirected to lane 0, so `ResolveSequenceCore` finds zero candidate connections
+  and throws.
 
-`netgenerate --grid --grid.number=3 --grid.length=200 -L 2 --tls.guess --seed 42`, route
-`r4 = B1A1 A1B1 B1B0 B0A0 A0A1`:
+SUMO runs this exact net+demand to completion (all trips insert and arrive; the vehicle simply
+lane-changes from 1→0 on `C1B1` before the junction). The engine's resolution does not.
 
-- Enter A1B1 from B1A1: `<connection from="B1A1" to="A1B1" fromLane="1" toLane="1"/>` → vehicle is
-  on **A1B1 lane 1**.
-- Leave A1B1 to B1B0: the ONLY onward connection is
-  `<connection from="A1B1" to="B1B0" fromLane="0" toLane="0" dir="r"/>` → requires **A1B1 lane 0**.
-- A1B1 lane 1's connections go to B1C1 / B1B2 / B1A1 — **never B1B0**.
-- ⇒ the vehicle must change **lane 1 → lane 0 on edge A1B1** before junction B1. SUMO inserts and
-  completes all 40 such vehicles with 0 errors/0 teleports; the engine throws
-  `InvalidDataException: No <connection> found from edge 'A1B1' lane 1 to edge 'B1B0'` at
-  `ResolveLaneSequence` (`NetworkModel.cs:302`) via `Engine.TryInsertOnLane` at **insertion**.
+## Why the existing C2-iii/C2-v work doesn't cover it
 
-### Clean repro (no `--ignore-errors`, so every route is genuinely valid)
-```
-export SUMO_HOME=/usr/local/lib/python3.11/dist-packages/sumo
-netgenerate --grid --grid.number=3 --grid.length=200 -L 2 --tls.guess --seed 42 -o net.net.xml
-python3 $SUMO_HOME/tools/randomTrips.py -n net.net.xml -e 120 -p 3 --fringe-factor 5 --seed 42 -o trips.xml
-duarouter -n net.net.xml -r trips.xml -o rou.rou.xml --seed 42 --named-routes      # NO --ignore-errors
-# add a DEFAULT_VEHTYPE vType + type= on each <vehicle>
-sumo -n net.net.xml -r rou.rou.xml --no-step-log true            # SUMO: Inserted 40, Running 0, no errors
-dotnet run --project src/Sim.Run -- <thatDir> --steps 120 --fcd-out /tmp/x.fcd.xml   # engine: throws
-```
+`ResolveSequenceCore` (`src/Sim.Ingest/NetworkModel.cs`, ~300-390) computes each edge's EXIT lane
+by taking `ComputeBestLanes(routeEdges, edgeId)` and applying `BestLaneOffset` to the arrival lane,
+**but only when `offset != 0 && targetExists`** (the sibling lane exists on this edge). The
+`C1B1`-lane-1 case is one where the arrival lane has NO connection to the route's immediate next
+edge at all, yet the redirect to the connecting sibling lane (lane 0) is not happening — either
+`ComputeBestLanes` is not assigning lane 1 a nonzero offset toward lane 0 for this geometry
+(e.g. it treats "continues to *some* next edge" as continuing, rather than "continues to the
+*route's* next edge"), or the exit-lane redirect has a gap for this edge position. The parity
+session should instrument `ComputeBestLanes`/`ResolveSequenceCore` for route `C1B1 B1B2 B2C2` to see
+which. The invariant to enforce: **on every edge, the resolved exit lane must have a `<connection>`
+to the route's next edge; if the arrival lane doesn't, redirect to the sibling lane that does (a
+strategic intra-edge lane change), which is exactly what SUMO's per-edge `bestLaneOffset` does.**
 
-## What SUMO does (port target)
+## Port target
 
-Same source as C2-iii — `MSVehicle::updateBestLanes` / `LaneQ`
-(`sumo/src/microsim/MSVehicle.cpp:5744-6063`). The relevant fact: `bestLaneOffset` is a **per-edge**
-quantity along the whole route, not just at departure. On EACH edge the vehicle occupies, if its
-current lane's `bestLaneOffset ≠ 0` it strategically changes toward the connecting lane
-(`LCA_STRATEGIC`, the C2-ii `TryStrategicLaneChange` path already in the engine). The arrival lane
-and the exit lane on one edge legitimately differ.
+Same as C2-iii/C2-v: `MSVehicle::updateBestLanes` / `LaneQ`
+(`sumo/src/microsim/MSVehicle.cpp:5744-6063`). The relevant guarantee is that `bestLaneOffset` is a
+per-edge quantity keyed on continuation to the **route**, and the vehicle changes toward the
+connecting lane on each edge it occupies (`LCA_STRATEGIC`, the existing `Engine.TryStrategicLaneChange`).
 
 ## Definition of done
 
-1. **Intra-edge redirection at every hop.** `ResolveLaneSequence` applies the same best-lane
-   redirection C2-iii does at the departure edge to **every** intermediate edge: when the arrival
-   lane has no onward connection to the next route edge, move to the same-edge sibling lane that
-   does (per `bestLaneOffset` / the best-continuing lane), record that as the edge's exit lane, and
-   rely on strategic LC to carry the vehicle laterally across the edge. No throw for any route SUMO
-   itself routes and runs.
-2. **General `-L 2` city runs.** The clean repro above (and the benchmark's `-L 2` generation) runs
-   to completion in the engine, not just the hand-built anchor.
-3. **New anchor + golden.** A minimal 2-lane, ≥3-edge net where a vehicle is **forced onto the
-   "wrong" lane of a MIDDLE edge** by the incoming connection and must intra-edge-change to reach
-   the only lane that turns onto the last edge (i.e. the redirect must happen at a non-departure
-   edge — scenario 36 only exercises the departure edge). `sigma=0`, one vehicle, SUMO golden
-   `--precision 6`, match `lane`/`pos`/`speed` `@1e-3`.
-4. **Inert / no regressions.** Scenario 36 + scenario 18 + all committed scenarios stay green
-   (`dotnet test`, currently **137**); `Sim.Bench` highway-dense determinism hash unchanged
-   (`42F875C2662DB78E`). Departure-edge and single-connection behavior byte-identical.
-5. **Gate.** parity-reviewer ACCEPT; faithful to `MSVehicle.cpp`, no curve-fit, invariants intact.
+1. **General `-L 2` city runs.** The repro above (and `scripts/gen-benchmark.sh` regenerated at
+   `-L 2`) inserts and runs to completion in the engine — no `No <connection> found` for any route
+   SUMO itself routes and runs.
+2. **New anchor + golden.** A minimal 2-lane net where a vehicle's arrival/depart lane on an edge
+   does NOT connect to its route's next edge but a sibling lane does, forcing the redirect that
+   `C1B1` needs and that scenarios 36/37 don't exercise (36 = multi-hop best-lane; 37 = intra-edge
+   mid-route change on a lane that *did* connect immediately). `sigma=0`, SUMO golden `--precision 6`,
+   match `lane`/`pos`/`speed` `@1e-3`.
+3. **Inert / no regressions.** Scenarios 36, 37, 18 + all committed scenarios stay green
+   (`dotnet test`, currently **151**); `Sim.Bench` highway-dense determinism hash unchanged.
+4. **Gate.** parity-reviewer ACCEPT; faithful to `MSVehicle.cpp`, no curve-fit.
 
-## Status note to correct
+## Why it matters
 
-The C2-iii TASKS.md entry says it "UNBLOCKS the scaled-city benchmark's multi-lane rungs (`-L 2+`)".
-Please soften that to "unblocks departure-edge / multi-connection multi-hop; intra-edge mid-route
-lane change (this follow-up) still required before a general `-L 2` city runs". The benchmark
-generator (`scripts/gen-benchmark.sh`) stays pinned to `-L 1` until this lands.
+This is the last blocker for the scaled-city benchmark's **multi-lane** rungs (`BENCHMARK_SPEC` /
+`VIZ_BENCH_TASKS.md` Phase 2). The benchmark + the `city-organic` demo currently run single-lane
+(`-L 1`) only, so no lane-changing/overtaking is exercised at scale. It is also a genuine realism
+gap independent of the benchmark: a general multi-lane route with a forced turn is currently
+unroutable by the engine though SUMO handles it routinely.
