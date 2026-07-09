@@ -348,6 +348,12 @@ const REPLAY_DATA = {"scenario":"01-single-free-flow","network":{"lanes":[{"id":
   function resizeCanvas() {
     var cw = wrap.clientWidth;
     var ch = wrap.clientHeight;
+    // Guard against a zero-size first layout (some mobile browsers run the end-of-body script
+    // before the flex layout has a measurable height): don't fit the camera to bogus 0/300
+    // dimensions and latch firstFit=false on them, or the scene ends up off-screen forever.
+    if (cw <= 0 || ch <= 0) {
+      return;
+    }
     canvas.width = Math.max(1, Math.round(cw * dpr));
     canvas.height = Math.max(1, Math.round(ch * dpr));
     canvas.style.width = cw + "px";
@@ -555,7 +561,10 @@ const REPLAY_DATA = {"scenario":"01-single-free-flow","network":{"lanes":[{"id":
       else ctx.lineTo(p[0], p[1]);
     }
     ctx.strokeStyle = "#4a4d55";
-    ctx.lineWidth = Math.max(1, lane.width * camera.scale);
+    // True lane width, floored to ~2.5 px so roads read as roads when the whole network is in
+    // view (a 3.2 m lane is ~1 px hairline at city zoom-out); the real width dominates once
+    // zoomed in, keeping lane-change/overtake geometry width-accurate where it matters.
+    ctx.lineWidth = Math.max(2.5, lane.width * camera.scale);
     ctx.lineCap = "butt";
     ctx.lineJoin = "round";
     ctx.stroke();
@@ -613,8 +622,12 @@ const REPLAY_DATA = {"scenario":"01-single-free-flow","network":{"lanes":[{"id":
     ctx.rotate(angleRad - Math.PI / 2);
     // (x,y) is the vehicle's FRONT-CENTER reference point (VIZ_SPEC.md); offset the box back by
     // half its length so it sits behind the reference point along its own heading.
-    var lengthPx = length * camera.scale;
-    var widthPx = width * camera.scale;
+    // True-scale box, but floored to a small on-screen minimum so a real-size car (5 m x 1.8 m)
+    // is still visible when the whole network is in view (e.g. a 1 km single lane), instead of
+    // collapsing to a sub-pixel dot. At normal/zoomed-in scales the real dimensions dominate, so
+    // the bus-bigger-than-car distinction is preserved where it matters.
+    var lengthPx = Math.max(length * camera.scale, 5);
+    var widthPx = Math.max(width * camera.scale, 3);
     var boxColor = speedColorToggle.checked ? colorForSpeed(v.speed) : colorForVClass(info.vClass);
     ctx.fillStyle = boxColor;
     ctx.strokeStyle = "rgba(0,0,0,0.55)";
@@ -627,10 +640,17 @@ const REPLAY_DATA = {"scenario":"01-single-free-flow","network":{"lanes":[{"id":
   }
 
   function render(simT) {
-    var cw = canvas.width, ch = canvas.height;
-    ctx.clearRect(0, 0, cw, ch);
+    // devicePixelRatio-correct draw path. The canvas backing store is (cssW*dpr, cssH*dpr)
+    // device pixels, but the camera (fitToView) and worldToScreen work in CSS pixels. Reset to
+    // the identity transform to clear the whole backing store, then scale the context by dpr so
+    // every CSS-pixel coordinate worldToScreen emits maps onto the right device pixels. Without
+    // this the scene draws at 1/dpr scale in the wrong corner on any high-DPR (mobile) screen --
+    // which read as an all-dark canvas on a phone while looking fine on a dpr=1 desktop.
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
     ctx.fillStyle = "#1b1e26";
-    ctx.fillRect(0, 0, cw, ch);
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
     // 1. Junctions.
     data.network.junctions.forEach(function (j) {
