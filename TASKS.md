@@ -1546,7 +1546,11 @@ A3) remain the byte-for-byte correctness anchor (same discipline as rungs 8b/10/
     scenario keeps the instant snap (all committed + D1 hash byte-identical). NON-VACUOUS: forcing the
     instant snap fails at step 1 (E0_1 too early). SIMPLIFICATION (documented): an EVEN `total`
     resolves the exact-midpoint step to the source lane (no committed scenario uses an even duration).
-    Parity-reviewer gate pending. **FOLLOW-ONS (each its own rung):** (C10-ii) the lateral POSITION
+    Parity-reviewer ACCEPT (byte-identical for duration=0 -- structurally proven, all 20 duration-
+    touching scenarios set 0; 158 green incl. D1 hash; non-vacuous, instant-snap fails at step 1;
+    midpoint rule matches the golden geometry). **RE-GATE FLAG (reviewer):** the even-`total`
+    simplification resolves the exact-midpoint step to the SOURCE lane, which SUMO's geometric crossing
+    may not -- gate/test before adding any even-duration scenario. **FOLLOW-ONS (each its own rung):** (C10-ii) the lateral POSITION
     (`LatOffset` interpolation + y/posLat emit + a lateral-comparison harness) -- the y-slide is
     deterministic (verified: -4.8 -> -1.6 over 3 steps) so it is exact-parity-testable once the harness
     compares lateral; (C10-iii) SHADOW-LANE car-following during the straddle (a blocked-road change
