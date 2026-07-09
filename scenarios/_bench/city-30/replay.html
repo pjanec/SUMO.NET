@@ -155,7 +155,7 @@ const REPLAY_DATA = {"scenario":"city-30","network":{"lanes":[{"id":":A0_0_0","e
   // TEMP diagnostic (remove once mobile render is confirmed): a visible build tag + live runtime
   // readout, so a device we can't debug remotely reports its own state. If you can see this panel
   // you are running THIS build (not a cached older file); the values pinpoint any bad camera.
-  var VIZ_BUILD = 7;
+  var VIZ_BUILD = 8;
   var dbg = document.createElement("div");
   dbg.id = "dbg";
   dbg.style.cssText =
@@ -698,7 +698,9 @@ const REPLAY_DATA = {"scenario":"city-30","network":{"lanes":[{"id":":A0_0_0","e
     // which read as an all-dark canvas on a phone while looking fine on a dpr=1 desktop.
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.clearRect(0, 0, canvas.width, canvas.height);
-    ctx.fillStyle = "#1b1e26";
+    // TEMP (build 8): bright background so a freshly-loaded file is instantly distinguishable
+    // from a cached black one. Reverts to "#1b1e26" once mobile load is confirmed.
+    ctx.fillStyle = "#00c2b8";
     ctx.fillRect(0, 0, canvas.width, canvas.height);
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
