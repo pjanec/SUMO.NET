@@ -25,6 +25,19 @@
 
   var data = REPLAY_DATA;
 
+  // TEMP diagnostic (remove once mobile render is confirmed): a visible build tag + live runtime
+  // readout, so a device we can't debug remotely reports its own state. If you can see this panel
+  // you are running THIS build (not a cached older file); the values pinpoint any bad camera.
+  var VIZ_BUILD = 7;
+  var dbg = document.createElement("div");
+  dbg.id = "dbg";
+  dbg.style.cssText =
+    "position:fixed;left:8px;bottom:96px;z-index:9998;background:rgba(0,90,150,0.9);color:#fff;" +
+    "font:11px/1.35 monospace;padding:5px 7px;border-radius:6px;white-space:pre;pointer-events:none;max-width:92vw;";
+  dbg.textContent = "build " + VIZ_BUILD + " (loading)";
+  document.addEventListener("DOMContentLoaded", function () { document.body.appendChild(dbg); });
+  if (document.body) document.body.appendChild(dbg);
+
   // ---------------------------------------------------------------------
   // DOM
   // ---------------------------------------------------------------------
@@ -588,6 +601,18 @@
     }
 
     vehCountEl.textContent = "vehicles: " + count;
+
+    // TEMP diagnostic readout (see VIZ_BUILD): the exact mobile runtime state.
+    var nlanes = (data.network && data.network.lanes) ? data.network.lanes.length : -1;
+    var nveh = data.vehicles ? Object.keys(data.vehicles).length : -1;
+    dbg.textContent =
+      "build " + VIZ_BUILD + " dpr=" + dpr.toFixed(1) +
+      " cvs=" + canvas.width + "x" + canvas.height +
+      " wrap=" + wrap.clientWidth + "x" + wrap.clientHeight +
+      " scale=" + camera.scale.toFixed(4) +
+      " off=" + Math.round(camera.offsetX) + "," + Math.round(camera.offsetY) +
+      " lanes=" + nlanes + " veh=" + nveh + " draw=" + count + " t=" + simT.toFixed(0);
+
     timeReadout.textContent =
       "t = " + simT.toFixed(1) + " s / " + simEnd.toFixed(1) + " s";
     if (!sliderDragging) {
