@@ -1153,8 +1153,9 @@ A3) remain the byte-for-byte correctness anchor (same discipline as rungs 8b/10/
     (documented; not exercised -- scenario 27's waits differ by 3s). Byte-identical for every
     priority/RBL scenario (gated on junction.Type). Parity-reviewer ACCEPT (stash-test confirmed
     the deadlock without the change).
-  - **C4-iii. PARTIAL -> successive-lane speed limit DONE (exact); two-vehicle entry-yield blocked
-    on the junction arrival-time subsystem.** A single-lane priority roundabout (circulating edges
+  - **C4-iii. DONE (both mechanisms, exact @1e-3) -- successive-lane speed limit AND two-vehicle
+    entry-yield via the junction arrival-time subsystem** (header was stale; both sub-bullets below
+    landed with passing trace-verified tests, scenarios 32/33). A single-lane priority roundabout (circulating edges
     priority 10, approaches priority 1; each entry a standard minor link + `sameTarget` MERGE onto
     the ring's next lane). Two independent mechanisms surfaced here:
     - **DONE (this session): successive-lane free-flow speed limit.** `MSVehicle::planMoveInternal`
