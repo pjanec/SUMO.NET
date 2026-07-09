@@ -417,6 +417,45 @@ public sealed record NetworkModel(
                 // Internal (via) lane: arrival == exit (a vehicle never intra-edge-changes on a
                 // one-lane junction interior in this rung's scope).
                 result.Add((via, via));
+
+                // C4-vii-a: follow the internal VIA-CHAIN. A `cont` link (a turn split by an INTERNAL
+                // junction) traverses TWO+ internal lanes -- e.g. NC->CE = :C_3_0 then :C_16_0 -- but
+                // the NC->CE connection lists only the FIRST via (:C_3_0); the continuation :C_3->CE
+                // lists via :C_16_0, and the final :C_16->CE hop has no via. Walk that chain so the pool
+                // includes EVERY internal lane the vehicle physically crosses (SUMO's getViaLaneOrLane /
+                // MSLane internal-following chain), not just the first. This is load-bearing beyond the
+                // trajectory: :C_16_0 is the lane in junction C's <request>/IntLanes for this link, so
+                // without it JunctionYieldConstraint's egoInternalLane scan can't even find ego's link
+                // (LinkByInternalLane has :C_16_0, not the intermediate :C_3_0) and no cautious approach
+                // / RoW fires. INERT for single-internal-lane junctions (every committed green scenario):
+                // the first via already reaches the exit edge, so this loop never iterates.
+                var chainVia = via;
+                for (var guard = 0; guard < 8; guard++)
+                {
+                    var chainLane = LanesById[chainVia];
+                    if (!ConnectionsByFromEdgeLane.TryGetValue((chainLane.EdgeId, chainLane.Index), out var chainConns))
+                    {
+                        break;
+                    }
+
+                    Connection? nextHop = null;
+                    foreach (var c in chainConns)
+                    {
+                        if (c.To == toEdgeId && c.Via is not null)
+                        {
+                            nextHop = c;
+                            break;
+                        }
+                    }
+
+                    if (nextHop?.Via is not { } nextVia)
+                    {
+                        break;
+                    }
+
+                    result.Add((nextVia, nextVia));
+                    chainVia = nextVia;
+                }
             }
 
             arrivalIndex = connection.ToLane;

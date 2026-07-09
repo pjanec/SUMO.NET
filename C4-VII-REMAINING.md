@@ -164,8 +164,18 @@ golden, so this anchor asserts stuck-count/arrival, not exact FCD); committed su
 ## C4-vii-a part 2 — internal-junction RoW (cont turns)
 
 ### Status
-Part 1 (the cont-lane SEQUENCE fix) is on branch `claude/handoff-docs-i5a9vm` (commit `1cb6c12`),
-byte-identical, NOT on main. Part 2 is open.
+**Part 1 (the cont-lane internal via-chain SEQUENCE fix) is DONE and committed** (the lost
+`claude/handoff-docs-i5a9vm` / `1cb6c12` was unrecoverable, so it was re-derived):
+`NetworkModel.ResolveSequenceCore` now follows the full via-chain (`:C_3_0` then `:C_16_0`), the engine
+occupies `:C_16_0`, inert on the whole suite + Sim.Bench. Anchor `scenarios/_diag/cont-turn-sequence`
+(`ContTurnSequenceDiagTests`). **Parts 2a-2c (the cont-turn SPEED) are open:** (2a) resolve the cautious-
+approach `approachLane` back over the intermediate `:C_3_0` to the normal lane (prototyped this session,
+fires the approach slowdown but insufficient alone); (2b) turn-speed cap for the 9.26 m/s internal
+lanes; (2c) model the internal junction `:C_16` as a first-class minor link (its own cautious approach +
+`<request>` foes). SUMO enters `:C_3_0` at 3.55 m/s; the engine still enters at ~11. Full scenario 44
+additionally needs bug B (spurious final-edge LC under conflict) and the symmetric-4-way arrival-time
+RoW (bug C -- a distinct port, NOT willPass). This is a large multi-subsystem rung; each piece needs its
+own anchor + gate.
 
 ### Root cause (this session)
 For a `cont` link (a turn split by an INTERNAL JUNCTION into two internal lanes, e.g. `NC→CE` =

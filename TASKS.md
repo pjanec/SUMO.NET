@@ -882,12 +882,29 @@ A3) remain the byte-for-byte correctness anchor (same discipline as rungs 8b/10/
     1 skipped). Instrumenting this anchor + the -L2 grid this session showed **C4-vii is at least THREE
     entangled multi-lane bugs, and the willPass gate alone does NOT fix it** -- each needs its own
     isolated sub-anchor. Recommend DECOMPOSING into:
-      - **C4-vii-a (multi-internal-lane "cont" path).** SUMO's left turn traverses TWO internal lanes
-        (e.g. `NC->CE` = `:C_3_0` then the internal-junction lane `:C_16_0`, `<request>` index 3
-        `cont="1"`); the engine collapses it to `:C_3_0` -> exit edge, never modeling `:C_16_0`. Port
-        the internal-junction (via-lane chain) so multi-part junction paths resolve fully. A LONE
-        left-turner still arrives (collapse alone is not fatal), so anchor this against the internal-
-        lane SEQUENCE, not arrival.
+      - **C4-vii-a (multi-internal-lane "cont" path). PART 1 DONE; parts 2+ open.** SUMO's left turn
+        traverses TWO internal lanes (e.g. `NC->CE` = `:C_3_0` then the internal-junction lane
+        `:C_16_0`, `<request>` index 3 `cont="1"`); the engine collapsed it to `NC_1 -> CE_1`, never
+        modeling `:C_16_0` (the lane in junction C's `<request>`/IntLanes for this link), so
+        JunctionYieldConstraint could not even find ego's link for a cont turn.
+        **PART 1 DONE (the internal via-chain SEQUENCE):** `NetworkModel.ResolveSequenceCore` now follows
+        the full via-chain (`:C_3_0` then `:C_16_0`) -- SUMO's getViaLaneOrLane / MSLane internal-
+        following chain -- so the pool includes every internal lane crossed and the engine OCCUPIES
+        `:C_16_0`. Inert for single-internal-lane junctions (every committed green scenario + the -L2
+        diag grids; suite byte-identical, Sim.Bench hash unchanged `909605E965BFFE59`). ANCHOR
+        `scenarios/_diag/cont-turn-sequence` (`ContTurnSequenceDiagTests`) -- a lone `NC->CE` turn;
+        without the chain the engine visits only `{NC_1, CE_1}` (collapse), with it `:C_16_0`. This is
+        the SEQUENCE fix the decomposition asked to anchor first (not arrival).
+        **PARTS 2+ OPEN (the cont-turn SPEED, needed for exact FCD / scenario 44):** (2a) the cautious
+        approach must measure `seen` from the NORMAL approach lane (walk `approachLane` back over the
+        intermediate `:C_3_0`) -- prototyped this session, makes the approach slowdown fire but is NOT
+        sufficient alone; (2b) a turn-speed cap for the 9.26 m/s internal lanes; and (2c) modeling the
+        internal junction `:C_16` as a FIRST-CLASS minor link with its own cautious approach + `<request>`
+        foes (a lone turn enters `:C_3_0` at 3.55 m/s in SUMO but the engine still enters at ~11). Full
+        scenario 44 additionally needs bug B (spurious final-edge lane change under conflict) and the
+        symmetric-4-way arrival-time RoW (bug C -- a distinct port, NOT willPass: with all four
+        arriving together, priority/willPass alone can't break the tie; SUMO uses arrival-time). Anchor
+        `44` stays skip-gated until 2a-2c + B + C land.
       - **C4-vii-b. DONE (parity-track, exact @1e-3). Keep-right over-accumulation + final-edge arrival
         strand.** Root-caused to TWO entangled bugs: (1) the narrow keep-right port
         (`ApplyKeepRightDecision`) accumulated the keep-right probability on a REQUIRED lane (it vetoed
