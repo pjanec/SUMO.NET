@@ -92,6 +92,21 @@ public sealed partial class Engine : IEngine
     // scenario and the bench -- takes exactly zero give-way work and stays byte-identical.
     private bool _anyBluelight;
 
+    // Rung OV1 (opposite-direction overtaking): true iff the loaded demand has any vType with
+    // lcOpposite. DetectOvertake short-circuits when false, so every scenario with no such vType
+    // (all committed scenarios + the bench) takes zero opposite-direction work and stays identical.
+    private bool _anyLcOpposite;
+
+    // Rung OV1: how far ahead the oncoming (opposite-direction) lane must be clear for a held-up
+    // vehicle to consider overtaking through it. OV1 uses this fixed lookahead; OV2 replaces it with
+    // a closing-speed / time-to-collision gap-acceptance test.
+    private const double OvertakeClearAheadDist = 150.0;
+
+    // Rung OV1: a leader is "holding ego up" (worth overtaking) only if it is this fraction below
+    // ego's own free-flow speed on the lane, and within OvertakeLeaderMaxGap ahead.
+    private const double OvertakeLeaderSlowFraction = 0.8;
+    private const double OvertakeLeaderMaxGap = 60.0;
+
     // Rung ER3 (give-way): SUMO's device.bluelight.reactiondist default (MSDevice_Bluelight.cpp:58)
     // -- the range within which surrounding drivers perceive the siren and start clearing the way.
     private const double GiveWayReactionDist = 25.0;
@@ -404,6 +419,7 @@ public sealed partial class Engine : IEngine
         // Rung ER3: recompute the give-way master switch for this scenario (reset first so a
         // re-LoadScenario on the same Engine never inherits the previous demand's answer).
         _anyBluelight = false;
+        _anyLcOpposite = false;
         foreach (var def in _demand.Vehicles)
         {
             var rawVType = _demand.VTypesById[def.TypeId];
@@ -413,6 +429,8 @@ public sealed partial class Engine : IEngine
             var vType = VTypeDefaults.Resolve(rawVType);
             // Rung ER3: flip the give-way master switch on if any vehicle is a bluelight EV.
             _anyBluelight |= vType.HasBluelight;
+            // Rung OV1: flip the opposite-overtake master switch on if any vType allows it.
+            _anyLcOpposite |= vType.LcOpposite;
             // D3: EntityIndex is this vehicle's stable index in _vehicles, set once here -- see
             // VehicleRuntime.EntityIndex's own comment.
             var entityIndex = _vehicles.Count;
@@ -1800,6 +1818,11 @@ public sealed partial class Engine : IEngine
             var (side, evSameLane) = DetectGiveWay(v, lane, time);
             v.GiveWaySide = side;
             v.GiveWayEvSameLane = evSameLane;
+
+            // Rung OV1: form an opposite-direction overtake intent (held up behind a slower leader,
+            // oncoming lane clear ahead). Real pass only; inert (false, no scan) when no vType has
+            // lcOpposite. Written to the ego's own field, read by the OV2/OV3 arms and exported.
+            v.OvertakeActive = DetectOvertake(v, lane, neighbors);
         }
 
         return new MoveIntent
@@ -1898,6 +1921,75 @@ public sealed partial class Engine : IEngine
     {
         var margin = Math.Max(0.0, lane.Width / 2.0 - v.VType.Width / 2.0);
         return v.GiveWaySide < 0 ? -margin : margin;
+    }
+
+    // Rung OV1 (opposite-direction overtaking) DETECTION. Per-ego, reads only the frozen
+    // start-of-step snapshot + immutable network, writes nothing (the caller stores the result in
+    // this vehicle's own OvertakeActive). Returns true iff ego -- a vType that ALLOWS opposite
+    // overtaking (lcOpposite) -- is HELD UP behind a slower same-lane leader AND the oncoming
+    // (opposite-direction) lane is CLEAR at least OvertakeClearAheadDist ahead in ego's travel
+    // direction. This is the OV1 decision; OV2 replaces the fixed clear-ahead distance with a
+    // closing-speed / time-to-collision gap acceptance, and OV3 executes the pass.
+    //
+    // Inert: returns false immediately when the scenario has no lcOpposite vType (_anyLcOpposite
+    // false), when ego is not lcOpposite, or when ego's lane has no opposite (bidi) partner.
+    private bool DetectOvertake(VehicleRuntime v, Lane lane, LaneNeighborQuery neighbors)
+    {
+        if (!_anyLcOpposite || !v.VType.LcOpposite)
+        {
+            return false;
+        }
+
+        var oppLaneId = _network!.TryGetBidiLaneId(v.LaneId);
+        if (oppLaneId is null)
+        {
+            return false;
+        }
+
+        // Held up? A same-lane leader meaningfully slower than ego's own free-flow speed and close
+        // enough ahead to be worth passing.
+        var leader = neighbors.GetLeader(v);
+        if (leader is null)
+        {
+            return false;
+        }
+
+        var egoFreeSpeed = KraussModel.LaneVehicleMaxSpeed(lane.Speed, v.SpeedFactor, v.VType);
+        var leaderGap = leader.Kinematics.Pos - leader.VType.Length - v.Kinematics.Pos;
+        if (leader.Kinematics.Speed >= egoFreeSpeed * OvertakeLeaderSlowFraction
+            || leaderGap > OvertakeLeaderMaxGap)
+        {
+            return false;
+        }
+
+        // Opposite lane clear ahead? Map ego and each oncoming vehicle to a world coordinate and
+        // measure the head-on gap along ego's travel direction. (Straight-road model: ego's forward
+        // direction is the sign of increasing x along its lane shape -- OV fixtures are E-W.)
+        var (egoX, _, _) = LaneGeometry.PositionAtOffset(lane.Shape, v.Kinematics.Pos, 0.0);
+        var egoDirX = Math.Sign(lane.Shape[^1].X - lane.Shape[0].X);
+        if (egoDirX == 0)
+        {
+            egoDirX = 1;
+        }
+
+        var oppLane = _network.LanesById[oppLaneId];
+        var nearestAhead = double.PositiveInfinity;
+        foreach (var o in ActiveVehicles())
+        {
+            if (o.LaneId != oppLaneId)
+            {
+                continue;
+            }
+
+            var (ox, _, _) = LaneGeometry.PositionAtOffset(oppLane.Shape, o.Kinematics.Pos, 0.0);
+            var aheadDist = (ox - egoX) * egoDirX; // > 0 == ahead of ego in its travel direction
+            if (aheadDist > 0.0 && aheadDist < nearestAhead)
+            {
+                nearestAhead = aheadDist;
+            }
+        }
+
+        return nearestAhead > OvertakeClearAheadDist;
     }
 
     // Rung ER4 (give-way execution, multi-lane). When a blue-light EV is approaching in ego's OWN
@@ -5501,7 +5593,8 @@ public sealed partial class Engine : IEngine
                 x: x,
                 y: y,
                 angle: angle,
-                giveWaySide: v.GiveWaySide);
+                giveWaySide: v.GiveWaySide,
+                overtakeActive: v.OvertakeActive);
 
             trajectory.Add(new TrajectoryPoint(
                 VehicleId: snapshot.VehicleId,

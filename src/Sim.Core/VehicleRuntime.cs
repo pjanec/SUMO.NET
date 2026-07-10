@@ -283,4 +283,13 @@ internal sealed class VehicleRuntime
     // Default false; left false whenever no EV shares this vehicle's lane, so inert wherever
     // give-way does not trigger a lane change.
     public bool GiveWayEvSameLane;
+
+    // Rung OV1 (opposite-direction overtaking): true iff this vehicle (a) is held up behind a
+    // slower same-lane leader and (b) sees the oncoming (opposite-direction) lane clear far enough
+    // ahead to consider overtaking through it. Recomputed each PLAN step (Engine.DetectOvertake)
+    // from the frozen start-of-step snapshot, written only by the owning vehicle (parallel-safe like
+    // GiveWaySide), and exported via VehicleExportSnapshot. Default false; left false for every vType
+    // without lcOpposite (Engine._anyLcOpposite short-circuits detection), so inert wherever
+    // opposite-direction overtaking is absent. Consumed by the OV2/OV3 decision/execution arms.
+    public bool OvertakeActive;
 }

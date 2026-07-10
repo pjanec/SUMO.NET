@@ -48,6 +48,9 @@ public sealed record ResolvedVType(
     // SUMO's MSDevice_Bluelight)? Defaults to false, so give-way detection is inert for every
     // vType that does not set hasBluelight="true".
     bool HasBluelight,
+    // Rung OV1 (opposite-direction overtaking): may this vType overtake using the oncoming lane?
+    // Defaults to false, so the whole opposite-direction subsystem is inert for every other vType.
+    bool LcOpposite,
     // Rung R6: resolved MSCFModel_Rail traction parameters. Only meaningful when
     // CarFollowModel=="Rail"; for every other model they stay at these inert defaults and are never
     // read. Weight/MassFactor give the rotating mass (rotWeight = Weight*MassFactor);
@@ -342,6 +345,8 @@ public static class VTypeDefaults
             JmIgnoreJunctionFoeProb: vType.JmIgnoreJunctionFoeProb ?? 0.0,
             // Rung ER3: false default -> give-way detection is inert for every non-bluelight vType.
             HasBluelight: vType.HasBluelight ?? false,
+            // Rung OV1: false default -> opposite-direction overtaking is inert for every vType.
+            LcOpposite: vType.LcOpposite ?? false,
             // Rung R6: MSCFModel_Rail traction params (inert NaN/0 for every non-Rail vType).
             Weight: railWeight,
             MassFactor: railMassFactor,

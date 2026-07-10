@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<routes xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://sumo.dlr.de/xsd/routes_file.xsd">
+    <!-- OV1 fixture: a slow leader holds up a fast lcOpposite overtaker on edge AB while a normal-
+         speed oncoming vehicle approaches head-on down the opposite edge BA (starting worldX ~350).
+         Early, the oncoming is far ahead (> the clear-ahead distance) so the held-up overtaker forms
+         an overtake intent; as the oncoming closes within the clear-ahead distance the intent must
+         drop. The test asserts BOTH: the intent forms in the clear window, and it is never set while
+         the oncoming is within the clear-ahead distance ahead. -->
+    <vType id="slow" vClass="passenger" sigma="0" maxSpeed="6"/>
+    <vType id="fast" vClass="passenger" sigma="0" maxSpeed="13.89" lcOpposite="true"/>
+    <vType id="onc"  vClass="passenger" sigma="0" maxSpeed="13.89"/>
+    <route id="ab" edges="AB"/>
+    <route id="ba" edges="BA"/>
+    <vehicle id="leader"    type="slow" route="ab" depart="0" departPos="100" departSpeed="0" departLane="0"/>
+    <vehicle id="overtaker" type="fast" route="ab" depart="0" departPos="60"  departSpeed="0" departLane="0"/>
+    <vehicle id="oncoming"  type="onc"  route="ba" depart="0" departPos="650" departSpeed="0" departLane="0"/>
+</routes>

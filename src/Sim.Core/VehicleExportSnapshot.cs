@@ -56,6 +56,12 @@ public readonly struct VehicleExportSnapshot
     // the DETECTION independently of the ER4/ER5 execution (which shows up in Lane / LatOffset).
     public readonly int GiveWaySide;
 
+    // Rung OV1 (opposite-direction overtaking): whether this vehicle currently intends to overtake
+    // through the oncoming lane (held up behind a slower leader with the opposite lane clear ahead).
+    // Always false wherever no vType sets lcOpposite, so inert for every existing scenario. Exposed
+    // so a behavioral test can assert the DECISION independently of the (later) execution.
+    public readonly bool OvertakeActive;
+
     public VehicleExportSnapshot(
         Entity entity,
         int entityIndex,
@@ -68,7 +74,8 @@ public readonly struct VehicleExportSnapshot
         double x,
         double y,
         double angle,
-        int giveWaySide = 0)
+        int giveWaySide = 0,
+        bool overtakeActive = false)
     {
         Entity = entity;
         EntityIndex = entityIndex;
@@ -82,5 +89,6 @@ public readonly struct VehicleExportSnapshot
         Y = y;
         Angle = angle;
         GiveWaySide = giveWaySide;
+        OvertakeActive = overtakeActive;
     }
 }

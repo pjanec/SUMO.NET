@@ -57,6 +57,8 @@ public static class DemandParser
                 // the emergency-privilege scenarios 16/50/51/52, whose EVs set NO bluelight) is
                 // byte-identical. Read as a vType attribute `hasBluelight="true"`.
                 HasBluelight: ParseNullableBool(vTypeEl, "hasBluelight"),
+                // Rung OV1: opt-in opposite-direction overtaking (SUMO's lcOpposite analog).
+                LcOpposite: ParseNullableBool(vTypeEl, "lcOpposite"),
                 // C11-i: SUMOVTypeParameter.cpp's carFollowModel="..." vType attribute (a plain
                 // string tag name -- "Krauss", "IDM", etc. -- SUMOXMLDefinitions::CarFollowModels).
                 CarFollowModel: vTypeEl.Attribute("carFollowModel")?.Value,
