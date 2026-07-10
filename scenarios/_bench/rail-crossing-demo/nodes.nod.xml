@@ -1,0 +1,12 @@
+<nodes>
+    <!-- Rail line runs E-W through the crossing node X; the road runs N-S through it.
+         X is a rail_crossing: while a train occupies the crossing, X closes the ROAD links
+         (G/y/r/u state machine, rung R5) so road cars yield.
+         The crossing sits close to the trains' start so they cross while still accelerating
+         (slow train => longer closure => a visible road queue). -->
+    <node id="RW" x="-250"  y="0"    type="dead_end"/>
+    <node id="X"  x="0"     y="0"    type="rail_crossing"/>
+    <node id="RE" x="1800"  y="0"    type="dead_end"/>
+    <node id="RS" x="0"     y="-260" type="dead_end"/>
+    <node id="RN" x="0"     y="260"  type="dead_end"/>
+</nodes>

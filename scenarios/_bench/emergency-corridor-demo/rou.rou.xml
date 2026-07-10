@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<routes xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://sumo.dlr.de/xsd/routes_file.xsd">
+    <!-- EMERGENCY RESCUE-LANE DEMO (rungs ER3 detection + ER4 multi-lane give-way execution). A
+         column of slow cars (maxSpeed 6) travels the RIGHT lane e0_0. A blue-light ambulance
+         (hasBluelight, maxSpeed 13.89) comes up behind them in the same lane. As the EV closes to
+         within the ~25 m siren range in a car's own lane, that car vacates to the LEFT lane e0_1;
+         the EV holds e0_0 (a bluelight EV makes no overtaking lane change of its own; it relies on
+         others clearing) and speeds through the opened rescue lane, then each car merges back. The
+         cars peel off one after another as the EV advances, so the rescue lane forms progressively.
+         sigma=0 for a deterministic replay. VISUAL DEMO, not a parity anchor (the ER3/ER4 anchors
+         are scenarios/53-giveway-single .. 54-giveway-multi). -->
+    <vType id="car" vClass="passenger" sigma="0" maxSpeed="6"/>
+    <vType id="amb" vClass="emergency" sigma="0" maxSpeed="13.89" hasBluelight="true"/>
+
+    <route id="r0" edges="e0"/>
+
+    <!-- Slow column in the right lane (departLane 0 = e0_0), a tight ~40 m spacing. -->
+    <vehicle id="car0" type="car" route="r0" depart="0" departPos="40" departSpeed="0" departLane="0"/>
+    <vehicle id="car1" type="car" route="r0" depart="0" departPos="75" departSpeed="0" departLane="0"/>
+    <vehicle id="car2" type="car" route="r0" depart="0" departPos="110" departSpeed="0" departLane="0"/>
+    <vehicle id="car3" type="car" route="r0" depart="0" departPos="145" departSpeed="0" departLane="0"/>
+    <vehicle id="car4" type="car" route="r0" depart="0" departPos="180" departSpeed="0" departLane="0"/>
+
+    <!-- The ambulance, behind the column in the same right lane. -->
+    <vehicle id="ambulance" type="amb" route="r0" depart="0" departPos="0" departSpeed="0" departLane="0"/>
+</routes>

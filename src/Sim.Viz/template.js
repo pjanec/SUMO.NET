@@ -55,6 +55,18 @@
     moped: "#a3a3a3",
     emergency: "#dc2626",
     pedestrian: "#eab308",
+    // Rail family (rungs R1-R6): trains render as long amber/gold boxes -- distinct from the
+    // passenger blue and the emergency red, and long enough (rail vType lengths are tens of
+    // metres) to read unmistakably as a train. tram gets a lighter gold so a mixed street-rail
+    // scene still separates the two.
+    rail: "#f59e0b",
+    rail_urban: "#f59e0b",
+    rail_electric: "#f59e0b",
+    rail_fast: "#f59e0b",
+    rail_slow: "#f59e0b",
+    subway: "#f59e0b",
+    cityrail: "#f59e0b",
+    tram: "#fcd34d",
     // EXTERNAL-AGENT demo (Sim.ExtDemo): agents injected OUTSIDE SUMO via the B1/B5 obstacle API
     // (AddObstacle/AddMovingObstacle), never a real SUMO vehicle. Deliberately loud/unmistakable
     // colors, distinct from every real vClass above (magenta pedestrian marker, lime "obstacle

@@ -1,0 +1,7 @@
+<edges>
+    <!-- Two-lane one-way arterial (e0_0 right, e0_1 left). A column of slow cars travels the RIGHT
+         lane; a blue-light ambulance comes up behind in the same lane. Each car, once the EV is
+         within siren range in its lane, vacates to the left lane (give-way, rung ER4), clearing a
+         rescue lane the ambulance holds and speeds through. -->
+    <edge id="e0" from="A" to="B" numLanes="2" speed="13.89"/>
+</edges>

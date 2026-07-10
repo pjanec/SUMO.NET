@@ -1,0 +1,7 @@
+<nodes>
+    <!-- Road laid out VERTICAL (portrait) so Sim.Viz's fit-to-view fills a phone screen and the
+         one-lane-width give-way lane change is clearly visible, instead of collapsing to a thin
+         horizontal strip. -->
+    <node id="A" x="0" y="0"   type="dead_end"/>
+    <node id="B" x="0" y="480" type="dead_end"/>
+</nodes>

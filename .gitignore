@@ -41,3 +41,9 @@ scenarios/_bench/ext-showcase/engine.fcd.xml
 scenarios/_bench/ext-showcase/replay.html
 scenarios/_bench/ext-showcase/combined.fcd.xml
 scenarios/_bench/ext-showcase/playwright_screenshot.png
+
+# Rail level-crossing + emergency rescue-lane demos: regenerated engine FCD and replay.
+scenarios/_bench/rail-crossing-demo/engine.fcd.xml
+scenarios/_bench/rail-crossing-demo/replay.html
+scenarios/_bench/emergency-corridor-demo/engine.fcd.xml
+scenarios/_bench/emergency-corridor-demo/replay.html

@@ -1,0 +1,25 @@
+sumo_version=1.20.0
+sumo_version_reported=Eclipse SUMO sumo Version 1.20.0
+generated_utc=2026-07-10T18:34:35Z
+command=netconvert --node-files nodes.nod.xml --edge-files edges.edg.xml --output-file net.net.xml --no-turnarounds true
+# No golden.fcd.xml here: this is a Sim.Viz VISUAL DEMO, not a parity scenario. The parity anchor
+#   for the rail level-crossing (rung R5, MSRailCrossing) is scenarios/51-rail-crossing, which
+#   carries the SUMO golden; this demo just exercises the same engine feature at a livelier scale
+#   for the replay.
+# net: hand-authored (nodes.nod.xml/edges.edg.xml -> net.net.xml via netconvert). A single rail
+#   track WX->XE (allow="rail", spreadType="center") crosses a two-way road at node X, whose type
+#   is rail_crossing -- so while a train body occupies X, X closes its controlled ROAD links and
+#   road cars yield. The road runs N-S (SX/XN northbound, NX/XS southbound); the crossing sits
+#   close to the trains' start so a train is still slow (long body-occupancy => long closure =>
+#   a visible road queue) when it crosses.
+# rou: two rail trains (vClass=rail, Krauss) run the track in convoy (t0 crosses ~t=38-50, t1
+#   ~t=98-110); 21 SUMO passenger cars (sigma=0, maxSpeed=13.89) run the road in two waves so a
+#   queue builds and releases against each train.
+# vtype defaults: rail vClass defaults (rung R1, VTypeDefaults) for the train; default passenger
+#   for the cars. sigma=0 (rail's default is already 0) for a deterministic replay.
+# input file hashes (sha256):
+input=net.net.xml sha256=cbdcc62d8e2414a635a802621cb7444766923e1493412e413a84ad1ac767e4bc
+input=rou.rou.xml sha256=006e3b4a523c278d9f78b5c4524cf63d689bbe95a6694f6a5f19a399ac84ea94
+input=config.sumocfg sha256=6eff916326c76aa72d44508eb08ad5a55ffc6d74591a0db5ed1871c3dd532f4d
+input=nodes.nod.xml sha256=35061d65fbc3fd221f4409eb208416d9b781a7f65e1c98eb2c5e1100c47728b8
+input=edges.edg.xml sha256=80f5f1439b672d48bb53e894b35f02e2e060a0740653ad4015379421b7f7a6a6

@@ -1,0 +1,11 @@
+<edges>
+    <!-- Single rail track W->E through the crossing (two trains run this in convoy). -->
+    <edge id="WX" from="RW" to="X" numLanes="1" speed="27.78" allow="rail" spreadType="center"/>
+    <edge id="XE" from="X" to="RE" numLanes="1" speed="27.78" allow="rail" spreadType="center"/>
+    <!-- Road, both directions through the crossing (each a single lane). Cars queue here while a
+         train holds the crossing closed, then flow once it re-opens. -->
+    <edge id="SX" from="RS" to="X" numLanes="1" speed="13.89"/>
+    <edge id="XN" from="X" to="RN" numLanes="1" speed="13.89"/>
+    <edge id="NX" from="RN" to="X" numLanes="1" speed="13.89"/>
+    <edge id="XS" from="X" to="RS" numLanes="1" speed="13.89"/>
+</edges>

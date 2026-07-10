@@ -1,0 +1,24 @@
+sumo_version=1.20.0
+sumo_version_reported=Eclipse SUMO sumo Version 1.20.0
+generated_utc=2026-07-10T18:34:35Z
+command=netconvert --node-files nodes.nod.xml --edge-files edges.edg.xml --output-file net.net.xml --no-turnarounds true
+# No golden.fcd.xml here: this is a Sim.Viz VISUAL DEMO, not a parity scenario. The give-way
+#   execution rungs (ER3 detection + ER4 multi-lane vacate) are BEHAVIORAL (no SUMO golden -- SUMO
+#   forms its rescue lane via sublane lateral alignment, which the engine adapts to a lane change);
+#   their behavioral-property anchors are scenarios/53-giveway-single .. 55-giveway-drift. This
+#   demo exercises the same feature with a whole column of cars for the replay.
+# net: hand-authored (nodes.nod.xml/edges.edg.xml -> net.net.xml via netconvert). One two-lane
+#   one-way edge e0 (e0_0 right, e0_1 left), laid out VERTICALLY so the one-lane-width give-way
+#   change is legible under Sim.Viz's fit-to-view camera instead of collapsing to a thin strip.
+# rou: five slow SUMO cars (vClass=passenger, sigma=0, maxSpeed=6) in a tight column in the right
+#   lane; one blue-light ambulance (vClass=emergency, hasBluelight=true, maxSpeed=13.89) behind
+#   them in the same lane. As the EV closes within siren range in each car's lane, that car vacates
+#   e0_0->e0_1 and merges back after the EV passes; the EV holds e0_0 throughout.
+# vtype defaults: default emergency vClass for the ambulance (+ hasBluelight); default passenger
+#   for the cars. sigma=0 for a deterministic replay.
+# input file hashes (sha256):
+input=net.net.xml sha256=0a1b28d0a78d0dfd8aed07cee595d96f3a857ca5f6d630303f4defba93240c90
+input=rou.rou.xml sha256=dd98f1dd2fb1623d35703bf68329c5617bd91ba25fa5cc3a0a1590d367b14aa8
+input=config.sumocfg sha256=699db8bb19c2a04771823cdf07425db7a0f6132e15010addab11757894f29d7d
+input=nodes.nod.xml sha256=d1578a273dacd6774413245b3e88e6c3306a88cbc5ee9a0f32b1813f04c0a1aa
+input=edges.edg.xml sha256=d26b08e0dbdfd8c81b84102c1138c8763d1ed2dc51fa4ad2d1cd991bd63ceea0

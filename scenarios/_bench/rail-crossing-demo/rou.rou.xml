@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<routes xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://sumo.dlr.de/xsd/routes_file.xsd">
+    <!-- LEVEL-CROSSING DEMO (rung R5, MSRailCrossing). A single rail track WX to XE crosses a
+         two-way road at node X (a rail_crossing). Two trains cross in sequence (t0 ~t=38-50,
+         t1 ~t=98-110); while a train body occupies the crossing, X closes the controlled ROAD links
+         (G/y/r/u), so road cars brake and yield short of the tracks, then release once it re-opens.
+         Road cars run both directions (northbound via SX/XN, southbound via NX/XS), released in two
+         waves so a queue builds against each train. sigma=0 for a clean deterministic replay. This
+         is a VISUAL DEMO, not a parity anchor (the R5 parity anchor is scenarios/51-rail-crossing). -->
+    <vType id="train" vClass="rail" carFollowModel="Krauss"/>
+    <vType id="car" vClass="passenger" sigma="0" maxSpeed="13.89"/>
+
+    <route id="rail_eb" edges="WX XE"/>
+    <route id="road_nb" edges="SX XN"/>
+    <route id="road_sb" edges="NX XS"/>
+
+    <vehicle id="t0" type="train" route="rail_eb" depart="0"  departPos="0" departSpeed="0" departLane="0"/>
+    <vehicle id="t1" type="train" route="rail_eb" depart="60" departPos="0" departSpeed="0" departLane="0"/>
+
+    <!-- Northbound road stream (S to N). -->
+    <vehicle id="nb0" type="car" route="road_nb" depart="8" departPos="0" departSpeed="0" departLane="0"/>
+    <vehicle id="nb1" type="car" route="road_nb" depart="14" departPos="0" departSpeed="0" departLane="0"/>
+    <vehicle id="nb2" type="car" route="road_nb" depart="20" departPos="0" departSpeed="0" departLane="0"/>
+    <vehicle id="nb3" type="car" route="road_nb" depart="26" departPos="0" departSpeed="0" departLane="0"/>
+    <vehicle id="nb4" type="car" route="road_nb" depart="32" departPos="0" departSpeed="0" departLane="0"/>
+    <vehicle id="nb5" type="car" route="road_nb" depart="38" departPos="0" departSpeed="0" departLane="0"/>
+    <vehicle id="nb6" type="car" route="road_nb" depart="68" departPos="0" departSpeed="0" departLane="0"/>
+    <vehicle id="nb7" type="car" route="road_nb" depart="74" departPos="0" departSpeed="0" departLane="0"/>
+    <vehicle id="nb8" type="car" route="road_nb" depart="80" departPos="0" departSpeed="0" departLane="0"/>
+    <vehicle id="nb9" type="car" route="road_nb" depart="86" departPos="0" departSpeed="0" departLane="0"/>
+    <vehicle id="nb10" type="car" route="road_nb" depart="92" departPos="0" departSpeed="0" departLane="0"/>
+
+    <!-- Southbound road stream (N to S). -->
+    <vehicle id="sb0" type="car" route="road_sb" depart="11" departPos="0" departSpeed="0" departLane="0"/>
+    <vehicle id="sb1" type="car" route="road_sb" depart="17" departPos="0" departSpeed="0" departLane="0"/>
+    <vehicle id="sb2" type="car" route="road_sb" depart="23" departPos="0" departSpeed="0" departLane="0"/>
+    <vehicle id="sb3" type="car" route="road_sb" depart="29" departPos="0" departSpeed="0" departLane="0"/>
+    <vehicle id="sb4" type="car" route="road_sb" depart="35" departPos="0" departSpeed="0" departLane="0"/>
+    <vehicle id="sb5" type="car" route="road_sb" depart="71" departPos="0" departSpeed="0" departLane="0"/>
+    <vehicle id="sb6" type="car" route="road_sb" depart="77" departPos="0" departSpeed="0" departLane="0"/>
+    <vehicle id="sb7" type="car" route="road_sb" depart="83" departPos="0" departSpeed="0" departLane="0"/>
+    <vehicle id="sb8" type="car" route="road_sb" depart="89" departPos="0" departSpeed="0" departLane="0"/>
+    <vehicle id="sb9" type="car" route="road_sb" depart="95" departPos="0" departSpeed="0" departLane="0"/>
+</routes>
