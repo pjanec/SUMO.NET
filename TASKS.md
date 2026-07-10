@@ -341,11 +341,21 @@ buffer absorb them); neither is a rewrite. Order within each group respects the 
     scenario 30 covered only YELLOW). So ER1 is a NON-VACUOUS RED-arm COVERAGE add with NO engine diff;
     `jmDriveAfterRedTime="0"` isolates the `!canBrake` return in SUMO (0≥0 takes the red branch, `0>redDuration`
     never fires). `RungER1ParityTests` green; `dotnet test` = 183. parity-reviewer ACCEPT.
-  - **DEFERRED (each its own future rung + scenario):** **ignore-FOE** at junctions — note `jmIgnoreJunctionFoeProb` only bypasses the
-  on-junction link-leader path (`checkLinkLeader`), NOT 9b's `opened()`/approaching stop-line yield,
-  so a real "emergency ignores a priority foe" needs the `opened()`-level ignore too; and behavior
-  **(ii) give-way** (other vehicles moving aside — the LC blue-light layer). "priority *road*"
-  right-of-way is rung 9b, not this.
+  - **ER2 DONE (ignore-FOE at junctions, PARITY, HIGH-RISK).** Two SUMO foe-ignore mechanisms,
+    both ported as default-inert vType flags (all 0 = "never ignore", so the ~30 junction scenarios
+    stay byte-identical / bench hash 909605E965BFFE59 unchanged): (1) `jmIgnoreJunctionFoeProb`
+    (MSVehicle.cpp:3430) gates `JunctionYieldConstraint`'s on-junction `AdaptToJunctionLeader` arm;
+    (2) `jmIgnoreFoeProb` + `jmIgnoreFoeSpeed` (MSLink.cpp:898-902, from `opened()`) gates the
+    approaching-foe stop-line-yield arm (speed-gated: only foes at/below `jmIgnoreFoeSpeed`). Two
+    anchors, both reusing scenario 11's net with the yielding minor vehicle made an emergency vType
+    (all probs 1.0 = deterministic): `scenarios/51-emergency-foe` (foe on-junction at t=0 → link-leader
+    arm) and `scenarios/52-emergency-foe-approaching` (foe departs t=4, still approaching → opened() arm).
+    Each non-vacuously isolates ONE gate (disabling it fails only that scenario). Probabilistic path
+    (0<prob<1) uses a stateless per-entity salted `VehicleRng` draw (behavioral, no golden), never
+    System.Random; prob>=1 / prob<=0 take no draw. `RungER2ParityTests` green; `dotnet test` = 189.
+    parity-reviewer ACCEPT.
+  - **DEFERRED:** behavior **(ii) give-way** (other vehicles moving aside — the LC blue-light layer);
+    see the ER3-ER5 give-way arc. "priority *road*" right-of-way is rung 9b, not this.
 
 ### Group B — beyond parity: live external-obstacle reactivity
 

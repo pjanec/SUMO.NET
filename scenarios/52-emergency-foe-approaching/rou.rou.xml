@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<routes xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://sumo.dlr.de/xsd/routes_file.xsd">
+    <!-- ER2 (emergency ignore-FOE, APPROACHING/opened() arm). Sibling of scenario 51 that isolates
+         the OTHER ignore gate. The MAJOR foe (WJ JE, priority) departs at t=4 (four seconds after
+         the emergency MINOR vehicle, SJ JN), so when vMinor reaches its stop line and decides to
+         enter the junction (t=17), vMajor is still on its APPROACH lane WJ (pos ~150, within the
+         reservation distance), NOT yet on the junction. vMinor's yield here is therefore the
+         approaching-foe stop-line yield (MSLink::opened / blockedAtTime, MSLink.cpp:898-902), NOT
+         the on-junction link-leader arm. With jmIgnoreFoeProb="1" + jmIgnoreFoeSpeed="100"
+         (>= vMajor's 13.9), vMinor IGNORES the approaching priority foe and crosses at free-flow;
+         in scenario 11 it would yield (hold at v2.0). vMajor keeps priority and cruises 13.9.
+         All probs 1.0 => deterministic (exact parity). Non-vacuous: without the approaching-foe
+         ignore gate vMinor yields to vMajor. -->
+    <vType id="car" vClass="passenger" sigma="0"/>
+    <vType id="emg" vClass="emergency" sigma="0" maxSpeed="13.89"
+           jmIgnoreFoeProb="1" jmIgnoreFoeSpeed="100" jmIgnoreJunctionFoeProb="1"/>
+    <route id="major" edges="WJ JE"/>
+    <route id="minor" edges="SJ JN"/>
+    <vehicle id="vMinor" type="emg" route="minor" depart="0" departPos="0" departSpeed="0" departLane="0"/>
+    <vehicle id="vMajor" type="car" route="major" depart="4" departPos="0" departSpeed="0" departLane="0"/>
+</routes>

@@ -26,6 +26,12 @@ public sealed record VType(
     // junction-model attribute; null here (no override present) resolves to SUMO's -1 default
     // in VTypeDefaults.Resolve ("never ignore red").
     double? JmDriveAfterRedTime = null,
+    // Rung ER2: emergency ignore-FOE junction-model attributes (jmIgnoreFoeProb / jmIgnoreFoeSpeed
+    // / jmIgnoreJunctionFoeProb). Null (no override) resolves to SUMO's 0 default ("never ignore a
+    // foe") in VTypeDefaults.Resolve, so every vType that omits them stays byte-identical.
+    double? JmIgnoreFoeProb = null,
+    double? JmIgnoreFoeSpeed = null,
+    double? JmIgnoreJunctionFoeProb = null,
     // C11-i: sumo/src/utils/vehicle/SUMOVTypeParameter.cpp:331's `carFollowModel` vType
     // attribute (SUMO_TAG_CF_KRAUSS's XML tag name is "Krauss", SUMO_TAG_CF_IDM's is "IDM").
     // null here (no override present) resolves to "Krauss" in VTypeDefaults.Resolve, exactly as

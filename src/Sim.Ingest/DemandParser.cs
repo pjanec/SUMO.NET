@@ -46,6 +46,11 @@ public static class DemandParser
                 // attribute map (SUMOVTypeParameter's map of junction-model params populated
                 // straight from the <vType>'s own XML attributes for jm* names).
                 JmDriveAfterRedTime: ParseNullableDouble(vTypeEl, "jmDriveAfterRedTime"),
+                // Rung ER2: emergency ignore-FOE junction-model attributes, read from the <vType>'s
+                // own XML attribute map exactly like jmDriveAfterRedTime (SUMO's getJMParam).
+                JmIgnoreFoeProb: ParseNullableDouble(vTypeEl, "jmIgnoreFoeProb"),
+                JmIgnoreFoeSpeed: ParseNullableDouble(vTypeEl, "jmIgnoreFoeSpeed"),
+                JmIgnoreJunctionFoeProb: ParseNullableDouble(vTypeEl, "jmIgnoreJunctionFoeProb"),
                 // C11-i: SUMOVTypeParameter.cpp's carFollowModel="..." vType attribute (a plain
                 // string tag name -- "Krauss", "IDM", etc. -- SUMOXMLDefinitions::CarFollowModels).
                 CarFollowModel: vTypeEl.Attribute("carFollowModel")?.Value);

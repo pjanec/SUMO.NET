@@ -2389,7 +2389,13 @@ public sealed class Engine : IEngine
             if (foe.LaneId == foeInternalLaneId)
             {
                 // On-junction: MSVehicle::adaptToJunctionLeader.
-                thisConstraint = AdaptToJunctionLeader(v, egoLane, approachLane, egoOnInternal, conflict, foe, dt, time, actionStepLengthSecs, laneVehicleMaxSpeed);
+                // Rung ER2: an emergency vehicle with jmIgnoreJunctionFoeProb IGNORES the
+                // on-junction link-leader (MSVehicle.cpp:3430 -- checkLinkLeaderCurrentAndParallel's
+                // `continue`), so this foe imposes no constraint. Inert (IgnoresJunctionFoe returns
+                // false) for every vType that leaves jmIgnoreJunctionFoeProb at its 0 default.
+                thisConstraint = IgnoresJunctionFoe(v, time)
+                    ? double.PositiveInfinity
+                    : AdaptToJunctionLeader(v, egoLane, approachLane, egoOnInternal, conflict, foe, dt, time, actionStepLengthSecs, laneVehicleMaxSpeed);
             }
             else if (foeInternalSeqIndex > foe.LaneSeqIndex)
             {
@@ -2444,7 +2450,13 @@ public sealed class Engine : IEngine
                 // false) so it can compute each vNext without the foe-willPass refinement -- the one
                 // level of approximation that breaks the circularity (setApproaching-before-opened()).
                 var foeYieldsThisStep = !prePass && !foe.WillPass;
-                thisConstraint = egoOnInternal || foeWillNotPass || foeNotApproaching || foeYieldsThisStep
+                // Rung ER2: an emergency vehicle with jmIgnoreFoeProb IGNORES an approaching
+                // priority foe whose speed is at/below jmIgnoreFoeSpeed (MSLink.cpp:898-902, the
+                // opened()/blockedAtTime foe-skip), so the approaching foe imposes no stop-line
+                // yield. Inert (IgnoresApproachingFoe returns false) for every vType that leaves
+                // jmIgnoreFoeProb at its 0 default.
+                var ignoresFoe = IgnoresApproachingFoe(v, foe.Kinematics.Speed, time);
+                thisConstraint = egoOnInternal || foeWillNotPass || foeNotApproaching || foeYieldsThisStep || ignoresFoe
                     ? double.PositiveInfinity
                     : StopSpeedFor(
                         v.VType, v.Kinematics.Speed,
@@ -2461,6 +2473,62 @@ public sealed class Engine : IEngine
         }
 
         return constraint;
+    }
+
+    // Rung ER2 (emergency ignore-FOE). Distinct salts so the two junction-foe ignore streams are
+    // independent of each other and of RngState/SpeedFactorRngSalt (see VehicleRng.SeedFor's
+    // 3-arg overload) -- only ever consumed on the 0<prob<1 statistical path below, which no
+    // committed (exact-parity) scenario exercises.
+    private const ulong JmIgnoreFoeRngSalt = 0x49676E6F7246466FUL;         // "IgnorFFo"
+    private const ulong JmIgnoreJunctionFoeRngSalt = 0x49676E4A756E4666UL; // "IgnJunFf"
+
+    // MSVehicle::checkLinkLeaderCurrentAndParallel (sumo/src/microsim/MSVehicle.cpp:3419/3430):
+    // ignore an ON-JUNCTION link-leader iff jmIgnoreJunctionFoeProb>0 AND jmIgnoreJunctionFoeProb
+    // >= rand() (no speed gate). Inert for every vType that leaves the prob at its 0 default.
+    private bool IgnoresJunctionFoe(VehicleRuntime v, double time)
+        => IgnoreProbHit(v.VType.JmIgnoreJunctionFoeProb, v, time, JmIgnoreJunctionFoeRngSalt);
+
+    // MSLink::blockedAtTime (sumo/src/microsim/MSLink.cpp:898-902, reached from MSLink::opened):
+    // ignore an APPROACHING foe iff jmIgnoreFoeProb>0 AND jmIgnoreFoeSpeed>=foe.speed AND
+    // jmIgnoreFoeProb>=rand(). The speed gate (:901 `jmIgnoreFoeSpeed < it.second.speed`) means a
+    // foe faster than jmIgnoreFoeSpeed is NOT ignored. Inert for the 0 default.
+    private bool IgnoresApproachingFoe(VehicleRuntime v, double foeSpeed, double time)
+    {
+        if (v.VType.JmIgnoreFoeProb <= 0.0 || foeSpeed > v.VType.JmIgnoreFoeSpeed)
+        {
+            return false;
+        }
+
+        return IgnoreProbHit(v.VType.JmIgnoreFoeProb, v, time, JmIgnoreFoeRngSalt);
+    }
+
+    // SUMO's foe-ignore probability test (MSLink.cpp:902 `prob < rand()` negated == ignore when
+    // `prob >= rand()`; MSVehicle.cpp:3420/3431 `prob >= rand()`). CLAUDE.md rule 5 / the give-way
+    // briefing: any probabilistic knob uses per-entity seeded VehicleRng, NEVER System.Random.
+    //   prob <= 0 -> inert (never ignore): the default for every vType, keeps all ~30 junction
+    //               scenarios byte-identical (no draw, so RngState/bench hash are untouched).
+    //   prob >= 1 -> always ignore (deterministic): the EXACT-parity emergency case (scenarios
+    //               51/52 set prob=1), no draw needed.
+    //   0<prob<1 -> a STATELESS per-(entity, step) draw from a salted VehicleRng seeded off
+    //               (Seed, EntityIndex, salt^stepBits) -- a pure function of those inputs, hence
+    //               order-independent / parallel-safe, and it never advances the dawdle RngState.
+    //               This is a STATISTICAL (behavioral) path with no exact golden and is not
+    //               exercised by any committed scenario (matches the give-way rungs' RNG posture).
+    private bool IgnoreProbHit(double prob, VehicleRuntime v, double time, ulong salt)
+    {
+        if (prob <= 0.0)
+        {
+            return false;
+        }
+
+        if (prob >= 1.0)
+        {
+            return true;
+        }
+
+        var stepBits = (ulong)BitConverter.DoubleToInt64Bits(time);
+        var rng = VehicleRng.SeedFor(Seed, v.EntityIndex, salt ^ stepBits);
+        return prob >= rng.NextDouble();
     }
 
     // C5 (keepClear / don't-block-the-box): the "removal" half of MSVehicle::checkRewindLinkLanes

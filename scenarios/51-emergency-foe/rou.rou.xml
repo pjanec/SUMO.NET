@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<routes xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://sumo.dlr.de/xsd/routes_file.xsd">
+    <!-- ER2 (emergency ignore-FOE at a priority junction). Same net + demand as scenario
+         11-priority-junction: a MAJOR vehicle (WJ JE, has priority) and a MINOR vehicle (SJ JN,
+         must yield) both depart at t=0 and arrive at junction J together. In scenario 11 vMinor
+         yields (slows at t=16, crosses after vMajor). Here vMinor is an EMERGENCY vehicle that
+         ignores the priority foe: jmIgnoreFoeProb="1" + jmIgnoreFoeSpeed="100" bypass the
+         approaching-foe stop-line yield (MSLink::opened / blockedAtTime, MSLink.cpp:898-902),
+         and jmIgnoreJunctionFoeProb="1" bypasses the on-junction link-leader yield
+         (checkLinkLeaderCurrentAndParallel, MSVehicle.cpp:3419/3430). All probs are 1.0 so the
+         decision is deterministic (exact parity). vMinor therefore crosses at free-flow (13.9),
+         no longer yielding. vMajor keeps priority and also cruises at 13.9 (different exits, JN
+         vs JE, so no car-following coupling). -->
+    <vType id="car" vClass="passenger" sigma="0"/>
+    <vType id="emg" vClass="emergency" sigma="0" maxSpeed="13.89"
+           jmIgnoreFoeProb="1" jmIgnoreFoeSpeed="100" jmIgnoreJunctionFoeProb="1"/>
+    <route id="major" edges="WJ JE"/>
+    <route id="minor" edges="SJ JN"/>
+    <vehicle id="vMajor" type="car" route="major" depart="0" departPos="0" departSpeed="0" departLane="0"/>
+    <vehicle id="vMinor" type="emg" route="minor" depart="0" departPos="0" departSpeed="0" departLane="0"/>
+</routes>

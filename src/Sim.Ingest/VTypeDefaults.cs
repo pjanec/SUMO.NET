@@ -29,7 +29,21 @@ public sealed record ResolvedVType(
     // model param. NOT a per-vClass default-table value (see RawDefaults below) -- it is a
     // per-vType override that defaults to -1 ("never ignore red") for every vClass alike,
     // threaded straight from the raw vType the same way Sigma is.
-    double JmDriveAfterRedTime);
+    double JmDriveAfterRedTime,
+    // Rung ER2 (emergency ignore-FOE at junctions). Three junction-model params, all defaulting
+    // to 0 ("never ignore a foe") for every vClass alike, so every vType that does not set them is
+    // byte-identical to before this rung. Same per-vType override threading as JmDriveAfterRedTime.
+    //   JmIgnoreFoeProb / JmIgnoreFoeSpeed: MSLink::blockedAtTime (sumo/src/microsim/MSLink.cpp:
+    //     898-902, reached from MSLink::opened) -- an APPROACHING foe is ignored iff
+    //     jmIgnoreFoeProb>0 AND jmIgnoreFoeSpeed>=foe.speed AND jmIgnoreFoeProb>=rand(). Gates the
+    //     approaching-foe stop-line yield arm of JunctionYieldConstraint.
+    //   JmIgnoreJunctionFoeProb: MSVehicle::checkLinkLeaderCurrentAndParallel (sumo/src/microsim/
+    //     MSVehicle.cpp:3419/3430) -- an ON-JUNCTION link-leader is ignored iff
+    //     jmIgnoreJunctionFoeProb>0 AND jmIgnoreJunctionFoeProb>=rand() (no speed gate). Gates the
+    //     adaptToJunctionLeader arm.
+    double JmIgnoreFoeProb,
+    double JmIgnoreFoeSpeed,
+    double JmIgnoreJunctionFoeProb);
 
 public static class VTypeDefaults
 {
@@ -253,6 +267,11 @@ public static class VTypeDefaults
             // MSVehicle.cpp:7266 getJMParam(SUMO_ATTR_JM_DRIVE_AFTER_RED_TIME, -1) -- not a
             // per-vClass table value (see field comment on ResolvedVType); overridable via
             // rou.xml's jmDriveAfterRedTime="..." (rung A3's emergency vType sets "1000").
-            JmDriveAfterRedTime: vType.JmDriveAfterRedTime ?? -1.0);
+            JmDriveAfterRedTime: vType.JmDriveAfterRedTime ?? -1.0,
+            // Rung ER2: MSVehicle/MSLink getJMParam(..., 0) defaults -- 0 == "never ignore a foe",
+            // so every vType that omits these attributes is inert (byte-identical to pre-ER2).
+            JmIgnoreFoeProb: vType.JmIgnoreFoeProb ?? 0.0,
+            JmIgnoreFoeSpeed: vType.JmIgnoreFoeSpeed ?? 0.0,
+            JmIgnoreJunctionFoeProb: vType.JmIgnoreJunctionFoeProb ?? 0.0);
     }
 }

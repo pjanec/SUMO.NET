@@ -1,0 +1,20 @@
+sumo_version=1.20.0
+sumo_version_reported=Eclipse SUMO sumo Version 1.20.0
+generated_utc=2026-07-10T02:44:42Z
+command=sumo -c config.sumocfg --fcd-output golden.fcd.xml --fcd-output.acceleration --precision 6 --save-state.times 1 --save-state.files golden.state.xml --no-step-log true
+state_time=1
+fcd_precision=6
+# ER2 (emergency ignore-FOE, APPROACHING/opened() arm). Sibling of scenario 51 isolating the
+#   OTHER ignore gate. Same net as 11-priority-junction; the MAJOR foe (WJ JE, priority)
+#   departs at t=4, so at vMinor's t=17 decision vMajor is still on APPROACH lane WJ (pos
+#   ~150, within reservation), NOT on the junction -> vMinor's yield is the approaching-foe
+#   stop-line yield (MSLink::opened / blockedAtTime, MSLink.cpp:898-902). vMinor (emergency,
+#   jmIgnoreFoeProb=1, jmIgnoreFoeSpeed=100 >= 13.9) IGNORES it and crosses at t=18 (:J_1_0
+#   v7.5); vMajor reaches :J_2_0 only at t=21. In scenario 11 vMinor would yield (hold v2.0).
+#   All probs 1.0 => deterministic. Non-vacuous: without the approaching-foe ignore gate
+#   vMinor yields to vMajor (v2.0 at t=18).
+# vtype defaults: golden.vtype.json (libsumo/TraCI dump); vMinor vClass=emergency (A1 table).
+# input file hashes (sha256):
+input=net.net.xml sha256=6121204088e37cf769e22718252aad718969d36ff7536842e0c0064ae83684cb
+input=rou.rou.xml sha256=668f9070ae8165740650b1ab5723f22beb6acd30b51156a11bcbf001ccd7e56b
+input=config.sumocfg sha256=53f49f1759ee97b9633681d41da2293c785033015164e2a6571e2b8feda4e06a
