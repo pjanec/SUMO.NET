@@ -30,6 +30,13 @@ namespace Sim.Core;
 // explicit Width > 0 is "dodgeable" -- a car whose own footprint can clear [LatPos - Width/2,
 // LatPos + Width/2] (within its lane, or by spilling into a safe adjacent lane) swerves past instead
 // of stopping.
+// B6-lat: LatSpeed is the agent's LATERAL velocity in m/s (positive = LEFT, same convention as
+// LatPos/Kinematics.LatOffset) -- for a pedestrian LUNGING across the lane rather than standing still.
+// Engine.AdvanceObstacles dead-reckons LatPos += LatSpeed*dt each step (the same "extrapolate a
+// reported velocity between owner corrections" contract Speed uses for FrontPos), and the lateral
+// evasion PREDICTS where the agent will be by the time the car reaches it -- so the car can react to a
+// lunge faster than its own swerve speed (SwerveMaxLateralSpeed) by dodging to the side the agent is
+// vacating. Default 0 == a laterally-static agent: byte-identical to the pre-B6-lat behaviour.
 public sealed record ExternalObstacle(
     string Id,
     string LaneId,
@@ -40,4 +47,5 @@ public sealed record ExternalObstacle(
     double Speed = 0.0,
     double MaxDecel = 0.0,
     double LatPos = 0.0,
-    double Width = 0.0);
+    double Width = 0.0,
+    double LatSpeed = 0.0);

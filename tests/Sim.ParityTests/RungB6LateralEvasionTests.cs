@@ -18,6 +18,7 @@ public class RungB6LateralEvasionTests
 {
     private static readonly string OneLaneDir = Path.Combine(RepoRoot(), "scenarios", "14-external-obstacle");
     private static readonly string TwoLaneDir = Path.Combine(RepoRoot(), "scenarios", "06-two-lane-cruise");
+    private static readonly string WideLaneDir = Path.Combine(RepoRoot(), "scenarios", "_diag", "wide-swerve");
     private const double CarWidth = 1.8;
     private const double CarLength = 5.0;
 
@@ -128,6 +129,50 @@ public class RungB6LateralEvasionTests
         Assert.Equal(242.499, last.Pos, precision: 3); // the exact B1 Krauss steady gap
         Assert.Equal(0.0, last.Speed, precision: 3);
         Assert.True(pts.All(p => Math.Abs(p.Y - laneCentreY) < 1e-9), "a full-lane obstacle must never induce a swerve");
+    }
+
+    // ---- Test 5: LUNGING pedestrian -> car dodges to the side the ped is VACATING (predictive). ----
+    // A pedestrian in the car's path lunges LEFT faster than the car's own 2 m/s swerve. A naive
+    // snapshot dodge (ped currently dead-centre) would steer LEFT, straight into the ped's path; the
+    // predictive evasion sees the ped heading left and steers RIGHT instead, behind its motion.
+    [Fact]
+    public void LungingPedestrian_CarDodgesToTheSideItIsVacating_NoCollision()
+    {
+        const double injectTime = 10.0, laneCentreY = -3.00;
+        const double pedLat0 = 0.0, pedLatSpeed = 2.5, pedWidth = 1.2, pedLen = 0.5;
+        var engine = new Engine();
+        Load(engine, WideLaneDir);
+        double pedFront = 13.89 * injectTime + 8.0; // wide-swerve car cruises at departSpeed from pos 0
+
+        engine.AddMovingObstacle("ped", "e0_0", frontPos: pedFront, length: pedLen, speed: 0.0, maxDecel: 0.0,
+            startTime: injectTime, endTime: double.PositiveInfinity, latPos: pedLat0, width: pedWidth, latSpeed: pedLatSpeed);
+
+        var pts = engine_PointsInOrder(engine.Run(30)).Where(p => p.VehicleId == "car0").ToList();
+
+        // Dodged RIGHT (negative offset) -- AWAY from the leftward-lunging ped, NOT left into it.
+        var minOffset = pts.Min(p => p.Y - laneCentreY);
+        var maxOffset = pts.Max(p => p.Y - laneCentreY);
+        Assert.True(minOffset < -0.3, $"car did not dodge right away from the lunging ped (min offset {minOffset:F2})");
+        Assert.True(maxOffset < 0.1, $"car steered LEFT into the ped's path (max offset {maxOffset:F2} should stay <= 0)");
+
+        // Never collided: the ped's lateral centre moves at pedLatSpeed once active (dead-reckoned).
+        foreach (var p in pts)
+        {
+            var pedLatNow = p.Time <= injectTime ? pedLat0 : pedLat0 + pedLatSpeed * (p.Time - injectTime);
+            var carBack = p.Pos - CarLength;
+            if (!(carBack < pedFront && p.Pos > pedFront - pedLen))
+            {
+                continue; // no longitudinal overlap this step
+            }
+
+            var off = p.Y - laneCentreY;
+            var carLo = off - CarWidth / 2.0;
+            var carHi = off + CarWidth / 2.0;
+            var pedLo = pedLatNow - pedWidth / 2.0;
+            var pedHi = pedLatNow + pedWidth / 2.0;
+            Assert.False(carLo < pedHi - 1e-6 && carHi > pedLo + 1e-6,
+                $"COLLISION at t={p.Time}: car [{carLo:F2},{carHi:F2}] overlaps ped [{pedLo:F2},{pedHi:F2}]");
+        }
     }
 
     // --- helpers ---

@@ -203,9 +203,9 @@ public sealed class Engine : IEngine
     // lane-center-relative lateral centre (positive = LEFT of travel), width its lateral extent.
     public void AddObstacle(string id, string laneId, double frontPos, double length,
         double startTime = double.NegativeInfinity, double endTime = double.PositiveInfinity,
-        double latPos = 0.0, double width = 0.0)
+        double latPos = 0.0, double width = 0.0, double latSpeed = 0.0)
     {
-        _obstacles[id] = new ExternalObstacle(id, laneId, frontPos, length, startTime, endTime, 0.0, 0.0, latPos, width);
+        _obstacles[id] = new ExternalObstacle(id, laneId, frontPos, length, startTime, endTime, 0.0, 0.0, latPos, width, latSpeed);
     }
 
     // B5-i: MOVING obstacle add-or-replace, same keyed-by-id contract as AddObstacle. Speed/
@@ -216,9 +216,9 @@ public sealed class Engine : IEngine
     public void AddMovingObstacle(string id, string laneId, double frontPos, double length,
         double speed, double maxDecel,
         double startTime = double.NegativeInfinity, double endTime = double.PositiveInfinity,
-        double latPos = 0.0, double width = 0.0)
+        double latPos = 0.0, double width = 0.0, double latSpeed = 0.0)
     {
-        _obstacles[id] = new ExternalObstacle(id, laneId, frontPos, length, startTime, endTime, speed, maxDecel, latPos, width);
+        _obstacles[id] = new ExternalObstacle(id, laneId, frontPos, length, startTime, endTime, speed, maxDecel, latPos, width, latSpeed);
     }
 
     // B5-i: per-step position/velocity correction from the external owner of this obstacle.
@@ -244,6 +244,16 @@ public sealed class Engine : IEngine
         }
     }
 
+    // B6-lat: full correction including the lateral VELOCITY, so the evasion can predict a lunging
+    // pedestrian's future position between owner corrections.
+    public void UpdateObstacle(string id, double frontPos, double speed, double latPos, double latSpeed)
+    {
+        if (_obstacles.TryGetValue(id, out var obstacle))
+        {
+            _obstacles[id] = obstacle with { FrontPos = frontPos, Speed = speed, LatPos = latPos, LatSpeed = latSpeed };
+        }
+    }
+
     public void RemoveObstacle(string id) => _obstacles.Remove(id);
 
     public void ClearObstacles() => _obstacles.Clear();
@@ -260,7 +270,7 @@ public sealed class Engine : IEngine
     // byte-identical world to before this rung.
     private readonly List<string> _obstacleIdScratch = new();
 
-    private void AdvanceObstacles(double dt)
+    private void AdvanceObstacles(double time, double dt)
     {
         if (_obstacles.Count == 0)
         {
@@ -277,12 +287,23 @@ public sealed class Engine : IEngine
         foreach (var id in _obstacleIdScratch)
         {
             var obstacle = _obstacles[id];
-            if (obstacle.Speed == 0.0)
+            if ((obstacle.Speed == 0.0 && obstacle.LatSpeed == 0.0)
+                || obstacle.StartTime >= time || time >= obstacle.EndTime)
             {
+                // Only dead-reckon while the agent is ACTIVE and PAST its appearance step: at/before its
+                // StartTime it must stay at its added position (it just appeared there this step), and
+                // after EndTime it is gone. For a -inf..+inf window (every pre-B6 moving obstacle,
+                // StartTime == -inf) `StartTime >= time` is always false, so this is byte-identical there.
                 continue;
             }
 
-            _obstacles[id] = obstacle with { FrontPos = obstacle.FrontPos + obstacle.Speed * dt };
+            // B6-lat: dead-reckon the lateral centre too (a lunging pedestrian), same contract as the
+            // longitudinal FrontPos dead-reckoning. LatSpeed == 0 leaves LatPos unchanged.
+            _obstacles[id] = obstacle with
+            {
+                FrontPos = obstacle.FrontPos + obstacle.Speed * dt,
+                LatPos = obstacle.LatPos + obstacle.LatSpeed * dt,
+            };
         }
     }
 
@@ -468,7 +489,7 @@ public sealed class Engine : IEngine
             // this step (CLAUDE.md rule 2) -- never mutated mid-plan. Static (Speed==0, including
             // every B1 obstacle) obstacles are untouched by this call, so this is a pure no-op
             // for every existing obstacle-free or static-obstacle scenario/test.
-            AdvanceObstacles(dt);
+            AdvanceObstacles(time, dt);
 
             // [SystemPhase.Simulation] Plan/execute contract (DESIGN.md): plan reads
             // start-of-step state and writes only MoveIntent; execute applies all intents
@@ -3191,8 +3212,9 @@ public sealed class Engine : IEngine
     // B6 emergency lateral-evasion tuning. Not a SUMO-parity behaviour (SUMO's sublane model does
     // not do emergency ped-swerves) -- this is the external-agent "live reactivity" seam (DESIGN.md),
     // property-tested, inert when no dodgeable obstacle is present.
-    private const double SwerveMaxLateralSpeed = 2.0; // m/s, how fast the car can slide sideways
-    private const double SwerveLateralGap = 0.5;      // m clearance kept between the car edge and the ped edge
+    private const double SwerveMaxLateralSpeed = 2.0;    // m/s, how fast the car can slide sideways
+    private const double SwerveLateralGap = 0.5;         // m clearance kept between the car edge and the ped edge
+    private const double SwervePredictionHorizon = 4.0;  // s cap on how far ahead a lunging agent's lateral motion is extrapolated
 
     // B6: given a dodgeable (Width > 0) obstacle ahead on ego's lane that ego CANNOT stop before,
     // return the vehicle's new lateral offset this step -- a bounded drift toward a target that
@@ -3213,12 +3235,17 @@ public sealed class Engine : IEngine
         }
 
         // Nearest dodgeable obstacle that is ahead-or-ALONGSIDE (its front is not yet behind ego's own
-        // back) and that a LANE-CENTRED car would hit. Testing the CENTRED footprint (not ego's current
-        // offset) is what makes an in-progress swerve "sticky": once ego has slid aside, the obstacle it
-        // is passing still counts as a threat -- so it HOLDS the swerve until the obstacle is fully
-        // behind it, instead of recentring alongside the obstacle and oscillating.
+        // back) and that a LANE-CENTRED car would hit -- but at the obstacle's PREDICTED lateral
+        // position by the time ego reaches it (LatPos + LatSpeed * time-to-encounter), so a pedestrian
+        // LUNGING into the lane faster than ego's own swerve speed is detected early. Testing the
+        // CENTRED footprint (not ego's current offset) is what makes an in-progress swerve "sticky":
+        // once ego has slid aside, the obstacle it is passing still counts as a threat -- so it HOLDS
+        // the swerve until the obstacle is fully behind it, instead of recentring alongside and
+        // oscillating (when alongside, time-to-encounter -> 0 so the prediction collapses to the
+        // current position and the hold is stable).
         ExternalObstacle? threat = null;
         var threatBack = double.PositiveInfinity;
+        var threatPredLat = 0.0;
         foreach (var o in _obstacles.Values)
         {
             if (o.Width <= 0.0 || o.StartTime > time || time >= o.EndTime || o.LaneId != v.LaneId)
@@ -3226,9 +3253,11 @@ public sealed class Engine : IEngine
                 continue;
             }
 
-            if (o.FrontPos < v.Kinematics.Pos - v.VType.Length || !ObstacleOverlapsLaterally(o, 0.0, v.VType.Width))
+            var predLat = PredictedLatPos(o, v);
+            if (o.FrontPos < v.Kinematics.Pos - v.VType.Length
+                || !FootprintsOverlap(predLat, o.Width, 0.0, v.VType.Width))
             {
-                continue; // fully behind ego, or a centred car would clear it anyway
+                continue; // fully behind ego, or a centred car would clear its predicted position anyway
             }
 
             var back = o.FrontPos - o.Length;
@@ -3239,6 +3268,7 @@ public sealed class Engine : IEngine
             {
                 threatBack = back;
                 threat = o;
+                threatPredLat = predLat;
             }
         }
 
@@ -3261,45 +3291,40 @@ public sealed class Engine : IEngine
 
         var halfEgo = v.VType.Width / 2.0;
         var halfLane = lane.Width / 2.0;
-        // Car-centre offsets that put ego's near edge SwerveLateralGap beyond the obstacle's edge, on
-        // the left (higher LatOffset) or right (lower) of it.
-        var targetLeft = (threat.LatPos + threat.Width / 2.0) + SwerveLateralGap + halfEgo;
-        var targetRight = (threat.LatPos - threat.Width / 2.0) - SwerveLateralGap - halfEgo;
+        // Car-centre offsets that put ego's near edge SwerveLateralGap beyond the obstacle's PREDICTED
+        // edge, on the left (higher LatOffset) or right (lower). Using the predicted centre means the
+        // car dodges to the side the agent is VACATING: a ped lunging left pushes both targets left, so
+        // the right-side target becomes the smaller (and within-lane / safe) steer.
+        var targetLeft = (threatPredLat + threat.Width / 2.0) + SwerveLateralGap + halfEgo;
+        var targetRight = (threatPredLat - threat.Width / 2.0) - SwerveLateralGap - halfEgo;
 
         const double eps = 1e-9;
-        var leftWithinLane = targetLeft + halfEgo <= halfLane + eps;
-        var rightWithinLane = targetRight - halfEgo >= -halfLane - eps;
+        // Each side is feasible if it clears the agent WITHIN the ego lane, OR by spilling into an
+        // adjacent lane that exists and is gap-safe (reuses the lane-change safety check).
+        var leftFeasible = (targetLeft + halfEgo <= halfLane + eps)
+            || (lane.LeftNeighbor >= 0 && NeighborSpillSafe(v, lane.LeftNeighbor, neighbors, dt));
+        var rightFeasible = (targetRight - halfEgo >= -halfLane - eps)
+            || (lane.RightNeighbor >= 0 && NeighborSpillSafe(v, lane.RightNeighbor, neighbors, dt));
 
-        double? chosen = null;
-        if (leftWithinLane)
+        double? chosen;
+        if (leftFeasible && rightFeasible)
         {
-            chosen = Closer(chosen, targetLeft, curLat);
+            // Both sides work: dodge to the side the agent is VACATING -- opposite its lateral velocity
+            // -- so the car steers behind the agent's motion rather than into its path. A laterally
+            // static agent (LatSpeed == 0) has no vacating side, so take the smaller steer from centre.
+            chosen = threat.LatSpeed > 0.0 ? targetRight       // agent moving LEFT  -> pass on its right
+                : threat.LatSpeed < 0.0 ? targetLeft           // agent moving RIGHT -> pass on its left
+                : Math.Abs(targetLeft - curLat) <= Math.Abs(targetRight - curLat) ? targetLeft : targetRight;
         }
-
-        if (rightWithinLane)
+        else if (leftFeasible)
         {
-            chosen = Closer(chosen, targetRight, curLat);
+            chosen = targetLeft;
         }
-
-        if (chosen is null)
+        else if (rightFeasible)
         {
-            // No within-lane clearance -> spill into an adjacent lane on the side that clears the ped,
-            // but only if that neighbour lane exists and is gap-safe (reuses the lane-change safety
-            // check against the neighbour's leader/follower).
-            if (targetLeft + halfEgo > halfLane && lane.LeftNeighbor >= 0
-                && NeighborSpillSafe(v, lane.LeftNeighbor, neighbors, dt))
-            {
-                chosen = Closer(chosen, targetLeft, curLat);
-            }
-
-            if (targetRight - halfEgo < -halfLane && lane.RightNeighbor >= 0
-                && NeighborSpillSafe(v, lane.RightNeighbor, neighbors, dt))
-            {
-                chosen = Closer(chosen, targetRight, curLat);
-            }
+            chosen = targetRight;
         }
-
-        if (chosen is null)
+        else
         {
             return curLat; // cannot dodge -> hold; ObstacleConstraint brakes to a stop behind it
         }
@@ -3308,7 +3333,9 @@ public sealed class Engine : IEngine
     }
 
     // B6: does the obstacle's lateral footprint [LatPos +/- Width/2] overlap ego's [egoLat +/-
-    // egoWidth/2]? A Width <= 0 obstacle is the pre-B6 FULL-LANE block: always overlapping.
+    // egoWidth/2]? A Width <= 0 obstacle is the pre-B6 FULL-LANE block: always overlapping. (Uses the
+    // obstacle's CURRENT LatPos -- ObstacleConstraint's immediate-braking check; the evasion's
+    // anticipatory check uses the PREDICTED position via FootprintsOverlap + PredictedLatPos instead.)
     private static bool ObstacleOverlapsLaterally(ExternalObstacle obstacle, double egoLat, double egoWidth)
     {
         if (obstacle.Width <= 0.0)
@@ -3316,11 +3343,34 @@ public sealed class Engine : IEngine
             return true;
         }
 
-        var pedLo = obstacle.LatPos - obstacle.Width / 2.0;
-        var pedHi = obstacle.LatPos + obstacle.Width / 2.0;
-        var egoLo = egoLat - egoWidth / 2.0;
-        var egoHi = egoLat + egoWidth / 2.0;
-        return egoLo < pedHi && egoHi > pedLo;
+        return FootprintsOverlap(obstacle.LatPos, obstacle.Width, egoLat, egoWidth);
+    }
+
+    // B6: do two lateral footprints (centre +/- width/2) overlap?
+    private static bool FootprintsOverlap(double aLat, double aWidth, double bLat, double bWidth)
+    {
+        var aLo = aLat - aWidth / 2.0;
+        var aHi = aLat + aWidth / 2.0;
+        var bLo = bLat - bWidth / 2.0;
+        var bHi = bLat + bWidth / 2.0;
+        return aLo < bHi && aHi > bLo;
+    }
+
+    // B6-lat: the obstacle's lateral centre PREDICTED forward to the moment ego reaches it --
+    // LatPos + LatSpeed * timeToEncounter, where timeToEncounter is the longitudinal distance to the
+    // obstacle divided by the closing speed, clamped to [0, SwervePredictionHorizon]. Alongside (or
+    // for a laterally-static agent) this is just LatPos, so it degrades to the un-predicted behaviour.
+    private double PredictedLatPos(ExternalObstacle o, VehicleRuntime v)
+    {
+        if (o.LatSpeed == 0.0)
+        {
+            return o.LatPos;
+        }
+
+        var longDist = Math.Max((o.FrontPos - o.Length) - v.Kinematics.Pos, 0.0);
+        var closing = Math.Max(v.Kinematics.Speed - o.Speed, 0.5); // >= 0.5 m/s so a near-stationary ego still predicts
+        var tte = Math.Min(longDist / closing, SwervePredictionHorizon);
+        return o.LatPos + o.LatSpeed * tte;
     }
 
     // B6: move `cur` toward `target` by at most `maxStep` (the per-step lateral-speed cap).
@@ -3337,17 +3387,6 @@ public sealed class Engine : IEngine
         }
 
         return cur + delta;
-    }
-
-    // B6: of `current` and `candidate`, the one requiring the smaller steer from `reference`.
-    private static double? Closer(double? current, double candidate, double reference)
-    {
-        if (current is null)
-        {
-            return candidate;
-        }
-
-        return Math.Abs(candidate - reference) < Math.Abs(current.Value - reference) ? candidate : current;
     }
 
     // B6: is spilling into the given adjacent lane safe -- reuses the lane-change gap check against

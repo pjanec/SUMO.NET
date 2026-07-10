@@ -570,6 +570,17 @@ A3) remain the byte-for-byte correctness anchor (same discipline as rungs 8b/10/
   with an explicit no-collision assertion (lateral footprints disjoint whenever longitudinally
   overlapping). NOT a SUMO-parity behaviour (SUMO's sublane model has no emergency ped-swerve); this is
   the external-agent live-reactivity seam. Parity-reviewer ACCEPT.
+  - **B6-lat (PREDICTIVE swerve for a LUNGING agent). DONE.** `ExternalObstacle` gained `LatSpeed` (the
+    agent's lateral velocity; default 0 = byte-identical); `AdvanceObstacles(time, dt)` dead-reckons
+    `LatPos += LatSpeed*dt` and now only advances an active, past-appearance obstacle (guard inert for
+    every pre-B6 -inf..+inf window — B5 moving tests unchanged); `AddObstacle`/`AddMovingObstacle` gained
+    `latSpeed`, plus an `UpdateObstacle(id,frontPos,speed,latPos,latSpeed)` overload. `ComputeLateralEvasion`
+    now PREDICTS the agent's lateral centre at time-to-encounter (`LatPos + LatSpeed*tte`) for both threat
+    detection and the clear-target, and picks the side the agent is VACATING (opposite `LatSpeed`) — so a
+    ped lunging left FASTER than the car's 2 m/s swerve is dodged to the RIGHT, not steered into. New
+    behavioural fixture `scenarios/_diag/wide-swerve` (6 m lane) + test
+    `LungingPedestrian_CarDodgesToTheSideItIsVacating_NoCollision`. Inert (suite 174 green, bench hash
+    unchanged). Parity-reviewer ACCEPT.
 
 ### Group C — realism beyond the deterministic phase-1 core
 
