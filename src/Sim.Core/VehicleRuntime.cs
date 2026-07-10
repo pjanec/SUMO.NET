@@ -263,4 +263,15 @@ internal sealed class VehicleRuntime
     // `_avoidedByEntity` side table (keyed by EntityIndex), lazily created only when a vehicle
     // first reroutes -- the managed `HashSet<string>` no longer lives on every vehicle record.
     // Off the hot path (reroute is opt-in via RerouteThresholdSeconds).
+
+    // Rung ER3 (give-way): this vehicle's current "clear the way for an emergency vehicle" intent,
+    // recomputed each PLAN step (Engine.DetectGiveWaySide) from the frozen start-of-step snapshot.
+    // 0 = none, -1 = clear toward the right lane edge, +1 = clear toward the left lane edge. Read
+    // by the ER4 (multi-lane, Engine.DecideGiveWayChanges) and ER5 (single-lane lateral drift,
+    // Engine.ComputeLateralEvasion) execution arms, and exported via VehicleExportSnapshot. Written
+    // ONLY in the PLAN phase by the owning vehicle (parallel-safe exactly like LevelOfService /
+    // WillPass). Default 0, and left 0 for every scenario with no active bluelight EV in range
+    // (Engine._anyBluelight short-circuits detection), so byte-identical-inert wherever give-way
+    // does not trigger.
+    public int GiveWaySide;
 }

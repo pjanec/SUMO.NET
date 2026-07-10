@@ -32,6 +32,9 @@ public sealed record VType(
     double? JmIgnoreFoeProb = null,
     double? JmIgnoreFoeSpeed = null,
     double? JmIgnoreJunctionFoeProb = null,
+    // Rung ER3 (give-way): our opt-in model of SUMO's MSDevice_Bluelight assignment. Null (absent)
+    // resolves to false in VTypeDefaults.Resolve, so no give-way is ever induced by default.
+    bool? HasBluelight = null,
     // C11-i: sumo/src/utils/vehicle/SUMOVTypeParameter.cpp:331's `carFollowModel` vType
     // attribute (SUMO_TAG_CF_KRAUSS's XML tag name is "Krauss", SUMO_TAG_CF_IDM's is "IDM").
     // null here (no override present) resolves to "Krauss" in VTypeDefaults.Resolve, exactly as

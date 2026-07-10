@@ -354,8 +354,20 @@ buffer absorb them); neither is a rewrite. Order within each group respects the 
     (0<prob<1) uses a stateless per-entity salted `VehicleRng` draw (behavioral, no golden), never
     System.Random; prob>=1 / prob<=0 take no draw. `RungER2ParityTests` green; `dotnet test` = 189.
     parity-reviewer ACCEPT.
-  - **DEFERRED:** behavior **(ii) give-way** (other vehicles moving aside — the LC blue-light layer);
-    see the ER3-ER5 give-way arc. "priority *road*" right-of-way is rung 9b, not this.
+  - **ER3 DONE (give-way DETECTION + intent, BEHAVIORAL).** Adapts SUMO's `MSDevice_Bluelight` (a
+    device that PUSHES a preferred lateral alignment onto neighbours — incompatible with the ECS
+    plan/execute contract) into a per-ego PULL: each vehicle detects an approaching blue-light EV
+    from the frozen snapshot and forms a "clear the way" intent (`VehicleRuntime.GiveWaySide`: 0/±1).
+    New opt-in vType flag `HasBluelight` (default false) + `_anyBluelight` master switch so the whole
+    subsystem is zero-work / byte-identical when no EV is present (scenarios 16/50/51/52 set no
+    bluelight, unaffected). `DetectGiveWaySide` reads only the frozen snapshot, writes only the ego's
+    own field, no System.Random, order-independent, skipped in the willPass pre-pass. Side rule
+    mirrors SUMO's align-RIGHT-unless-leftmost-lane (rescue corridor). Exposed via
+    `VehicleExportSnapshot.GiveWaySide` for the property test. `scenarios/53-giveway-single` fixture
+    (no golden); `RungER3GiveWayDetectionTests` (reacts only in range, EV never self-reacts, no-EV
+    inert). `dotnet test` = 194; bench hash 909605E965BFFE59 unchanged. parity-reviewer ACCEPT.
+  - **DEFERRED:** give-way EXECUTION (ER4 multi-lane, ER5 single-lane drift). "priority *road*"
+    right-of-way is rung 9b, not this.
 
 ### Group B — beyond parity: live external-obstacle reactivity
 

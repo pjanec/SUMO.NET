@@ -43,7 +43,11 @@ public sealed record ResolvedVType(
     //     adaptToJunctionLeader arm.
     double JmIgnoreFoeProb,
     double JmIgnoreFoeSpeed,
-    double JmIgnoreJunctionFoeProb);
+    double JmIgnoreJunctionFoeProb,
+    // Rung ER3 (give-way): does this vType carry an active blue-light siren (our opt-in model of
+    // SUMO's MSDevice_Bluelight)? Defaults to false, so give-way detection is inert for every
+    // vType that does not set hasBluelight="true".
+    bool HasBluelight);
 
 public static class VTypeDefaults
 {
@@ -272,6 +276,8 @@ public static class VTypeDefaults
             // so every vType that omits these attributes is inert (byte-identical to pre-ER2).
             JmIgnoreFoeProb: vType.JmIgnoreFoeProb ?? 0.0,
             JmIgnoreFoeSpeed: vType.JmIgnoreFoeSpeed ?? 0.0,
-            JmIgnoreJunctionFoeProb: vType.JmIgnoreJunctionFoeProb ?? 0.0);
+            JmIgnoreJunctionFoeProb: vType.JmIgnoreJunctionFoeProb ?? 0.0,
+            // Rung ER3: false default -> give-way detection is inert for every non-bluelight vType.
+            HasBluelight: vType.HasBluelight ?? false);
     }
 }

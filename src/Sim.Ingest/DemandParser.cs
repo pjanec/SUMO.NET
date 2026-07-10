@@ -51,6 +51,12 @@ public static class DemandParser
                 JmIgnoreFoeProb: ParseNullableDouble(vTypeEl, "jmIgnoreFoeProb"),
                 JmIgnoreFoeSpeed: ParseNullableDouble(vTypeEl, "jmIgnoreFoeSpeed"),
                 JmIgnoreJunctionFoeProb: ParseNullableDouble(vTypeEl, "jmIgnoreJunctionFoeProb"),
+                // Rung ER3 (give-way): whether this vType carries an active blue-light siren (our
+                // opt-in model of SUMO's MSDevice_Bluelight assignment, `has.bluelight.device`).
+                // Default false -> no give-way is ever induced, so every existing scenario (incl.
+                // the emergency-privilege scenarios 16/50/51/52, whose EVs set NO bluelight) is
+                // byte-identical. Read as a vType attribute `hasBluelight="true"`.
+                HasBluelight: ParseNullableBool(vTypeEl, "hasBluelight"),
                 // C11-i: SUMOVTypeParameter.cpp's carFollowModel="..." vType attribute (a plain
                 // string tag name -- "Krauss", "IDM", etc. -- SUMOXMLDefinitions::CarFollowModels).
                 CarFollowModel: vTypeEl.Attribute("carFollowModel")?.Value);
@@ -142,6 +148,20 @@ public static class DemandParser
     {
         var value = element.Attribute(name)?.Value;
         return value is null ? null : double.Parse(value, CultureInfo.InvariantCulture);
+    }
+
+    // Rung ER3: SUMO's boolean attribute forms (utils/common/StringUtils::toBool accepts
+    // true/1/x/t/yes and false/0/-/f/no). null when the attribute is absent (-> the vType-default
+    // false in VTypeDefaults.Resolve).
+    private static bool? ParseNullableBool(XElement element, string name)
+    {
+        var value = element.Attribute(name)?.Value;
+        if (value is null)
+        {
+            return null;
+        }
+
+        return value.Trim().ToLowerInvariant() is "true" or "1" or "x" or "t" or "yes";
     }
 
     private static int? ParseNullableInt(XElement element, string name)

@@ -48,6 +48,14 @@ public readonly struct VehicleExportSnapshot
     public readonly double Y;
     public readonly double Angle;
 
+    // Rung ER3 (give-way): the vehicle's current give-way intent, computed each plan step from
+    // the frozen start-of-step snapshot -- 0 = none, -1 = clear toward the right lane edge, +1 =
+    // clear toward the left lane edge (see Engine.DetectGiveWaySide). Always 0 for every vehicle
+    // in every scenario that has no active blue-light emergency vehicle in range, so it is inert
+    // wherever give-way is not triggered. Exposed here so a behavioral observer/test can assert
+    // the DETECTION independently of the ER4/ER5 execution (which shows up in Lane / LatOffset).
+    public readonly int GiveWaySide;
+
     public VehicleExportSnapshot(
         Entity entity,
         int entityIndex,
@@ -59,7 +67,8 @@ public readonly struct VehicleExportSnapshot
         double speed,
         double x,
         double y,
-        double angle)
+        double angle,
+        int giveWaySide = 0)
     {
         Entity = entity;
         EntityIndex = entityIndex;
@@ -72,5 +81,6 @@ public readonly struct VehicleExportSnapshot
         X = x;
         Y = y;
         Angle = angle;
+        GiveWaySide = giveWaySide;
     }
 }

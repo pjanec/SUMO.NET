@@ -73,6 +73,17 @@ public sealed class Engine : IEngine
     // trivial +infinity no-op and every parity scenario's constraints list is unaffected.
     private readonly Dictionary<string, ExternalObstacle> _obstacles = new();
 
+    // Rung ER3 (give-way): true iff the loaded demand contains at least one vType with an active
+    // blue-light siren (ResolvedVType.HasBluelight). Computed once per LoadScenario. The whole
+    // give-way subsystem (DetectGiveWaySide and the ER4/ER5 execution arms) short-circuits when
+    // this is false, so every scenario with no emergency vehicle -- i.e. every committed parity
+    // scenario and the bench -- takes exactly zero give-way work and stays byte-identical.
+    private bool _anyBluelight;
+
+    // Rung ER3 (give-way): SUMO's device.bluelight.reactiondist default (MSDevice_Bluelight.cpp:58)
+    // -- the range within which surrounding drivers perceive the siren and start clearing the way.
+    private const double GiveWayReactionDist = 25.0;
+
     // B3: reroute-around-prolonged-blockage (DESIGN.md "Two futures" -- live-reactivity, not a
     // ported SUMO code path; SUMO's analog is a rerouting device / <rerouter> reacting to a
     // closed edge). Left at +infinity by default, which makes UpdateReroutes below an immediate
@@ -375,6 +386,9 @@ public sealed class Engine : IEngine
         _laneSeqArrival.Clear();
         _stopsByEntity.Clear();
         _avoidedByEntity.Clear();
+        // Rung ER3: recompute the give-way master switch for this scenario (reset first so a
+        // re-LoadScenario on the same Engine never inherits the previous demand's answer).
+        _anyBluelight = false;
         foreach (var def in _demand.Vehicles)
         {
             var rawVType = _demand.VTypesById[def.TypeId];
@@ -382,6 +396,8 @@ public sealed class Engine : IEngine
             // and any explicit overrides (e.g. rou.xml's sigma="0") come from the raw parse;
             // everything else is a resolved SUMO vClass default (VTypeDefaults.Resolve).
             var vType = VTypeDefaults.Resolve(rawVType);
+            // Rung ER3: flip the give-way master switch on if any vehicle is a bluelight EV.
+            _anyBluelight |= vType.HasBluelight;
             // D3: EntityIndex is this vehicle's stable index in _vehicles, set once here -- see
             // VehicleRuntime.EntityIndex's own comment.
             var entityIndex = _vehicles.Count;
@@ -1666,16 +1682,91 @@ public sealed class Engine : IEngine
             v.LevelOfService = IdmmModel.UpdateLevelOfService(v.LevelOfService, newSpeed, laneVehicleMaxSpeed, dt);
         }
 
+        // Rung ER3 (give-way): detect an approaching blue-light emergency vehicle from the frozen
+        // start-of-step snapshot and form a "clear the way" intent (which lane edge to vacate).
+        // Real pass only -- the willPass pre-pass leaves GiveWaySide untouched so it stays
+        // side-effect-free. Inert (0, no scan) whenever the scenario has no bluelight EV. Written
+        // to the vehicle's OWN field, the same parallel-safe per-ego plan-phase write as
+        // LevelOfService/WillPass; consumed by the ER4/ER5 execution arms and exported for tests.
+        if (!prePass)
+        {
+            v.GiveWaySide = DetectGiveWaySide(v, lane, time);
+        }
+
         return new MoveIntent
         {
             NewSpeed = newSpeed,
             // B6: emergency lateral evasion. Only in the real pass (the willPass pre-pass keeps 0 so it
             // stays side-effect-free); ComputeLateralEvasion returns 0 for every vehicle with no
             // dodgeable obstacle in range, so this is inert wherever no lateral obstacle is present.
+            // ER5 additionally routes an ER3 give-way intent through the same lateral-drift primitive.
             LatOffset = prePass ? 0.0 : ComputeLateralEvasion(v, lane, neighbors, time, dt),
             StopUpdate = stopUpdate,
         };
     }
+
+    // Rung ER3 (give-way) DETECTION. Per-ego, reads only the frozen start-of-step snapshot (each
+    // other vehicle's start-of-step lane/pos/speed/vType), writes nothing -- the caller stores the
+    // result in this vehicle's own GiveWaySide field. Returns the side of the lane this vehicle
+    // should vacate to clear a path for an approaching blue-light emergency vehicle: 0 = none,
+    // -1 = clear toward the right edge, +1 = clear toward the left edge.
+    //
+    // Detection (our adaptation of SUMO's MSDevice_Bluelight, which is a device that PUSHES a
+    // preferred lateral alignment onto neighbours -- incompatible with the parallel-safe ECS
+    // plan/execute contract, so per CLAUDE.md rule 4 we invert it to a per-ego pull, like B6):
+    // ego clears the way iff an ACTIVE emergency vehicle (VType.HasBluelight) is on ego's edge,
+    // at/behind ego's front, and within GiveWayReactionDist behind it -- the "siren approaching
+    // from behind" case. (An EV ahead of ego is not something ego needs to clear for.)
+    //
+    // Side rule, matching SUMO's rescue-lane alignment (MSDevice_Bluelight.cpp:189-192: align RIGHT
+    // unless on the leftmost lane, then LEFT): the leftmost lane of a MULTI-lane road (a left-edge
+    // lane that still has a lane to its right) vacates toward the LEFT edge; every other lane --
+    // rightmost, middle, and single-lane -- vacates toward the RIGHT edge. This opens a rescue
+    // corridor down the middle on multi-lane roads, and pulls a lone vehicle to the right edge on a
+    // single lane (the case SUMO's lane-based rescue cannot form at all -- ER5's enhancement).
+    //
+    // Inert: returns 0 immediately when the scenario has no bluelight EV (_anyBluelight false), or
+    // when the vehicle IS itself a bluelight EV (an EV never gives way to another).
+    private int DetectGiveWaySide(VehicleRuntime v, Lane lane, double time)
+    {
+        if (!_anyBluelight || v.VType.HasBluelight)
+        {
+            return 0;
+        }
+
+        var egoFront = v.Kinematics.Pos;
+        var reacting = false;
+        foreach (var ev in ActiveVehicles())
+        {
+            if (!ev.VType.HasBluelight || ev.EntityIndex == v.EntityIndex || ev.LaneId != v.LaneId && !SameEdge(ev.LaneId, lane.EdgeId))
+            {
+                continue;
+            }
+
+            // EV must be at or behind ego's front (approaching from behind) and within the siren
+            // reaction range. Longitudinal comparison is on the shared edge's arc-length `pos`.
+            var behind = egoFront - ev.Kinematics.Pos;
+            if (behind >= 0.0 && behind <= GiveWayReactionDist)
+            {
+                reacting = true;
+                break;
+            }
+        }
+
+        if (!reacting)
+        {
+            return 0;
+        }
+
+        // SUMO's align-RIGHT-unless-leftmost rule (see method header).
+        var isLeftmostOfMultiLane = lane.LeftNeighbor < 0 && lane.RightNeighbor >= 0;
+        return isLeftmostOfMultiLane ? +1 : -1;
+    }
+
+    // Rung ER3: are two lane ids on the same edge? Compares the edge id a lane id embeds; used only
+    // on the give-way path (so never on any parity hot path). A lane id is "<edgeId>_<index>".
+    private bool SameEdge(string laneId, string edgeId)
+        => _network!.LanesById.TryGetValue(laneId, out var l) && l.EdgeId == edgeId;
 
     // C4-viii: the pre-pass Krauss finalizeSpeed -- identical to KraussModel.FinalizeSpeed but advances
     // a COPY of this vehicle's dawdle RngState so the pre-pass leaves no side effect (the real
@@ -5177,7 +5268,8 @@ public sealed class Engine : IEngine
                 speed: v.Kinematics.Speed,
                 x: x,
                 y: y,
-                angle: angle);
+                angle: angle,
+                giveWaySide: v.GiveWaySide);
 
             trajectory.Add(new TrajectoryPoint(
                 VehicleId: snapshot.VehicleId,
