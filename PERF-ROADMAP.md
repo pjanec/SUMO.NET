@@ -99,6 +99,62 @@ in every case** — the existing `Parallel.For` plan phase is already provably b
   vectorized inner loop) to bound the blast radius — but even that is a large change for a ~1.2×
   return. (3) The gather cost may eat the arithmetic win.
 
+## Memory strategy — reusable managed buffers, NOT a native pool
+
+"Even small heap allocs are bad" is half-right for .NET: allocating a small gen0 object is cheap
+(bump-pointer); what bites is the **rate** (gen0 GC frequency -> pauses) and **promotion** (surviving
+to gen1/2). The two allocation sources here are different kinds of bad, and neither is fixed by a
+memory pool of the current objects:
+
+- **Emit retains a growing live set.** `TrajectorySet` keeps EVERY `TrajectoryPoint` (a heap
+  `record`) for the whole run in `Dictionary<string, SortedDictionary<double, …>>`. That is the
+  81.7 MiB "alloc total" promoted to gen1/2 — not transient gen0 garbage. Pooling objects you never
+  free during the run buys nothing; the fix is to stop retaining what is only streamed.
+- **`ComputeBestLanes` LINQ** is genuinely transient gen0 garbage (dies same-step).
+
+**The fix is "don't allocate," via value types in reusable MANAGED buffers — not a pool, not native
+memory:**
+- Emit: make `TrajectoryPoint` a `struct`, stream it through the existing zero-alloc
+  `VehicleExportSnapshot` / `ISimExportObserver` seam (the FCD writer only streams), or store into a
+  columnar growable buffer (`double[] pos`, `double[] speed`, … reused/grown) instead of millions of
+  records + red-black-tree nodes. One array of structs is ~zero per-step alloc AND GC-scan-free.
+- Best-lanes: hand loops over a preallocated per-vehicle scratch buffer + cache the result per edge;
+  `ArrayPool<T>.Shared` for variable-size scratch.
+
+This is zero-alloc on the hot path, fully managed, fully cross-platform (Linux + Windows), no
+`unsafe`, and no parity risk beyond the logic change.
+
+### Why a native / unmanaged memory pool does NOT earn its keep here
+
+Key .NET fact: **an array of unmanaged structs (`double[]`, `int[]`, the SoA columns) is already not
+GC-scanned in its interior** — the GC only tracks the array header, not its millions of doubles.
+Moving that data to `NativeMemory.Alloc` saves the GC almost nothing, while adding manual lifetime
+management (leaks, use-after-free, no bounds checks) — a direct threat to the parity iron law.
+Unmanaged pools only win with gigabytes of live *reference-bearing* data the GC must scan, or for
+native interop / huge-pages / NUMA — none of which apply here.
+
+### Cross-platform memory options (single codebase, no per-OS branches)
+
+- **`ArrayPool<T>`** — pure managed, identical on both platforms; use for variable-size scratch.
+- **`GC.AllocateArray<T>(n, pinned: true)`** (.NET 5+) — a MANAGED PINNED array: stable address for
+  SIMD/interop, keeps bounds checks + GC ownership, never moved. The safe middle ground if a SoA
+  column ever needs a fixed address — prefer it over raw native.
+- **`NativeMemory.Alloc/AlignedAlloc/Free`** (.NET 6+) — genuinely cross-platform (wraps
+  malloc / _aligned_malloc). Reach for it LAST and gate it hard; only if true off-heap/interop is
+  needed.
+- **SIMD does not need native memory.** `System.Numerics.Vector<T>` / `System.Runtime.Intrinsics`
+  vectorize over MANAGED arrays via `MemoryMarshal.Cast<double, Vector<double>>(span)`; the JIT picks
+  AVX2/AVX-512 (x64) or NEON (ARM) per platform. Layer 2 SIMD therefore works on plain `double[]` —
+  the only caveat stays FP reassociation vs parity (below), not memory placement.
+- Avoid assuming a GC *mode* (Server vs Workstation) or huge-page/NUMA APIs — they differ across OSes;
+  the reusable-managed-buffer route never touches them.
+
+| Approach | Fixes the measured problem? | Cross-platform | Parity risk | Verdict |
+|---|---|---|---|---|
+| Structs + reusable managed buffers / `ArrayPool` | Yes | Trivially | Low | **Do this (== Layer 0)** |
+| `GC.AllocateArray(pinned)` for SoA columns | Marginal extra | Yes | Low | Only if profiling shows column GC pauses |
+| Native/unmanaged pool (`NativeMemory`) | No real gain for unmanaged-struct data | Yes, but manual mgmt | High (UAF/leaks) | Skip unless native interop later |
+
 ## Cumulative estimate (4 cores, ~1k+ concurrent, vs today's single-thread)
 
 | Layer | Local win | Cumulative | Risk | Effort |
