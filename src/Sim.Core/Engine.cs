@@ -110,6 +110,23 @@ public sealed partial class Engine : IEngine
     private const double OvertakeLeaderSlowFraction = 0.8;
     private const double OvertakeLeaderMaxGap = 60.0;
 
+    // Rung OV4 (cooperative oncoming shift): how far ahead an oncoming vehicle perceives a spilled
+    // overtaker closing head-on down its own (bidi) lane and starts widening the corridor by pulling
+    // to its OWN outer edge. Much larger than the give-way reaction distance (25 m, a same-direction
+    // siren closing slowly from behind): a head-on encroachment closes at the SUM of both speeds
+    // (~28 m/s here), so ~200 m gives a driver ~7 s to ease over before the closest approach -- and,
+    // by design, the oncoming makes room throughout the window in which OV2 keeps the overtaker
+    // committed and spilled (OV2's own gap acceptance still guarantees the pass finishes before the
+    // head-on arrives, so the shift is defence-in-depth margin, never what prevents a collision).
+    private const double CooperativeShiftReactionDist = 200.0;
+
+    // Rung OV4: how far an overtaker must have spilled toward the oncoming lane (positive LatOffset,
+    // always toward the oncoming lane in the OV3 spill) before an oncoming driver treats it as a
+    // head-on encroachment worth making room for. Set above any normal / give-way drift (a give-way
+    // edge target is <= laneHalfWidth - egoHalfWidth ~ 0.7 m) and below the OV3 spill (~2.3 m), so it
+    // fires only for a genuine centre-line-crossing overtake, never for ordinary lateral motion.
+    private const double CooperativeShiftSpillThreshold = 1.0;
+
     // Rung ER3 (give-way): SUMO's device.bluelight.reactiondist default (MSDevice_Bluelight.cpp:58)
     // -- the range within which surrounding drivers perceive the siren and start clearing the way.
     private const double GiveWayReactionDist = 25.0;
@@ -1826,6 +1843,13 @@ public sealed partial class Engine : IEngine
             // oncoming lane clear ahead). Real pass only; inert (false, no scan) when no vType has
             // lcOpposite. Written to the ego's own field, read by the OV2/OV3 arms and exported.
             v.OvertakeActive = DetectOvertake(v, lane, neighbors);
+
+            // Rung OV4: the mirror -- an oncoming driver forms a "make room" intent when a spilled
+            // overtaker is closing head-on down its bidi lane, and drifts to its own outer edge. Real
+            // pass only; inert (false, no scan) when no vType has lcOpposite. Reads only the frozen
+            // snapshot (the overtaker's already-committed LatOffset), so it never depends on whether
+            // the overtaker has been planned yet this step -- parallel-safe like OvertakeActive.
+            v.CooperativeShift = DetectCooperativeShift(v, lane);
         }
 
         return new MoveIntent
@@ -2013,6 +2037,61 @@ public sealed partial class Engine : IEngine
             (egoFreeSpeed + nearestOncomingSpeed) * overtakeTime + OvertakeSafetyGap);
 
         return nearestAhead > requiredClear;
+    }
+
+    // Rung OV4 (cooperative oncoming shift) DETECTION. The mirror of ER3's give-way detection, for
+    // opposite-direction overtaking: a normal oncoming driver (it need NOT itself be lcOpposite --
+    // it is cooperating, not overtaking) that sees a SPILLED overtaker closing head-on down its own
+    // bidi lane forms a "make room" intent, so ComputeLateralEvasion can pull it to its own outer
+    // edge and widen the corridor. Per-ego, reads only the frozen start-of-step snapshot + immutable
+    // network (in particular the overtaker's ALREADY-COMMITTED LatOffset, never a same-step plan
+    // flag), writes nothing -- the caller stores the result in this vehicle's own CooperativeShift.
+    //
+    // Fires iff an opposite-lane (bidi) vehicle is (a) spilled toward ego across the centre line
+    // (LatOffset > CooperativeShiftSpillThreshold -- the OV3 spill is always positive/toward the
+    // oncoming lane) and (b) ahead of ego in ego's travel direction within CooperativeShiftReactionDist
+    // (i.e. genuinely closing head-on, not already passed). Same straight-road world-x mapping as
+    // DetectOvertake.
+    //
+    // Inert: returns false immediately when the scenario has no lcOpposite vType (_anyLcOpposite
+    // false) or ego's lane has no opposite (bidi) partner.
+    private bool DetectCooperativeShift(VehicleRuntime v, Lane lane)
+    {
+        if (!_anyLcOpposite)
+        {
+            return false;
+        }
+
+        var oppLaneId = _network!.TryGetBidiLaneId(v.LaneId);
+        if (oppLaneId is null)
+        {
+            return false;
+        }
+
+        var (egoX, _, _) = LaneGeometry.PositionAtOffset(lane.Shape, v.Kinematics.Pos, 0.0);
+        var egoDirX = Math.Sign(lane.Shape[^1].X - lane.Shape[0].X);
+        if (egoDirX == 0)
+        {
+            egoDirX = 1;
+        }
+
+        var oppLane = _network.LanesById[oppLaneId];
+        foreach (var o in ActiveVehicles())
+        {
+            if (o.LaneId != oppLaneId || o.Kinematics.LatOffset <= CooperativeShiftSpillThreshold)
+            {
+                continue;
+            }
+
+            var (ox, _, _) = LaneGeometry.PositionAtOffset(oppLane.Shape, o.Kinematics.Pos, 0.0);
+            var aheadDist = (ox - egoX) * egoDirX; // > 0 == ahead of ego in its travel direction
+            if (aheadDist > 0.0 && aheadDist < CooperativeShiftReactionDist)
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     // Rung ER4 (give-way execution, multi-lane). When a blue-light EV is approaching in ego's OWN
@@ -4244,6 +4323,21 @@ public sealed partial class Engine : IEngine
             return DriftToward(curLat, v.VType.Width + OvertakeSpillGap, maxStep);
         }
 
+        // Rung OV4 (cooperative oncoming shift): the mirror of the OV3 spill for the ONCOMING driver.
+        // When a spilled overtaker is closing head-on down this vehicle's bidi lane (CooperativeShift,
+        // set by DetectCooperativeShift), pull to its OWN outer lane edge -- negative LatOffset (the
+        // right/outer side in right-hand traffic, away from the centre line the overtaker is crossing)
+        // -- to widen the corridor, reusing the same bounded lateral drift as give-way/overtake. When
+        // the intent clears (the overtaker has passed or recentred) it drifts back to centre via the
+        // recenter path below. Inert for every vehicle with CooperativeShift == false (i.e. every
+        // scenario with no lcOpposite vType). Takes precedence over the give-way / obstacle drift
+        // below, which cannot co-occur with an opposite-direction overtake in a supported scenario.
+        if (v.CooperativeShift)
+        {
+            var outerMargin = Math.Max(0.0, lane.Width / 2.0 - v.VType.Width / 2.0);
+            return DriftToward(curLat, -outerMargin, maxStep);
+        }
+
         // Rung ER5 (give-way execution, single-lane fallback): when this vehicle is clearing the way
         // for an approaching EV but has NO lane to change into -- a single lane (no left AND no right
         // neighbour); the multi-lane case is handled by ER4's lane change -- reuse the B6 lateral
@@ -5637,7 +5731,8 @@ public sealed partial class Engine : IEngine
                 y: y,
                 angle: angle,
                 giveWaySide: v.GiveWaySide,
-                overtakeActive: v.OvertakeActive);
+                overtakeActive: v.OvertakeActive,
+                cooperativeShift: v.CooperativeShift);
 
             trajectory.Add(new TrajectoryPoint(
                 VehicleId: snapshot.VehicleId,

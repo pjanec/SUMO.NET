@@ -292,4 +292,16 @@ internal sealed class VehicleRuntime
     // without lcOpposite (Engine._anyLcOpposite short-circuits detection), so inert wherever
     // opposite-direction overtaking is absent. Consumed by the OV2/OV3 decision/execution arms.
     public bool OvertakeActive;
+
+    // Rung OV4 (cooperative oncoming shift): true iff this vehicle is an oncoming driver that sees a
+    // spilled opposite-direction overtaker (a bidi-lane vehicle encroaching across the centre line)
+    // closing head-on within range, and is therefore pulling to its OWN outer lane edge to widen the
+    // corridor for the overtake -- the mirror of the ER3/ER5 give-way drift. Recomputed each PLAN
+    // step (Engine.DetectCooperativeShift) from the frozen start-of-step snapshot (it reads the
+    // overtaker's already-committed LatOffset, never a same-step plan flag, so it is parallel-safe
+    // like GiveWaySide/OvertakeActive), and exported via VehicleExportSnapshot. Default false; left
+    // false for every vType wherever no vType has lcOpposite (Engine._anyLcOpposite short-circuits
+    // detection), so inert wherever opposite-direction overtaking is absent. Consumed by
+    // ComputeLateralEvasion, which drifts ego to its outer edge while it is set.
+    public bool CooperativeShift;
 }

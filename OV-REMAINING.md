@@ -21,6 +21,20 @@ follow-up session can resume without re-deriving it. Same discipline as `C4-VII-
   `ov3b-adversarial.rou.xml` + `RungOV3bAbortSafetyTests`. The leader accelerates (maxSpeed 11) so
   OV2's gap acceptance commits early then ABORTS while ego is already spilled; the test asserts ego
   recenters collision-free (all pairs, exported world X/Y), through the abort window (~13 steps).
+- **OV4** — cooperative oncoming shift (the requested enhancement): an oncoming driver that sees a
+  spilled overtaker closing head-on down its bidi lane within `CooperativeShiftReactionDist` (200 m)
+  pulls to its OWN outer lane edge (`DetectCooperativeShift` → `VehicleRuntime.CooperativeShift`,
+  exported; `ComputeLateralEvasion` drifts it to `-(laneHalfWidth - egoHalfWidth)`), then recentres.
+  The exact ER3-detection + ER5-drift pattern, reading only the overtaker's already-committed
+  LatOffset from the frozen snapshot (parallel-safe). Gated on `_anyLcOpposite` (inert everywhere
+  else; bench hash unchanged). `scenarios/57-overtake-opposite/ov4-cooperative.rou.xml` +
+  `RungOV4CooperativeShiftTests`. NOTE: because OV2's gap acceptance already guarantees the pass
+  finishes before the head-on arrives, the cooperative shift is defence-in-depth margin during the
+  approach window (the oncoming widens the corridor while the overtaker is spilled) — it is never
+  what prevents a collision, and the two vehicles never reach a true side-by-side pass while spilled
+  (the same conservatism that made D1 vacuous). A genuine side-by-side pass would require OV2 to
+  commit optimistically on the strength of the oncoming's cooperation — a coupled decision left for a
+  future rung (see D1/D3).
 
 ## Deferred, with diagnosis (do these next)
 
@@ -45,11 +59,13 @@ leader for a step or two after `GetLeader` stops returning it (small per-ego sta
 `OvertakePassedLeaderPos` remembered until the gap is safe). Then extend the OV3 no-collision test to
 the full run (not just the abort window).
 
-### OV4 — cooperative oncoming shift (the requested enhancement; not started)
-Mirror of give-way ER3/ER5: an oncoming vehicle detects a spilled overtaker encroaching into its lane
-(a bidi-lane vehicle with `OvertakeActive` / large `LatOffset` approaching head-on within range) and
-drifts to its OWN outer edge (reuse `DriftToward` + a `GiveWayEdgeTarget`-style target) to widen the
-corridor, recentering after it passes. Reads only the frozen snapshot, writes only the ego's
-`LatOffset` via `MoveIntent` — the exact ER3-detection + ER5-drift pattern. Behavioral property test:
-the oncoming shifts, both pass, no footprint overlap, both recenter. Gate on `_anyLcOpposite` for
-inertness.
+### D3 — coupled OV2/OV4 decision (a genuine side-by-side pass): NOT started
+OV4 (above) widens the corridor but OV2 decides independently and conservatively, so the overtaker
+never actually passes side-by-side with a spilled body while the oncoming is alongside — OV2 has
+already completed or dropped the pass by then. To let the cooperation ENABLE a tighter overtake
+(SUMO's opposite-overtake does let vehicles pass with reduced lateral clearance), OV2's gap
+acceptance would need to account for the oncoming's shift — e.g. reduce `requiredClear` when the
+oncoming is known/expected to cooperate, or model the reduced-clearance side-by-side envelope. This
+couples two per-ego decisions across vehicles (an overtaker betting on an oncoming's future
+cooperation), which needs care under the plan/execute contract and a fixture that forces a real
+side-by-side pass. Do this together with re-adding the D1 cross-lane brake (which WOULD then bind).

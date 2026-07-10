@@ -62,6 +62,13 @@ public readonly struct VehicleExportSnapshot
     // so a behavioral test can assert the DECISION independently of the (later) execution.
     public readonly bool OvertakeActive;
 
+    // Rung OV4 (cooperative oncoming shift): whether this vehicle is an oncoming driver currently
+    // pulling to its own outer lane edge to make room for a spilled opposite-direction overtaker
+    // closing head-on. Always false wherever no vType sets lcOpposite, so inert for every existing
+    // scenario. Exposed so a behavioral test can assert the cooperative DECISION independently of the
+    // resulting lateral drift (which shows up in Y).
+    public readonly bool CooperativeShift;
+
     public VehicleExportSnapshot(
         Entity entity,
         int entityIndex,
@@ -75,7 +82,8 @@ public readonly struct VehicleExportSnapshot
         double y,
         double angle,
         int giveWaySide = 0,
-        bool overtakeActive = false)
+        bool overtakeActive = false,
+        bool cooperativeShift = false)
     {
         Entity = entity;
         EntityIndex = entityIndex;
@@ -90,5 +98,6 @@ public readonly struct VehicleExportSnapshot
         Angle = angle;
         GiveWaySide = giveWaySide;
         OvertakeActive = overtakeActive;
+        CooperativeShift = cooperativeShift;
     }
 }
