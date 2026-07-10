@@ -1808,8 +1808,13 @@ public sealed class Engine : IEngine
                 continue;
             }
 
-            var sameLane = ev.LaneId == v.LaneId;
-            if (!sameLane && !SameEdge(ev.LaneId, lane.EdgeId))
+            // Handle comparison (int) rather than a LaneId string compare, and the same-edge test
+            // via the handle-indexed lane table rather than a string-keyed LanesById hash lookup --
+            // the D2 hot-path convention (this scan runs per vehicle per step whenever a bluelight
+            // EV is present). The only string touched is the final EdgeId compare, unavoidable
+            // without edge handles and how the rest of the engine compares edges too.
+            var sameLane = ev.LaneHandle == lane.Handle;
+            if (!sameLane && _network!.LanesByHandle[ev.LaneHandle].EdgeId != lane.EdgeId)
             {
                 continue;
             }
@@ -1835,11 +1840,6 @@ public sealed class Engine : IEngine
         var isLeftmostOfMultiLane = lane.LeftNeighbor < 0 && lane.RightNeighbor >= 0;
         return (isLeftmostOfMultiLane ? +1 : -1, evSameLane);
     }
-
-    // Rung ER3: are two lane ids on the same edge? Compares the edge id a lane id embeds; used only
-    // on the give-way path (so never on any parity hot path). A lane id is "<edgeId>_<index>".
-    private bool SameEdge(string laneId, string edgeId)
-        => _network!.LanesById.TryGetValue(laneId, out var l) && l.EdgeId == edgeId;
 
     // Rung ER5: the lateral offset that pulls ego fully to the lane edge on its give-way side,
     // leaving the maximum gap on the other side for the EV to pass. LatOffset convention is
