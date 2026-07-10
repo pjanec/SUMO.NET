@@ -6,12 +6,16 @@ namespace Sim.ParityTests;
 // Rung OV1 behavioral (property) tests: opposite-direction overtake DETECTION. A fast lcOpposite
 // vehicle held up behind a slow leader on edge AB forms an overtake intent (OvertakeActive, exported
 // via VehicleExportSnapshot) only when the oncoming (opposite-direction) lane BA is clear far enough
-// ahead. As the oncoming approaches head-on the intent must drop once it is within the clear-ahead
-// distance. Reads only the frozen snapshot; inert when no vType has lcOpposite. No SUMO golden.
+// ahead. As the oncoming approaches head-on the intent must drop. Reads only the frozen snapshot;
+// inert when no vType has lcOpposite. No SUMO golden. These assert ROBUST extremes (well inside /
+// well outside any required clearance) so they hold under both OV1's fixed threshold and OV2's
+// speed-based gap acceptance; the exact speed-dependence is pinned in RungOV2 tests.
 public class RungOV1OvertakeDetectionTests
 {
-    // Must match Engine.OvertakeClearAheadDist.
-    private const double ClearAheadDist = 150.0;
+    // A distance so short that no gap-acceptance rule could ever accept it (below the min floor).
+    private const double DefinitelyUnsafeAhead = 40.0;
+    // A distance so long that a held-up overtaker always accepts it in this fixture.
+    private const double DefinitelyClearAhead = 250.0;
 
     private sealed class Recorder : ISimExportObserver
     {
@@ -67,16 +71,16 @@ public class RungOV1OvertakeDetectionTests
 
             var aheadDist = oncPrev.X - ovPrev.X; // geometry the detector saw when it set ov.Overtake
 
-            // INVARIANT: while an oncoming vehicle was within the clear-ahead distance ahead, the
-            // held-up overtaker must NOT signal an intent to use the oncoming lane.
-            if (aheadDist > 0.0 && aheadDist <= ClearAheadDist)
+            // INVARIANT: while an oncoming vehicle was very close ahead (well below any acceptable
+            // clearance), the held-up overtaker must NOT signal an intent to use the oncoming lane.
+            if (aheadDist > 0.0 && aheadDist <= DefinitelyUnsafeAhead)
             {
                 Assert.False(ov.Overtake,
                     $"overtake intent set at t={t} with oncoming only {aheadDist:F1} m ahead (at t-1)");
             }
 
             // The clear window (oncoming still far ahead) is where a held-up overtaker DOES intend.
-            if (aheadDist > ClearAheadDist && ov.Overtake)
+            if (aheadDist > DefinitelyClearAhead && ov.Overtake)
             {
                 formedInClearWindow = true;
             }

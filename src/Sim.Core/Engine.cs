@@ -97,10 +97,13 @@ public sealed partial class Engine : IEngine
     // (all committed scenarios + the bench) takes zero opposite-direction work and stays identical.
     private bool _anyLcOpposite;
 
-    // Rung OV1: how far ahead the oncoming (opposite-direction) lane must be clear for a held-up
-    // vehicle to consider overtaking through it. OV1 uses this fixed lookahead; OV2 replaces it with
-    // a closing-speed / time-to-collision gap-acceptance test.
-    private const double OvertakeClearAheadDist = 150.0;
+    // Rung OV1/OV2: the MINIMUM clear-ahead distance for an overtake even when the oncoming lane
+    // looks empty/very distant -- a floor beneath OV2's speed-based gap-acceptance requirement.
+    private const double OvertakeMinClearDist = 30.0;
+
+    // Rung OV2: extra safety margin added to the computed required-clear distance (the buffer left
+    // between completing the pass and the point the oncoming vehicle would reach).
+    private const double OvertakeSafetyGap = 25.0;
 
     // Rung OV1: a leader is "holding ego up" (worth overtaking) only if it is this fraction below
     // ego's own free-flow speed on the lane, and within OvertakeLeaderMaxGap ahead.
@@ -1962,7 +1965,7 @@ public sealed partial class Engine : IEngine
             return false;
         }
 
-        // Opposite lane clear ahead? Map ego and each oncoming vehicle to a world coordinate and
+        // Opposite lane clear enough? Map ego and each oncoming vehicle to a world coordinate and
         // measure the head-on gap along ego's travel direction. (Straight-road model: ego's forward
         // direction is the sign of increasing x along its lane shape -- OV fixtures are E-W.)
         var (egoX, _, _) = LaneGeometry.PositionAtOffset(lane.Shape, v.Kinematics.Pos, 0.0);
@@ -1974,6 +1977,7 @@ public sealed partial class Engine : IEngine
 
         var oppLane = _network.LanesById[oppLaneId];
         var nearestAhead = double.PositiveInfinity;
+        var nearestOncomingSpeed = 0.0;
         foreach (var o in ActiveVehicles())
         {
             if (o.LaneId != oppLaneId)
@@ -1986,10 +1990,29 @@ public sealed partial class Engine : IEngine
             if (aheadDist > 0.0 && aheadDist < nearestAhead)
             {
                 nearestAhead = aheadDist;
+                nearestOncomingSpeed = o.Kinematics.Speed;
             }
         }
 
-        return nearestAhead > OvertakeClearAheadDist;
+        // OV2 gap acceptance: commit only if the nearest oncoming is farther than the distance the
+        // manoeuvre needs. To PASS the leader, ego must gain (relative to the leader) the gap to it +
+        // both bodies + a re-entry gap; at its speed advantage that takes overtakeTime seconds, during
+        // which ego and the oncoming close at (egoFreeSpeed + oncomingSpeed). Required head-on clear =
+        // that closing distance + a safety buffer, floored at OvertakeMinClearDist. If ego has no
+        // speed advantage over the leader it can never complete the pass -> refuse.
+        var relAdvantage = egoFreeSpeed - leader.Kinematics.Speed;
+        if (relAdvantage <= KraussModel.NumericalEps)
+        {
+            return false;
+        }
+
+        var overtakeDist = Math.Max(0.0, leaderGap) + leader.VType.Length + v.VType.Length + 2.0 * v.VType.MinGap;
+        var overtakeTime = overtakeDist / relAdvantage;
+        var requiredClear = Math.Max(
+            OvertakeMinClearDist,
+            (egoFreeSpeed + nearestOncomingSpeed) * overtakeTime + OvertakeSafetyGap);
+
+        return nearestAhead > requiredClear;
     }
 
     // Rung ER4 (give-way execution, multi-lane). When a blue-light EV is approaching in ego's OWN

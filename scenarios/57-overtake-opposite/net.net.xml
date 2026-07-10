@@ -4,10 +4,10 @@
     <location netOffset="0.00,0.00" convBoundary="0.00,-1.60,1000.00,1.60" origBoundary="0.00,-1.60,1000.00,1.60" projParameter="!"/>
 
     <edge id="AB" from="A" to="B" priority="1" spreadType="center" bidi="BA">
-        <lane id="AB_0" index="0" speed="13.89" length="1000.00" width="3.20" shape="0.00,-1.60 1000.00,-1.60"/>
+        <lane id="AB_0" index="0" speed="30.00" length="1000.00" width="3.20" shape="0.00,-1.60 1000.00,-1.60"/>
     </edge>
     <edge id="BA" from="B" to="A" priority="1" spreadType="center" bidi="AB">
-        <lane id="BA_0" index="0" speed="13.89" length="1000.00" width="3.20" shape="1000.00,1.60 0.00,1.60"/>
+        <lane id="BA_0" index="0" speed="30.00" length="1000.00" width="3.20" shape="1000.00,1.60 0.00,1.60"/>
     </edge>
 
     <junction id="A" type="dead_end" x="0.00" y="0.00" incLanes="BA_0" intLanes="" shape="0.00,0.00 0.00,-3.20"/>
