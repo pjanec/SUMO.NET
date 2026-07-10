@@ -6,7 +6,7 @@ namespace Sim.Core;
 // sumo/src/microsim/cfmodels/MSCFModel*.cpp -- see KraussModel.cs) wired into the plan/execute
 // contract and lane-relative position model built in Task 2 (DESIGN.md "The plan/execute
 // contract", "Seam 2").
-public sealed class Engine : IEngine
+public sealed partial class Engine : IEngine
 {
     private NetworkModel? _network;
     private DemandModel? _demand;

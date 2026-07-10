@@ -27,6 +27,11 @@ public struct VehicleRng
         _state = state;
     }
 
+    // W2 (snapshot): the raw SplitMix64 state word, so a warm-started run can serialize and restore
+    // this stream exactly (paired with the `VehicleRng(ulong)` ctor). Read-only view; advancing is
+    // still only via NextDouble().
+    public ulong RawState => _state;
+
     // Per-entity seeding: mixes the engine's global seed with this vehicle's stable EntityIndex
     // (Engine.LoadScenario assigns EntityIndex once, in vehicle-definition order -- see
     // VehicleRuntime.EntityIndex's own comment) through ONE SplitMix64 step, rather than a bare
