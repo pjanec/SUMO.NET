@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<routes xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://sumo.dlr.de/xsd/routes_file.xsd">
+    <!-- OV3b adversarial fixture: the leader accelerates toward the overtaker's own speed (maxSpeed
+         11), so the overtaker's gap acceptance commits early (leader still slow, large speed
+         advantage) but the pass then runs long as the leader speeds up, and an oncoming vehicle
+         closes in. The overtaker must ABORT mid-spill and recenter (hard-safety drop plus cross-lane
+         brake) without a head-on collision. -->
+    <vType id="fastleader" vClass="passenger" sigma="0" maxSpeed="11"/>
+    <vType id="fast"       vClass="passenger" sigma="0" maxSpeed="13.89" lcOpposite="true"/>
+    <vType id="onc"        vClass="passenger" sigma="0" maxSpeed="13.89"/>
+    <route id="ab" edges="AB"/>
+    <route id="ba" edges="BA"/>
+    <vehicle id="leader"    type="fastleader" route="ab" depart="0" departPos="100" departSpeed="0" departLane="0"/>
+    <vehicle id="overtaker" type="fast"       route="ab" depart="0" departPos="60"  departSpeed="0" departLane="0"/>
+    <vehicle id="oncoming"  type="onc"        route="ba" depart="0" departPos="620" departSpeed="13.89" departLane="0"/>
+</routes>
