@@ -39,7 +39,22 @@ public sealed record VType(
     // attribute (SUMO_TAG_CF_KRAUSS's XML tag name is "Krauss", SUMO_TAG_CF_IDM's is "IDM").
     // null here (no override present) resolves to "Krauss" in VTypeDefaults.Resolve, exactly as
     // before this rung.
-    string? CarFollowModel = null);
+    string? CarFollowModel = null,
+    // Rung R6: MSCFModel_Rail cf-params (sumo/src/microsim/cfmodels/MSCFModel_Rail.cpp:62-133),
+    // read from the <vType>'s own XML attributes (getCFParam/getCFParamString reads the attribute
+    // map). Only meaningful when carFollowModel="Rail"; null for every other vType. `trainType`
+    // selects the base parameter set (only "custom" is in scope -- the built-in NGT400/ICE/… lookup
+    // tables are deferred); maxPower/maxTraction give the parametric traction curve and
+    // resCoef_{constant,linear,quadratic} the parametric resistance curve; massFactor/mass override
+    // the rotating-mass weight.
+    string? TrainType = null,
+    double? MaxPower = null,
+    double? MaxTraction = null,
+    double? ResCoefConstant = null,
+    double? ResCoefLinear = null,
+    double? ResCoefQuadratic = null,
+    double? MassFactor = null,
+    double? Mass = null);
 
 public sealed record Route(
     string Id,

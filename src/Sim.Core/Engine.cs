@@ -1662,7 +1662,11 @@ public sealed class Engine : IEngine
         // C4-viii: in the willPass pre-pass the Krauss dawdle draw must NOT advance this vehicle's real
         // RngState (it would desync the sigma>0 stream the real PlanMovements call then reads); advance
         // a throwaway copy instead. Byte-identical for sigma==0 (no draw is taken) and non-Krauss models.
-        var newSpeed = v.VType.CarFollowModel is "IDM" or "ACC" or "CACC" or "IDMM"
+        // R6: the Rail traction model's base finalizeSpeed (bounded by its own min/maxNextSpeed);
+        // no dawdle (MSCFModel_Rail does not override patchSpeedBeforeLC), so it takes no RngState.
+        var newSpeed = v.VType.CarFollowModel == "Rail"
+            ? RailModel.FinalizeSpeed(v.Kinematics.Speed, vPos, vStop, laneVehicleMaxSpeed, v.VType, dt, actionStepLengthSecs)
+            : v.VType.CarFollowModel is "IDM" or "ACC" or "CACC" or "IDMM"
             ? IdmModel.FinalizeSpeed(v.Kinematics.Speed, vPos, vStop, laneVehicleMaxSpeed, v.VType, dt, actionStepLengthSecs)
             : prePass
                 ? FinalizeKraussPrePass(v, vPos, vStop, laneVehicleMaxSpeed, dt, actionStepLengthSecs)
@@ -2158,6 +2162,8 @@ public sealed class Engine : IEngine
             return IdmModel.FollowSpeed(egoSpeed, gap, predSpeed, laneVehicleMaxSpeed, vType, dt, headwayTimeOverride);
         }
 
+        // R6: MSCFModel_Rail::followSpeed (moving-block leader model) is deferred (not exercised by
+        // the single free-running train anchor); a Rail leader would fall through to Krauss here.
         return vType.CarFollowModel == "IDM"
             ? IdmModel.FollowSpeed(egoSpeed, gap, predSpeed, laneVehicleMaxSpeed, vType, dt)
             : KraussModel.FollowSpeed(egoSpeed, gap, predSpeed, predMaxDecel, vType, dt, ballistic);

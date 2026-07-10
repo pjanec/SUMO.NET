@@ -47,7 +47,18 @@ public sealed record ResolvedVType(
     // Rung ER3 (give-way): does this vType carry an active blue-light siren (our opt-in model of
     // SUMO's MSDevice_Bluelight)? Defaults to false, so give-way detection is inert for every
     // vType that does not set hasBluelight="true".
-    bool HasBluelight);
+    bool HasBluelight,
+    // Rung R6: resolved MSCFModel_Rail traction parameters. Only meaningful when
+    // CarFollowModel=="Rail"; for every other model they stay at these inert defaults and are never
+    // read. Weight/MassFactor give the rotating mass (rotWeight = Weight*MassFactor);
+    // MaxPower/MaxTraction the parametric traction curve; ResCoef* the parametric resistance curve.
+    double Weight = 0.0,
+    double MassFactor = 1.0,
+    double MaxPower = double.NaN,
+    double MaxTraction = double.NaN,
+    double ResCoefConstant = double.NaN,
+    double ResCoefLinear = double.NaN,
+    double ResCoefQuadratic = double.NaN);
 
 public static class VTypeDefaults
 {
@@ -221,6 +232,53 @@ public static class VTypeDefaults
         // SUMOVTypeParameter.cpp getDefaultDecel: overridable via rou.xml's decel="...".
         var decel = vType.Decel ?? raw.Decel;
 
+        // Rung R6: MSCFModel_Rail (carFollowModel="Rail"). The Rail model OVERRIDES length, maxSpeed
+        // and decel from its trainType parameter set (MSCFModel_Rail.cpp:91-106 setLength/setMaxSpeed/
+        // setMaxDecel), so those come from the trainType (only "custom" is in scope) rather than the
+        // vClass table. rotWeight = weight*massFactor; the parametric traction (maxPower/maxTraction)
+        // and resistance (resCoef_*) curves are required (the built-in lookup tables are deferred).
+        var isRail = vType.CarFollowModel == "Rail";
+        var railLength = raw.Length;
+        var railMaxSpeed = raw.MaxSpeed;
+        var railDecel = decel;
+        var railEmergency = vType.EmergencyDecel ?? Math.Max(decel, raw.VcDecel);
+        var railWeight = 0.0;
+        var railMassFactor = 1.0;
+        var railMaxPower = double.NaN;
+        var railMaxTraction = double.NaN;
+        var railResC = double.NaN;
+        var railResL = double.NaN;
+        var railResQ = double.NaN;
+        if (isRail)
+        {
+            var trainType = vType.TrainType ?? "NGT400"; // MSCFModel_Rail.cpp:62 default
+            if (trainType != "custom")
+            {
+                throw new NotSupportedException(
+                    $"VTypeDefaults.Resolve supports only trainType=\"custom\" for carFollowModel=\"Rail\" " +
+                    $"(vType '{vType.Id}' uses trainType=\"{trainType}\"); the built-in NGT400/ICE/RB* lookup " +
+                    "tables are out of scope (rung R6 minimal).");
+            }
+
+            // initCustomParams (MSCFModel_Rail.h:882): weight=100 t, mf=1.05, length=100 m, decl=1,
+            // vmax=200/3.6. Then overridden by explicit vType attributes (MSCFModel_Rail.cpp:91-101).
+            railWeight = vType.Mass.HasValue ? vType.Mass.Value / 1000.0 : 100.0; // mass is kg -> tons
+            railMassFactor = vType.MassFactor ?? 1.05;
+            railLength = vType.Length ?? 100.0;
+            railMaxSpeed = vType.MaxSpeed ?? (200.0 / 3.6);
+            railDecel = vType.Decel ?? 1.0;
+            // setEmergencyDecel(getCFParam(EMERGENCYDECEL, decl + 0.3)) (MSCFModel_Rail.cpp:103).
+            railEmergency = vType.EmergencyDecel ?? (railDecel + 0.3);
+            railMaxPower = vType.MaxPower
+                ?? throw new NotSupportedException($"carFollowModel=\"Rail\" vType '{vType.Id}' requires maxPower (parametric traction curve; tables out of scope).");
+            railMaxTraction = vType.MaxTraction
+                ?? throw new NotSupportedException($"carFollowModel=\"Rail\" vType '{vType.Id}' requires maxTraction.");
+            railResC = vType.ResCoefConstant
+                ?? throw new NotSupportedException($"carFollowModel=\"Rail\" vType '{vType.Id}' requires resCoef_constant (parametric resistance curve; tables out of scope).");
+            railResL = vType.ResCoefLinear ?? 0.0;
+            railResQ = vType.ResCoefQuadratic ?? 0.0;
+        }
+
         return new ResolvedVType(
             Id: vType.Id,
             VClass: vClass,
@@ -229,25 +287,30 @@ public static class VTypeDefaults
             // value in scope -- SUMOXMLDefinitions::CarFollowModels' "IDM" -> SUMO_TAG_CF_IDM).
             CarFollowModel: vType.CarFollowModel ?? "Krauss",
             // SUMOVehicleClass.cpp getDefaultVehicleLength; overridable via rou.xml's length="...".
-            Length: vType.Length ?? raw.Length,
+            // R6: for the Rail model, length comes from the trainType (setLength), see railLength.
+            Length: isRail ? railLength : vType.Length ?? raw.Length,
             // SUMOVTypeParameter.cpp:61 (or per-vclass override); overridable via rou.xml's
             // minGap="...".
             MinGap: vType.MinGap ?? raw.MinGap,
             // SUMOVTypeParameter.cpp:63 (or per-vclass override); overridable via rou.xml's
             // maxSpeed="..." (rung 4's leader sets maxSpeed="5.00" so the fast follower catches
             // up and settles into the Krauss steady-state gap).
-            MaxSpeed: vType.MaxSpeed ?? raw.MaxSpeed,
-            // SUMOVTypeParameter.cpp getDefaultAccel; overridable via rou.xml's accel="...".
+            // R6: for the Rail model, maxSpeed = trainType vmax (setMaxSpeed), see railMaxSpeed.
+            MaxSpeed: isRail ? railMaxSpeed : vType.MaxSpeed ?? raw.MaxSpeed,
+            // SUMOVTypeParameter.cpp getDefaultAccel; overridable via rou.xml's accel="...". Unused
+            // by the Rail model (its acceleration comes from the traction curve), left at the vClass
+            // default there.
             Accel: vType.Accel ?? raw.Accel,
-            Decel: decel,
+            // R6: for the Rail model, decel = trainType decl (setMaxDecel), see railDecel.
+            Decel: isRail ? railDecel : decel,
             // getDefaultEmergencyDecel default option -> MAX2(decel, vcDecel); overridable via
             // rou.xml's emergencyDecel="..." (default computed from the possibly-overridden
             // decel and the per-vclass vcDecel, matching SUMOVTypeParameter.cpp's
-            // MAX2(decel, vcDecel) fallback -- never hardcoded per-class).
-            EmergencyDecel: vType.EmergencyDecel ?? Math.Max(decel, raw.VcDecel),
+            // MAX2(decel, vcDecel) fallback -- never hardcoded per-class). R6: Rail uses decl+0.3.
+            EmergencyDecel: isRail ? railEmergency : vType.EmergencyDecel ?? Math.Max(decel, raw.VcDecel),
             // MSCFModel.cpp:61 getCFParam(SUMO_ATTR_APPARENTDECEL, myDecel) -- defaults to
             // (possibly-overridden) decel; not independently overridable in our scope.
-            ApparentDecel: decel,
+            ApparentDecel: isRail ? railDecel : decel,
             // SUMOVTypeParameter.cpp getDefaultImperfection: vClass-dependent -- 0.5 for the road
             // classes, 0.0 for the rail family (tram/rail_urban/rail/rail_electric/rail_fast);
             // carried per-class in raw.Sigma above. Overridable via rou.xml's sigma="...". Rail
@@ -278,6 +341,14 @@ public static class VTypeDefaults
             JmIgnoreFoeSpeed: vType.JmIgnoreFoeSpeed ?? 0.0,
             JmIgnoreJunctionFoeProb: vType.JmIgnoreJunctionFoeProb ?? 0.0,
             // Rung ER3: false default -> give-way detection is inert for every non-bluelight vType.
-            HasBluelight: vType.HasBluelight ?? false);
+            HasBluelight: vType.HasBluelight ?? false,
+            // Rung R6: MSCFModel_Rail traction params (inert NaN/0 for every non-Rail vType).
+            Weight: railWeight,
+            MassFactor: railMassFactor,
+            MaxPower: railMaxPower,
+            MaxTraction: railMaxTraction,
+            ResCoefConstant: railResC,
+            ResCoefLinear: railResL,
+            ResCoefQuadratic: railResQ);
     }
 }

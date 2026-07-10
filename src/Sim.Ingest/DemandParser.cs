@@ -59,7 +59,18 @@ public static class DemandParser
                 HasBluelight: ParseNullableBool(vTypeEl, "hasBluelight"),
                 // C11-i: SUMOVTypeParameter.cpp's carFollowModel="..." vType attribute (a plain
                 // string tag name -- "Krauss", "IDM", etc. -- SUMOXMLDefinitions::CarFollowModels).
-                CarFollowModel: vTypeEl.Attribute("carFollowModel")?.Value);
+                CarFollowModel: vTypeEl.Attribute("carFollowModel")?.Value,
+                // Rung R6: MSCFModel_Rail cf-params, read straight from the <vType> attributes (the
+                // same attribute map SUMO's getCFParam/getCFParamString reads). Absent for every
+                // non-Rail vType.
+                TrainType: vTypeEl.Attribute("trainType")?.Value,
+                MaxPower: ParseNullableDouble(vTypeEl, "maxPower"),
+                MaxTraction: ParseNullableDouble(vTypeEl, "maxTraction"),
+                ResCoefConstant: ParseNullableDouble(vTypeEl, "resCoef_constant"),
+                ResCoefLinear: ParseNullableDouble(vTypeEl, "resCoef_linear"),
+                ResCoefQuadratic: ParseNullableDouble(vTypeEl, "resCoef_quadratic"),
+                MassFactor: ParseNullableDouble(vTypeEl, "massFactor"),
+                Mass: ParseNullableDouble(vTypeEl, "mass"));
 
             vTypes.Add(vType);
             vTypesById[vType.Id] = vType;

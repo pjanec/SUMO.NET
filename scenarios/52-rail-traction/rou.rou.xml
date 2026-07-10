@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<routes xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://sumo.dlr.de/xsd/routes_file.xsd">
+    <!-- Rung R6: MSCFModel_Rail traction model. One free-running train, carFollowModel="Rail" with
+         parametric traction (maxPower/maxTraction) and resistance (resCoef_*) curves (trainType
+         "custom"). The acceleration is speed-dependent (strong at low speed, tapering as speed
+         rises and resistance grows), distinctly non-Krauss. Rail sigma default 0 gives determinism
+         (the Rail model has no dawdle regardless). -->
+    <vType id="railtrac" vClass="rail" carFollowModel="Rail" trainType="custom"
+           maxPower="3000" maxTraction="150"
+           resCoef_constant="1.5" resCoef_linear="0.05" resCoef_quadratic="0.01"/>
+    <route id="r0" edges="e0"/>
+    <vehicle id="train0" type="railtrac" route="r0" depart="0" departPos="0" departSpeed="0" departLane="0"/>
+</routes>

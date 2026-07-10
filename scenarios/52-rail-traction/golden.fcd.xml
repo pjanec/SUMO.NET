@@ -1,0 +1,400 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<!-- generated on 2026-07-10 03:05:02 by Eclipse SUMO sumo Version 1.20.0
+<configuration xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://sumo.dlr.de/xsd/sumoConfiguration.xsd">
+
+    <input>
+        <net-file value="net.net.xml"/>
+        <route-files value="rou.rou.xml"/>
+    </input>
+
+    <output>
+        <precision value="6"/>
+        <fcd-output value="golden.fcd.xml"/>
+        <fcd-output.acceleration value="true"/>
+        <save-state.times value="1"/>
+        <save-state.files value="golden.state.xml"/>
+    </output>
+
+    <time>
+        <begin value="0"/>
+        <end value="120"/>
+        <step-length value="1"/>
+    </time>
+
+    <processing>
+        <step-method.ballistic value="false"/>
+        <time-to-teleport value="-1"/>
+        <default.action-step-length value="1"/>
+        <default.speeddev value="0"/>
+    </processing>
+
+    <report>
+        <no-step-log value="true"/>
+    </report>
+
+    <random_number>
+        <seed value="42"/>
+    </random_number>
+
+</configuration>
+-->
+
+<fcd-export xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://sumo.dlr.de/xsd/fcd_file.xsd">
+    <timestep time="0.000">
+        <vehicle id="train0" x="0.000000" y="-1.600000" angle="90.000000" type="railtrac" speed="0.000000" pos="0.000000" lane="e0_0" slope="0.000000" acceleration="0.000000"/>
+    </timestep>
+    <timestep time="1.000">
+        <vehicle id="train0" x="1.414286" y="-1.600000" angle="90.000000" type="railtrac" speed="1.414286" pos="1.414286" lane="e0_0" slope="0.000000" acceleration="1.414286"/>
+    </timestep>
+    <timestep time="2.000">
+        <vehicle id="train0" x="4.241993" y="-1.600000" angle="90.000000" type="railtrac" speed="2.827707" pos="4.241993" lane="e0_0" slope="0.000000" acceleration="1.413422"/>
+    </timestep>
+    <timestep time="3.000">
+        <vehicle id="train0" x="8.481878" y="-1.600000" angle="90.000000" type="railtrac" speed="4.239885" pos="8.481878" lane="e0_0" slope="0.000000" acceleration="1.412178"/>
+    </timestep>
+    <timestep time="4.000">
+        <vehicle id="train0" x="14.132318" y="-1.600000" angle="90.000000" type="railtrac" speed="5.650440" pos="14.132318" lane="e0_0" slope="0.000000" acceleration="1.410555"/>
+    </timestep>
+    <timestep time="5.000">
+        <vehicle id="train0" x="21.191312" y="-1.600000" angle="90.000000" type="railtrac" speed="7.058994" pos="21.191312" lane="e0_0" slope="0.000000" acceleration="1.408554"/>
+    </timestep>
+    <timestep time="6.000">
+        <vehicle id="train0" x="29.656485" y="-1.600000" angle="90.000000" type="railtrac" speed="8.465173" pos="29.656485" lane="e0_0" slope="0.000000" acceleration="1.406179"/>
+    </timestep>
+    <timestep time="7.000">
+        <vehicle id="train0" x="39.525088" y="-1.600000" angle="90.000000" type="railtrac" speed="9.868603" pos="39.525088" lane="e0_0" slope="0.000000" acceleration="1.403430"/>
+    </timestep>
+    <timestep time="8.000">
+        <vehicle id="train0" x="50.794002" y="-1.600000" angle="90.000000" type="railtrac" speed="11.268914" pos="50.794002" lane="e0_0" slope="0.000000" acceleration="1.400311"/>
+    </timestep>
+    <timestep time="9.000">
+        <vehicle id="train0" x="63.459741" y="-1.600000" angle="90.000000" type="railtrac" speed="12.665739" pos="63.459741" lane="e0_0" slope="0.000000" acceleration="1.396825"/>
+    </timestep>
+    <timestep time="10.000">
+        <vehicle id="train0" x="77.518457" y="-1.600000" angle="90.000000" type="railtrac" speed="14.058716" pos="77.518457" lane="e0_0" slope="0.000000" acceleration="1.392976"/>
+    </timestep>
+    <timestep time="11.000">
+        <vehicle id="train0" x="92.965940" y="-1.600000" angle="90.000000" type="railtrac" speed="15.447483" pos="92.965940" lane="e0_0" slope="0.000000" acceleration="1.388768"/>
+    </timestep>
+    <timestep time="12.000">
+        <vehicle id="train0" x="109.797626" y="-1.600000" angle="90.000000" type="railtrac" speed="16.831687" pos="109.797626" lane="e0_0" slope="0.000000" acceleration="1.384204"/>
+    </timestep>
+    <timestep time="13.000">
+        <vehicle id="train0" x="128.008602" y="-1.600000" angle="90.000000" type="railtrac" speed="18.210976" pos="128.008602" lane="e0_0" slope="0.000000" acceleration="1.379289"/>
+    </timestep>
+    <timestep time="14.000">
+        <vehicle id="train0" x="147.593607" y="-1.600000" angle="90.000000" type="railtrac" speed="19.585005" pos="147.593607" lane="e0_0" slope="0.000000" acceleration="1.374029"/>
+    </timestep>
+    <timestep time="15.000">
+        <vehicle id="train0" x="168.547041" y="-1.600000" angle="90.000000" type="railtrac" speed="20.953434" pos="168.547041" lane="e0_0" slope="0.000000" acceleration="1.368429"/>
+    </timestep>
+    <timestep time="16.000">
+        <vehicle id="train0" x="190.797965" y="-1.600000" angle="90.000000" type="railtrac" speed="22.250924" pos="190.797965" lane="e0_0" slope="0.000000" acceleration="1.297490"/>
+    </timestep>
+    <timestep time="17.000">
+        <vehicle id="train0" x="214.260911" y="-1.600000" angle="90.000000" type="railtrac" speed="23.462946" pos="214.260911" lane="e0_0" slope="0.000000" acceleration="1.212022"/>
+    </timestep>
+    <timestep time="18.000">
+        <vehicle id="train0" x="238.863694" y="-1.600000" angle="90.000000" type="railtrac" speed="24.602783" pos="238.863694" lane="e0_0" slope="0.000000" acceleration="1.139837"/>
+    </timestep>
+    <timestep time="19.000">
+        <vehicle id="train0" x="264.544138" y="-1.600000" angle="90.000000" type="railtrac" speed="25.680443" pos="264.544138" lane="e0_0" slope="0.000000" acceleration="1.077660"/>
+    </timestep>
+    <timestep time="20.000">
+        <vehicle id="train0" x="291.247834" y="-1.600000" angle="90.000000" type="railtrac" speed="26.703696" pos="291.247834" lane="e0_0" slope="0.000000" acceleration="1.023253"/>
+    </timestep>
+    <timestep time="21.000">
+        <vehicle id="train0" x="318.926558" y="-1.600000" angle="90.000000" type="railtrac" speed="27.678724" pos="318.926558" lane="e0_0" slope="0.000000" acceleration="0.975028"/>
+    </timestep>
+    <timestep time="22.000">
+        <vehicle id="train0" x="347.537106" y="-1.600000" angle="90.000000" type="railtrac" speed="28.610547" pos="347.537106" lane="e0_0" slope="0.000000" acceleration="0.931823"/>
+    </timestep>
+    <timestep time="23.000">
+        <vehicle id="train0" x="377.040418" y="-1.600000" angle="90.000000" type="railtrac" speed="29.503312" pos="377.040418" lane="e0_0" slope="0.000000" acceleration="0.892765"/>
+    </timestep>
+    <timestep time="24.000">
+        <vehicle id="train0" x="407.400909" y="-1.600000" angle="90.000000" type="railtrac" speed="30.360492" pos="407.400909" lane="e0_0" slope="0.000000" acceleration="0.857180"/>
+    </timestep>
+    <timestep time="25.000">
+        <vehicle id="train0" x="438.585944" y="-1.600000" angle="90.000000" type="railtrac" speed="31.185035" pos="438.585944" lane="e0_0" slope="0.000000" acceleration="0.824543"/>
+    </timestep>
+    <timestep time="26.000">
+        <vehicle id="train0" x="470.565414" y="-1.600000" angle="90.000000" type="railtrac" speed="31.979470" pos="470.565414" lane="e0_0" slope="0.000000" acceleration="0.794435"/>
+    </timestep>
+    <timestep time="27.000">
+        <vehicle id="train0" x="503.311401" y="-1.600000" angle="90.000000" type="railtrac" speed="32.745987" pos="503.311401" lane="e0_0" slope="0.000000" acceleration="0.766518"/>
+    </timestep>
+    <timestep time="28.000">
+        <vehicle id="train0" x="536.797903" y="-1.600000" angle="90.000000" type="railtrac" speed="33.486501" pos="536.797903" lane="e0_0" slope="0.000000" acceleration="0.740514"/>
+    </timestep>
+    <timestep time="29.000">
+        <vehicle id="train0" x="571.000600" y="-1.600000" angle="90.000000" type="railtrac" speed="34.202697" pos="571.000600" lane="e0_0" slope="0.000000" acceleration="0.716196"/>
+    </timestep>
+    <timestep time="30.000">
+        <vehicle id="train0" x="605.896669" y="-1.600000" angle="90.000000" type="railtrac" speed="34.896069" pos="605.896669" lane="e0_0" slope="0.000000" acceleration="0.693371"/>
+    </timestep>
+    <timestep time="31.000">
+        <vehicle id="train0" x="641.464617" y="-1.600000" angle="90.000000" type="railtrac" speed="35.567949" pos="641.464617" lane="e0_0" slope="0.000000" acceleration="0.671880"/>
+    </timestep>
+    <timestep time="32.000">
+        <vehicle id="train0" x="677.684151" y="-1.600000" angle="90.000000" type="railtrac" speed="36.219534" pos="677.684151" lane="e0_0" slope="0.000000" acceleration="0.651585"/>
+    </timestep>
+    <timestep time="33.000">
+        <vehicle id="train0" x="714.536053" y="-1.600000" angle="90.000000" type="railtrac" speed="36.851902" pos="714.536053" lane="e0_0" slope="0.000000" acceleration="0.632369"/>
+    </timestep>
+    <timestep time="34.000">
+        <vehicle id="train0" x="752.002086" y="-1.600000" angle="90.000000" type="railtrac" speed="37.466033" pos="752.002086" lane="e0_0" slope="0.000000" acceleration="0.614130"/>
+    </timestep>
+    <timestep time="35.000">
+        <vehicle id="train0" x="790.064902" y="-1.600000" angle="90.000000" type="railtrac" speed="38.062816" pos="790.064902" lane="e0_0" slope="0.000000" acceleration="0.596783"/>
+    </timestep>
+    <timestep time="36.000">
+        <vehicle id="train0" x="828.707966" y="-1.600000" angle="90.000000" type="railtrac" speed="38.643065" pos="828.707966" lane="e0_0" slope="0.000000" acceleration="0.580249"/>
+    </timestep>
+    <timestep time="37.000">
+        <vehicle id="train0" x="867.915494" y="-1.600000" angle="90.000000" type="railtrac" speed="39.207527" pos="867.915494" lane="e0_0" slope="0.000000" acceleration="0.564463"/>
+    </timestep>
+    <timestep time="38.000">
+        <vehicle id="train0" x="907.672385" y="-1.600000" angle="90.000000" type="railtrac" speed="39.756892" pos="907.672385" lane="e0_0" slope="0.000000" acceleration="0.549364"/>
+    </timestep>
+    <timestep time="39.000">
+        <vehicle id="train0" x="947.964178" y="-1.600000" angle="90.000000" type="railtrac" speed="40.291793" pos="947.964178" lane="e0_0" slope="0.000000" acceleration="0.534902"/>
+    </timestep>
+    <timestep time="40.000">
+        <vehicle id="train0" x="988.777000" y="-1.600000" angle="90.000000" type="railtrac" speed="40.812821" pos="988.777000" lane="e0_0" slope="0.000000" acceleration="0.521028"/>
+    </timestep>
+    <timestep time="41.000">
+        <vehicle id="train0" x="1030.097524" y="-1.600000" angle="90.000000" type="railtrac" speed="41.320524" pos="1030.097524" lane="e0_0" slope="0.000000" acceleration="0.507703"/>
+    </timestep>
+    <timestep time="42.000">
+        <vehicle id="train0" x="1071.912937" y="-1.600000" angle="90.000000" type="railtrac" speed="41.815413" pos="1071.912937" lane="e0_0" slope="0.000000" acceleration="0.494888"/>
+    </timestep>
+    <timestep time="43.000">
+        <vehicle id="train0" x="1114.210900" y="-1.600000" angle="90.000000" type="railtrac" speed="42.297963" pos="1114.210900" lane="e0_0" slope="0.000000" acceleration="0.482551"/>
+    </timestep>
+    <timestep time="44.000">
+        <vehicle id="train0" x="1156.979524" y="-1.600000" angle="90.000000" type="railtrac" speed="42.768624" pos="1156.979524" lane="e0_0" slope="0.000000" acceleration="0.470660"/>
+    </timestep>
+    <timestep time="45.000">
+        <vehicle id="train0" x="1200.207337" y="-1.600000" angle="90.000000" type="railtrac" speed="43.227813" pos="1200.207337" lane="e0_0" slope="0.000000" acceleration="0.459190"/>
+    </timestep>
+    <timestep time="46.000">
+        <vehicle id="train0" x="1243.883263" y="-1.600000" angle="90.000000" type="railtrac" speed="43.675927" pos="1243.883263" lane="e0_0" slope="0.000000" acceleration="0.448114"/>
+    </timestep>
+    <timestep time="47.000">
+        <vehicle id="train0" x="1287.996600" y="-1.600000" angle="90.000000" type="railtrac" speed="44.113337" pos="1287.996600" lane="e0_0" slope="0.000000" acceleration="0.437410"/>
+    </timestep>
+    <timestep time="48.000">
+        <vehicle id="train0" x="1332.536995" y="-1.600000" angle="90.000000" type="railtrac" speed="44.540395" pos="1332.536995" lane="e0_0" slope="0.000000" acceleration="0.427058"/>
+    </timestep>
+    <timestep time="49.000">
+        <vehicle id="train0" x="1377.494429" y="-1.600000" angle="90.000000" type="railtrac" speed="44.957434" pos="1377.494429" lane="e0_0" slope="0.000000" acceleration="0.417039"/>
+    </timestep>
+    <timestep time="50.000">
+        <vehicle id="train0" x="1422.859199" y="-1.600000" angle="90.000000" type="railtrac" speed="45.364769" pos="1422.859199" lane="e0_0" slope="0.000000" acceleration="0.407335"/>
+    </timestep>
+    <timestep time="51.000">
+        <vehicle id="train0" x="1468.621899" y="-1.600000" angle="90.000000" type="railtrac" speed="45.762700" pos="1468.621899" lane="e0_0" slope="0.000000" acceleration="0.397931"/>
+    </timestep>
+    <timestep time="52.000">
+        <vehicle id="train0" x="1514.773411" y="-1.600000" angle="90.000000" type="railtrac" speed="46.151512" pos="1514.773411" lane="e0_0" slope="0.000000" acceleration="0.388811"/>
+    </timestep>
+    <timestep time="53.000">
+        <vehicle id="train0" x="1561.304885" y="-1.600000" angle="90.000000" type="railtrac" speed="46.531474" pos="1561.304885" lane="e0_0" slope="0.000000" acceleration="0.379963"/>
+    </timestep>
+    <timestep time="54.000">
+        <vehicle id="train0" x="1608.207732" y="-1.600000" angle="90.000000" type="railtrac" speed="46.902847" pos="1608.207732" lane="e0_0" slope="0.000000" acceleration="0.371373"/>
+    </timestep>
+    <timestep time="55.000">
+        <vehicle id="train0" x="1655.473609" y="-1.600000" angle="90.000000" type="railtrac" speed="47.265877" pos="1655.473609" lane="e0_0" slope="0.000000" acceleration="0.363029"/>
+    </timestep>
+    <timestep time="56.000">
+        <vehicle id="train0" x="1703.094407" y="-1.600000" angle="90.000000" type="railtrac" speed="47.620799" pos="1703.094407" lane="e0_0" slope="0.000000" acceleration="0.354922"/>
+    </timestep>
+    <timestep time="57.000">
+        <vehicle id="train0" x="1751.062246" y="-1.600000" angle="90.000000" type="railtrac" speed="47.967839" pos="1751.062246" lane="e0_0" slope="0.000000" acceleration="0.347040"/>
+    </timestep>
+    <timestep time="58.000">
+        <vehicle id="train0" x="1799.369460" y="-1.600000" angle="90.000000" type="railtrac" speed="48.307214" pos="1799.369460" lane="e0_0" slope="0.000000" acceleration="0.339375"/>
+    </timestep>
+    <timestep time="59.000">
+        <vehicle id="train0" x="1848.008592" y="-1.600000" angle="90.000000" type="railtrac" speed="48.639131" pos="1848.008592" lane="e0_0" slope="0.000000" acceleration="0.331917"/>
+    </timestep>
+    <timestep time="60.000">
+        <vehicle id="train0" x="1896.972381" y="-1.600000" angle="90.000000" type="railtrac" speed="48.963789" pos="1896.972381" lane="e0_0" slope="0.000000" acceleration="0.324658"/>
+    </timestep>
+    <timestep time="61.000">
+        <vehicle id="train0" x="1946.253761" y="-1.600000" angle="90.000000" type="railtrac" speed="49.281380" pos="1946.253761" lane="e0_0" slope="0.000000" acceleration="0.317591"/>
+    </timestep>
+    <timestep time="62.000">
+        <vehicle id="train0" x="1995.845849" y="-1.600000" angle="90.000000" type="railtrac" speed="49.592088" pos="1995.845849" lane="e0_0" slope="0.000000" acceleration="0.310708"/>
+    </timestep>
+    <timestep time="63.000">
+        <vehicle id="train0" x="2045.741939" y="-1.600000" angle="90.000000" type="railtrac" speed="49.896090" pos="2045.741939" lane="e0_0" slope="0.000000" acceleration="0.304002"/>
+    </timestep>
+    <timestep time="64.000">
+        <vehicle id="train0" x="2095.935495" y="-1.600000" angle="90.000000" type="railtrac" speed="50.193556" pos="2095.935495" lane="e0_0" slope="0.000000" acceleration="0.297466"/>
+    </timestep>
+    <timestep time="65.000">
+        <vehicle id="train0" x="2146.420146" y="-1.600000" angle="90.000000" type="railtrac" speed="50.484651" pos="2146.420146" lane="e0_0" slope="0.000000" acceleration="0.291095"/>
+    </timestep>
+    <timestep time="66.000">
+        <vehicle id="train0" x="2197.189681" y="-1.600000" angle="90.000000" type="railtrac" speed="50.769535" pos="2197.189681" lane="e0_0" slope="0.000000" acceleration="0.284884"/>
+    </timestep>
+    <timestep time="67.000">
+        <vehicle id="train0" x="2248.238041" y="-1.600000" angle="90.000000" type="railtrac" speed="51.048360" pos="2248.238041" lane="e0_0" slope="0.000000" acceleration="0.278825"/>
+    </timestep>
+    <timestep time="68.000">
+        <vehicle id="train0" x="2299.559315" y="-1.600000" angle="90.000000" type="railtrac" speed="51.321274" pos="2299.559315" lane="e0_0" slope="0.000000" acceleration="0.272915"/>
+    </timestep>
+    <timestep time="69.000">
+        <vehicle id="train0" x="2351.147737" y="-1.600000" angle="90.000000" type="railtrac" speed="51.588422" pos="2351.147737" lane="e0_0" slope="0.000000" acceleration="0.267148"/>
+    </timestep>
+    <timestep time="70.000">
+        <vehicle id="train0" x="2402.997678" y="-1.600000" angle="90.000000" type="railtrac" speed="51.849941" pos="2402.997678" lane="e0_0" slope="0.000000" acceleration="0.261519"/>
+    </timestep>
+    <timestep time="71.000">
+        <vehicle id="train0" x="2455.103644" y="-1.600000" angle="90.000000" type="railtrac" speed="52.105966" pos="2455.103644" lane="e0_0" slope="0.000000" acceleration="0.256025"/>
+    </timestep>
+    <timestep time="72.000">
+        <vehicle id="train0" x="2507.460271" y="-1.600000" angle="90.000000" type="railtrac" speed="52.356627" pos="2507.460271" lane="e0_0" slope="0.000000" acceleration="0.250661"/>
+    </timestep>
+    <timestep time="73.000">
+        <vehicle id="train0" x="2560.062320" y="-1.600000" angle="90.000000" type="railtrac" speed="52.602049" pos="2560.062320" lane="e0_0" slope="0.000000" acceleration="0.245422"/>
+    </timestep>
+    <timestep time="74.000">
+        <vehicle id="train0" x="2612.904675" y="-1.600000" angle="90.000000" type="railtrac" speed="52.842355" pos="2612.904675" lane="e0_0" slope="0.000000" acceleration="0.240306"/>
+    </timestep>
+    <timestep time="75.000">
+        <vehicle id="train0" x="2665.982338" y="-1.600000" angle="90.000000" type="railtrac" speed="53.077663" pos="2665.982338" lane="e0_0" slope="0.000000" acceleration="0.235308"/>
+    </timestep>
+    <timestep time="76.000">
+        <vehicle id="train0" x="2719.290427" y="-1.600000" angle="90.000000" type="railtrac" speed="53.308089" pos="2719.290427" lane="e0_0" slope="0.000000" acceleration="0.230426"/>
+    </timestep>
+    <timestep time="77.000">
+        <vehicle id="train0" x="2772.824170" y="-1.600000" angle="90.000000" type="railtrac" speed="53.533743" pos="2772.824170" lane="e0_0" slope="0.000000" acceleration="0.225654"/>
+    </timestep>
+    <timestep time="78.000">
+        <vehicle id="train0" x="2826.578905" y="-1.600000" angle="90.000000" type="railtrac" speed="53.754735" pos="2826.578905" lane="e0_0" slope="0.000000" acceleration="0.220992"/>
+    </timestep>
+    <timestep time="79.000">
+        <vehicle id="train0" x="2880.550074" y="-1.600000" angle="90.000000" type="railtrac" speed="53.971169" pos="2880.550074" lane="e0_0" slope="0.000000" acceleration="0.216434"/>
+    </timestep>
+    <timestep time="80.000">
+        <vehicle id="train0" x="2934.733222" y="-1.600000" angle="90.000000" type="railtrac" speed="54.183148" pos="2934.733222" lane="e0_0" slope="0.000000" acceleration="0.211979"/>
+    </timestep>
+    <timestep time="81.000">
+        <vehicle id="train0" x="2989.123994" y="-1.600000" angle="90.000000" type="railtrac" speed="54.390772" pos="2989.123994" lane="e0_0" slope="0.000000" acceleration="0.207624"/>
+    </timestep>
+    <timestep time="82.000">
+        <vehicle id="train0" x="3043.718131" y="-1.600000" angle="90.000000" type="railtrac" speed="54.594137" pos="3043.718131" lane="e0_0" slope="0.000000" acceleration="0.203365"/>
+    </timestep>
+    <timestep time="83.000">
+        <vehicle id="train0" x="3098.511468" y="-1.600000" angle="90.000000" type="railtrac" speed="54.793337" pos="3098.511468" lane="e0_0" slope="0.000000" acceleration="0.199200"/>
+    </timestep>
+    <timestep time="84.000">
+        <vehicle id="train0" x="3153.499933" y="-1.600000" angle="90.000000" type="railtrac" speed="54.988465" pos="3153.499933" lane="e0_0" slope="0.000000" acceleration="0.195128"/>
+    </timestep>
+    <timestep time="85.000">
+        <vehicle id="train0" x="3208.679542" y="-1.600000" angle="90.000000" type="railtrac" speed="55.179609" pos="3208.679542" lane="e0_0" slope="0.000000" acceleration="0.191144"/>
+    </timestep>
+    <timestep time="86.000">
+        <vehicle id="train0" x="3264.046399" y="-1.600000" angle="90.000000" type="railtrac" speed="55.366857" pos="3264.046399" lane="e0_0" slope="0.000000" acceleration="0.187248"/>
+    </timestep>
+    <timestep time="87.000">
+        <vehicle id="train0" x="3319.596693" y="-1.600000" angle="90.000000" type="railtrac" speed="55.550294" pos="3319.596693" lane="e0_0" slope="0.000000" acceleration="0.183436"/>
+    </timestep>
+    <timestep time="88.000">
+        <vehicle id="train0" x="3375.152248" y="-1.600000" angle="90.000000" type="railtrac" speed="55.555556" pos="3375.152248" lane="e0_0" slope="0.000000" acceleration="0.005262"/>
+    </timestep>
+    <timestep time="89.000">
+        <vehicle id="train0" x="3430.707804" y="-1.600000" angle="90.000000" type="railtrac" speed="55.555556" pos="3430.707804" lane="e0_0" slope="0.000000" acceleration="0.000000"/>
+    </timestep>
+    <timestep time="90.000">
+        <vehicle id="train0" x="3486.263359" y="-1.600000" angle="90.000000" type="railtrac" speed="55.555556" pos="3486.263359" lane="e0_0" slope="0.000000" acceleration="0.000000"/>
+    </timestep>
+    <timestep time="91.000">
+        <vehicle id="train0" x="3541.818915" y="-1.600000" angle="90.000000" type="railtrac" speed="55.555556" pos="3541.818915" lane="e0_0" slope="0.000000" acceleration="0.000000"/>
+    </timestep>
+    <timestep time="92.000">
+        <vehicle id="train0" x="3597.374470" y="-1.600000" angle="90.000000" type="railtrac" speed="55.555556" pos="3597.374470" lane="e0_0" slope="0.000000" acceleration="0.000000"/>
+    </timestep>
+    <timestep time="93.000">
+        <vehicle id="train0" x="3652.930026" y="-1.600000" angle="90.000000" type="railtrac" speed="55.555556" pos="3652.930026" lane="e0_0" slope="0.000000" acceleration="0.000000"/>
+    </timestep>
+    <timestep time="94.000">
+        <vehicle id="train0" x="3708.485582" y="-1.600000" angle="90.000000" type="railtrac" speed="55.555556" pos="3708.485582" lane="e0_0" slope="0.000000" acceleration="0.000000"/>
+    </timestep>
+    <timestep time="95.000">
+        <vehicle id="train0" x="3764.041137" y="-1.600000" angle="90.000000" type="railtrac" speed="55.555556" pos="3764.041137" lane="e0_0" slope="0.000000" acceleration="0.000000"/>
+    </timestep>
+    <timestep time="96.000">
+        <vehicle id="train0" x="3819.596693" y="-1.600000" angle="90.000000" type="railtrac" speed="55.555556" pos="3819.596693" lane="e0_0" slope="0.000000" acceleration="0.000000"/>
+    </timestep>
+    <timestep time="97.000">
+        <vehicle id="train0" x="3875.152248" y="-1.600000" angle="90.000000" type="railtrac" speed="55.555556" pos="3875.152248" lane="e0_0" slope="0.000000" acceleration="0.000000"/>
+    </timestep>
+    <timestep time="98.000">
+        <vehicle id="train0" x="3930.707804" y="-1.600000" angle="90.000000" type="railtrac" speed="55.555556" pos="3930.707804" lane="e0_0" slope="0.000000" acceleration="0.000000"/>
+    </timestep>
+    <timestep time="99.000">
+        <vehicle id="train0" x="3986.263359" y="-1.600000" angle="90.000000" type="railtrac" speed="55.555556" pos="3986.263359" lane="e0_0" slope="0.000000" acceleration="0.000000"/>
+    </timestep>
+    <timestep time="100.000">
+        <vehicle id="train0" x="4041.818915" y="-1.600000" angle="90.000000" type="railtrac" speed="55.555556" pos="4041.818915" lane="e0_0" slope="0.000000" acceleration="0.000000"/>
+    </timestep>
+    <timestep time="101.000">
+        <vehicle id="train0" x="4097.374470" y="-1.600000" angle="90.000000" type="railtrac" speed="55.555556" pos="4097.374470" lane="e0_0" slope="0.000000" acceleration="0.000000"/>
+    </timestep>
+    <timestep time="102.000">
+        <vehicle id="train0" x="4152.930026" y="-1.600000" angle="90.000000" type="railtrac" speed="55.555556" pos="4152.930026" lane="e0_0" slope="0.000000" acceleration="0.000000"/>
+    </timestep>
+    <timestep time="103.000">
+        <vehicle id="train0" x="4208.485582" y="-1.600000" angle="90.000000" type="railtrac" speed="55.555556" pos="4208.485582" lane="e0_0" slope="0.000000" acceleration="0.000000"/>
+    </timestep>
+    <timestep time="104.000">
+        <vehicle id="train0" x="4264.041137" y="-1.600000" angle="90.000000" type="railtrac" speed="55.555556" pos="4264.041137" lane="e0_0" slope="0.000000" acceleration="0.000000"/>
+    </timestep>
+    <timestep time="105.000">
+        <vehicle id="train0" x="4319.596693" y="-1.600000" angle="90.000000" type="railtrac" speed="55.555556" pos="4319.596693" lane="e0_0" slope="0.000000" acceleration="0.000000"/>
+    </timestep>
+    <timestep time="106.000">
+        <vehicle id="train0" x="4375.152248" y="-1.600000" angle="90.000000" type="railtrac" speed="55.555556" pos="4375.152248" lane="e0_0" slope="0.000000" acceleration="0.000000"/>
+    </timestep>
+    <timestep time="107.000">
+        <vehicle id="train0" x="4430.707804" y="-1.600000" angle="90.000000" type="railtrac" speed="55.555556" pos="4430.707804" lane="e0_0" slope="0.000000" acceleration="0.000000"/>
+    </timestep>
+    <timestep time="108.000">
+        <vehicle id="train0" x="4486.263359" y="-1.600000" angle="90.000000" type="railtrac" speed="55.555556" pos="4486.263359" lane="e0_0" slope="0.000000" acceleration="0.000000"/>
+    </timestep>
+    <timestep time="109.000">
+        <vehicle id="train0" x="4541.818915" y="-1.600000" angle="90.000000" type="railtrac" speed="55.555556" pos="4541.818915" lane="e0_0" slope="0.000000" acceleration="0.000000"/>
+    </timestep>
+    <timestep time="110.000">
+        <vehicle id="train0" x="4597.374470" y="-1.600000" angle="90.000000" type="railtrac" speed="55.555556" pos="4597.374470" lane="e0_0" slope="0.000000" acceleration="0.000000"/>
+    </timestep>
+    <timestep time="111.000">
+        <vehicle id="train0" x="4652.930026" y="-1.600000" angle="90.000000" type="railtrac" speed="55.555556" pos="4652.930026" lane="e0_0" slope="0.000000" acceleration="0.000000"/>
+    </timestep>
+    <timestep time="112.000">
+        <vehicle id="train0" x="4708.485582" y="-1.600000" angle="90.000000" type="railtrac" speed="55.555556" pos="4708.485582" lane="e0_0" slope="0.000000" acceleration="0.000000"/>
+    </timestep>
+    <timestep time="113.000">
+        <vehicle id="train0" x="4764.041137" y="-1.600000" angle="90.000000" type="railtrac" speed="55.555556" pos="4764.041137" lane="e0_0" slope="0.000000" acceleration="0.000000"/>
+    </timestep>
+    <timestep time="114.000">
+        <vehicle id="train0" x="4819.596693" y="-1.600000" angle="90.000000" type="railtrac" speed="55.555556" pos="4819.596693" lane="e0_0" slope="0.000000" acceleration="0.000000"/>
+    </timestep>
+    <timestep time="115.000">
+        <vehicle id="train0" x="4875.152248" y="-1.600000" angle="90.000000" type="railtrac" speed="55.555556" pos="4875.152248" lane="e0_0" slope="0.000000" acceleration="0.000000"/>
+    </timestep>
+    <timestep time="116.000">
+        <vehicle id="train0" x="4930.707804" y="-1.600000" angle="90.000000" type="railtrac" speed="55.555556" pos="4930.707804" lane="e0_0" slope="0.000000" acceleration="0.000000"/>
+    </timestep>
+    <timestep time="117.000">
+        <vehicle id="train0" x="4986.263359" y="-1.600000" angle="90.000000" type="railtrac" speed="55.555556" pos="4986.263359" lane="e0_0" slope="0.000000" acceleration="0.000000"/>
+    </timestep>
+    <timestep time="118.000"/>
+    <timestep time="119.000"/>
+</fcd-export>

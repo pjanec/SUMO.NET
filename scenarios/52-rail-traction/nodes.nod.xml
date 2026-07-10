@@ -1,0 +1,4 @@
+<nodes>
+    <node id="n0" x="0" y="0" type="dead_end"/>
+    <node id="n1" x="5000" y="0" type="dead_end"/>
+</nodes>
