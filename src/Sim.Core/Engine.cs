@@ -30,6 +30,15 @@ public sealed class Engine : IEngine
     // reads _laneSeqArrival) is byte-identical to reading _laneSeqPool there.
     private readonly List<int> _laneSeqArrival = new();
 
+    // R4 (rail signal): for each lane whose outgoing connection is controlled by a rail_signal
+    // junction, the set of "conflict lane" ids that must be clear for the signal to show green --
+    // ported from MSRailSignal::DriveWay::conflictLaneOccupied (the driveway's forward block's bidi
+    // partners: the opposing lanes on the shared single track). Keyed by (edgeId, laneIndex) of the
+    // approaching (signal-guarded) lane. EMPTY for every scenario with no rail_signal junction, so
+    // the rail-signal constraint is a no-op (inert-when-absent) for all road/rail non-signal
+    // scenarios. See BuildRailSignalInfo for the conflict-set construction and its scope notes.
+    private readonly Dictionary<(string EdgeId, int LaneIndex), string[]> _railSignalConflictLanes = new();
+
     // D3: this vehicle's scheduled stops (Sim.Ingest.VehicleDef.Stops), keyed by
     // VehicleRuntime.EntityIndex -- replaces the old per-vehicle `Queue<StopRuntime> Stops`
     // managed field. Populated once at LoadScenario, ONLY for vehicles that actually have stops
@@ -334,6 +343,10 @@ public sealed class Engine : IEngine
                 _actuatedLogics[tlLogic.Id] = ActuatedTrafficLightLogic.Build(tlLogic, _network, _config.Begin);
             }
         }
+
+        // R4 (rail signal): precompute each rail-signal-guarded lane's conflict-lane set once here
+        // (cold path, per LoadScenario). Empty for any network without a rail_signal junction.
+        BuildRailSignalInfo();
 
         _vehicles.Clear();
         // D3: side storage is keyed by EntityIndex (== _vehicles list index) -- clear it in
@@ -776,6 +789,198 @@ public sealed class Engine : IEngine
         return false;
     }
 
+    // R4 (rail signal): precompute, for each rail_signal-controlled link, the "conflict lanes" that
+    // must be clear for that signal to show green -- a scoped port of MSRailSignal's driveway
+    // reservation (MSRailSignal::DriveWay::conflictLaneOccupied, MSRailSignal.cpp:954). The full
+    // subsystem builds a driveway = the block of lanes from the signal forward to the NEXT rail
+    // signal, plus that block's bidi partners, plus flank/crossing-foe lanes, and reserves it iff
+    // none is occupied. This minimal single-block port takes the conflict set to be the BIDI
+    // PARTNERS of the forward block lanes (the opposing traffic on the shared single track) -- which
+    // is exactly what makes a single-track meet hold one train at its signal while the other
+    // occupies the shared block. SCOPED OUT (deferred, not exercised by the committed single-block
+    // meet anchor scenarios/50-rail-signal-meet): the crossing/flank-foe internal lanes (they clear
+    // on the SAME step as the bidi block here, so they do not change this golden), the protecting-
+    // switch/link-conflict checks, and the mustYield PRIORITY tie-break for two trains reaching
+    // opposing signals SIMULTANEOUSLY (avoided by the scenario's staggered departure, so the winner
+    // is unambiguous and each held train simply sees the shared block physically occupied).
+    private void BuildRailSignalInfo()
+    {
+        _railSignalConflictLanes.Clear();
+        if (_network is null)
+        {
+            return;
+        }
+
+        foreach (var conn in _network.Connections)
+        {
+            // A rail signal's controlled connection carries tl="<junction id>" where that junction
+            // is type="rail_signal" (netconvert emits no <tlLogic> for it -- it is computed at run
+            // time). Every non-rail-signal tl= is a normal <tlLogic> and stays with RedLightConstraint.
+            if (conn.Tl is null
+                || !_network.JunctionsById.TryGetValue(conn.Tl, out var sigJunction)
+                || sigJunction.Type != "rail_signal")
+            {
+                continue;
+            }
+
+            // Forward block: walk the route from the link's to-lane until the edge whose downstream
+            // node is the NEXT rail signal (inclusive), collecting the lanes the train will occupy.
+            // Single continuation per lane in scope; a 64-hop guard bounds any malformed loop.
+            var conflicts = new List<string>();
+            var curEdgeId = conn.To;
+            var curLaneIndex = conn.ToLane;
+            for (var hop = 0; hop < 64; hop++)
+            {
+                if (!_network.EdgesById.TryGetValue(curEdgeId, out var edge))
+                {
+                    break;
+                }
+
+                var blockLane = edge.Lanes.FirstOrDefault(l => l.Index == curLaneIndex) ?? edge.Lanes.FirstOrDefault();
+                if (blockLane is null)
+                {
+                    break;
+                }
+
+                // The opposing lane on the shared track: a bidi partner of a block lane must be clear.
+                var bidi = _network.TryGetBidiLaneId(blockLane.Id);
+                if (bidi is not null && !conflicts.Contains(bidi))
+                {
+                    conflicts.Add(bidi);
+                }
+
+                // Stop the block at the next rail signal (its own driveway starts there).
+                if (_network.JunctionsById.TryGetValue(edge.To, out var toJunction)
+                    && toJunction.Type == "rail_signal")
+                {
+                    break;
+                }
+
+                if (!_network.ConnectionsByFromEdgeLane.TryGetValue((curEdgeId, curLaneIndex), out var outs)
+                    || outs.Count == 0)
+                {
+                    break;
+                }
+
+                curEdgeId = outs[0].To;
+                curLaneIndex = outs[0].ToLane;
+            }
+
+            if (conflicts.Count > 0)
+            {
+                _railSignalConflictLanes[(conn.From, conn.FromLane)] = conflicts.ToArray();
+            }
+        }
+    }
+
+    // R4 (rail signal): the stop-line brake for a train approaching a RED rail signal. The signal on
+    // the lane's outgoing rail-signal link is RED iff any of the link's precomputed conflict lanes
+    // (BuildRailSignalInfo) is occupied -- with PARTIAL occupancy (a long train's body spans several
+    // lanes) -- by another train (MSRailSignal::updateCurrentPhase -> DriveWay::reserve ->
+    // conflictLaneOccupied's `!lane->isEmpty()` / getVehicleNumberWithPartials, MSRailSignal.cpp:158,
+    // 954-1004). A red rail signal is then just a red MSLink: the train brakes to the same stop line
+    // a red traffic light uses (majorStopOffset = DIST_TO_STOPLINE_EXPECT_PRIORITY = 1.0 m before the
+    // junction), via the identical stop-line math RedLightConstraint uses (MSVehicle.cpp:2641-2666,
+    // 2734). Returns +infinity (non-binding) when there is no rail signal on this lane, or its
+    // conflict lanes are all clear (green). Inert-when-absent: _railSignalConflictLanes is empty for
+    // every scenario with no rail_signal junction, so the first lookup fails and this is a no-op Min
+    // term for all road/rail non-signal scenarios.
+    private double RailSignalConstraint(
+        VehicleRuntime v, Lane lane, double dt, double actionStepLengthSecs, double laneVehicleMaxSpeed)
+    {
+        if (_railSignalConflictLanes.Count == 0
+            || !_railSignalConflictLanes.TryGetValue((lane.EdgeId, lane.Index), out var conflictLanes))
+        {
+            return double.PositiveInfinity;
+        }
+
+        var red = false;
+        foreach (var conflictLaneId in conflictLanes)
+        {
+            foreach (var other in ActiveVehicles())
+            {
+                if (ReferenceEquals(other, v))
+                {
+                    continue;
+                }
+
+                if (VehicleBodyOccupies(other, conflictLaneId))
+                {
+                    red = true;
+                    break;
+                }
+            }
+
+            if (red)
+            {
+                break;
+            }
+        }
+
+        if (!red)
+        {
+            return double.PositiveInfinity;
+        }
+
+        // Stop-line brake, identical to RedLightConstraint's tail (see there for the source cites):
+        // stop at majorStopOffset = 1.0 m before the lane end (the junction), never emergency-braking
+        // past the point where a comfortable stop is still possible.
+        var seen = lane.Length - v.Kinematics.Pos;
+        var stopDecel = v.VType.Decel;
+        var brakeDist = KraussModel.BrakeGap(v.Kinematics.Speed, stopDecel, headwayTime: 0.0, dt);
+        var canBrakeBeforeLaneEnd = seen >= brakeDist;
+        const double vehicleStopOffset = 0.0;
+        var canBrakeBeforeStopLine = seen - vehicleStopOffset >= brakeDist;
+        if (!canBrakeBeforeStopLine)
+        {
+            return double.PositiveInfinity;
+        }
+
+        const double majorStopOffset = 1.0;
+        const double positionEps = 0.1;
+        var laneStopOffset = majorStopOffset;
+        if (canBrakeBeforeLaneEnd)
+        {
+            laneStopOffset = Math.Min(laneStopOffset, seen - brakeDist);
+        }
+
+        laneStopOffset = Math.Max(positionEps, laneStopOffset);
+        var stopDist = Math.Max(0.0, seen - laneStopOffset);
+        return StopSpeedFor(v.VType, v.Kinematics.Speed, stopDist, laneVehicleMaxSpeed, dt, actionStepLengthSecs, v.LevelOfService);
+    }
+
+    // R4 (rail signal): does `other`'s physical body currently touch lane `laneId`? A train of length
+    // L occupies [Pos - L, Pos] along its route, spanning back through the lanes it just traversed --
+    // SUMO's getVehicleNumberWithPartials counts a vehicle on every lane its body overlaps. Walks the
+    // vehicle's arrival lane sequence backward from its current (front) lane, consuming L, and returns
+    // true if `laneId` is any lane the body reaches. This partial-occupancy span is what makes a
+    // rail signal stay RED until a long train's TAIL clears the shared block, not just its front.
+    private bool VehicleBodyOccupies(VehicleRuntime other, string laneId)
+    {
+        var idx = other.LaneSeqIndex;
+        var remaining = other.VType.Length;
+        // Body available on the current (front) lane = from the lane start (0) up to the front Pos.
+        var availOnLane = other.Kinematics.Pos;
+        while (idx >= 0 && remaining > 1e-9)
+        {
+            var curLaneId = _network!.LanesByHandle[_laneSeqArrival[other.LaneSeqStart + idx]].Id;
+            if (curLaneId == laneId)
+            {
+                return true;
+            }
+
+            remaining -= availOnLane;
+            idx--;
+            if (idx >= 0)
+            {
+                // A full previous lane's length of body may lie on it.
+                availOnLane = _network.LanesByHandle[_laneSeqArrival[other.LaneSeqStart + idx]].Length;
+            }
+        }
+
+        return false;
+    }
+
     // Cross-junction insertion helper: the rearmost (smallest-Pos) active vehicle on a lane handle,
     // scanned directly from the engine's vehicle list (the neighbor query is not yet refilled when
     // InsertDepartingVehicles runs at the top of the step). Mirrors LaneNeighborQuery.GetRearmost.
@@ -1126,6 +1331,13 @@ public sealed class Engine : IEngine
         // Execute cycle's result will be observed (see RedLightConstraint's own comment on
         // why that is `time + dt`, not `time`).
         vPos = Math.Min(vPos, RedLightConstraint(v, lane, time, dt, actionStepLengthSecs, laneVehicleMaxSpeed));
+
+        // Rail signal (rung R4): MSRailSignal's block-based hold -- a train approaching a rail signal
+        // whose forward block's opposing (bidi) lane is occupied by another train brakes to a stop at
+        // the signal until that block clears. +infinity (non-binding) when this lane has no rail
+        // signal or its conflict lanes are clear (green). Inert for every scenario with no
+        // rail_signal junction (_railSignalConflictLanes empty). See RailSignalConstraint.
+        vPos = Math.Min(vPos, RailSignalConstraint(v, lane, dt, actionStepLengthSecs, laneVehicleMaxSpeed));
 
         // Priority-junction yielding (rung 9b-ii/iii, plus B5-iii's external-agent foe): MSLink's
         // right-of-way gate (stop-line brake while a higher-priority foe still approaches) plus
@@ -1794,6 +2006,15 @@ public sealed class Engine : IEngine
             return double.PositiveInfinity;
         }
 
+        // R4 (rail signal): a rail_signal-controlled connection also carries tl="<junction id>" but
+        // has NO <tlLogic> (its state is computed at run time, not from a static/actuated program).
+        // Those links are handled by RailSignalConstraint -- skip them here so this static-program
+        // lookup never throws on a rail signal. No-op for every scenario without a rail signal.
+        if (!_network.TlLogicsById.ContainsKey(connection.Tl!))
+        {
+            return double.PositiveInfinity;
+        }
+
         var tlLogic = _network.TlLogicsById[connection.Tl!];
         var linkIndex = connection.LinkIndex!.Value;
         var evalTime = time + dt;
@@ -1953,6 +2174,18 @@ public sealed class Engine : IEngine
         }
 
         var (junction, egoLink) = _network!.LinkByInternalLane[egoInternalLaneId];
+
+        // R4 (rail signal): at a rail_signal junction the SIGNAL arbitrates right-of-way (via
+        // RailSignalConstraint's block reservation), NOT the static <request> priority matrix.
+        // netconvert still emits a foes/response matrix for the junction's crossing links, but a
+        // train obeys its rail signal (stop on red, go on green) rather than the priority yield --
+        // so the winning train (whose block is reserved / signal green) must NOT also yield to the
+        // held train via this 9b priority path. Skip it here. Inert for every non-rail-signal
+        // junction (no committed scenario had a rail_signal junction before this rung).
+        if (junction.Type == "rail_signal")
+        {
+            return double.PositiveInfinity;
+        }
 
         // D4: manual loop instead of `.FirstOrDefault(r => r.Index == egoLink.Index)` -- the
         // lambda captured `egoLink` from the enclosing scope, so it allocated a closure every

@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<routes xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://sumo.dlr.de/xsd/routes_file.xsd">
+    <!-- Single-track MEET guarded by RAIL SIGNALS (rung R4). AB/BA share one physical track
+         (bidi), with a rail_signal at each end junction (A, B). Two rail trains, tL first then
+         tR (staggered depart), converge on the shared block from opposite double-track ends.
+         tL (depart 0) reserves and occupies AB; tR (depart 30), reaching signal B while AB is
+         occupied by tL, is HELD AT THE SIGNAL (RED): it brakes to a stop about 1 m before
+         junction B and waits. Once tL's whole 135 m body clears AB, signal B goes green and tR
+         proceeds. Rail sigma default 0 gives determinism. -->
+    <vType id="train" vClass="rail" carFollowModel="Krauss"/>
+    <route id="rL" edges="LA AB BRex"/>
+    <route id="rR" edges="RB BA ALex"/>
+    <vehicle id="tL" type="train" route="rL" depart="0"  departPos="0" departSpeed="0" departLane="0"/>
+    <vehicle id="tR" type="train" route="rR" depart="30" departPos="0" departSpeed="0" departLane="0"/>
+</routes>

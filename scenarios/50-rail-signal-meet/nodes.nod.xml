@@ -1,0 +1,8 @@
+<nodes>
+    <node id="L"   x="0"    y="0"    type="dead_end"/>
+    <node id="A"   x="1000" y="0"    type="rail_signal"/>
+    <node id="B"   x="2000" y="0"    type="rail_signal"/>
+    <node id="R"   x="3000" y="0"    type="dead_end"/>
+    <node id="Lex" x="0"    y="-100" type="dead_end"/>
+    <node id="Rex" x="3000" y="100"  type="dead_end"/>
+</nodes>

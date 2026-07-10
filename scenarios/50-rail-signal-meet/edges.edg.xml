@@ -1,0 +1,8 @@
+<edges>
+    <edge id="LA"   from="L" to="A" numLanes="1" speed="27.78" allow="rail" spreadType="center"/>
+    <edge id="AB"   from="A" to="B" numLanes="1" speed="27.78" allow="rail" spreadType="center"/>
+    <edge id="BA"   from="B" to="A" numLanes="1" speed="27.78" allow="rail" spreadType="center"/>
+    <edge id="RB"   from="R" to="B" numLanes="1" speed="27.78" allow="rail" spreadType="center"/>
+    <edge id="BRex" from="B" to="Rex" numLanes="1" speed="27.78" allow="rail" spreadType="center"/>
+    <edge id="ALex" from="A" to="Lex" numLanes="1" speed="27.78" allow="rail" spreadType="center"/>
+</edges>
