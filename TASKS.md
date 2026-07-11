@@ -2330,12 +2330,18 @@ where a network golden is called out. Full per-rung diagnosis lives in the refer
   **D3** the coupled OV2/OV4 decision that would enable a genuine reduced-clearance side-by-side pass
   (OV2 must account for the oncoming's cooperative shift; re-add D1 together with this, as D1 would
   then bind). Each needs a fixture that forces the currently-vacuous path to bind.
-- **[overtake] OV deferred are the ONLY remaining Group-E items — see `OV-REMAINING.md`.** They are
-  OFFLINE (no SUMO needed), needing engine work + a fixture that forces the currently-vacuous path to
-  bind: **D2** first (the concrete OV3 return-gap bug), then **D3** (coupled OV2/OV4 side-by-side
-  pass) with **D1** (cross-lane brake) re-added once D3 makes it bind.
+- **[overtake] OV follow-ups (D2, D3) — DONE; D1 confirmed unnecessary — see `OV-REMAINING.md`.**
+  **D2** OV3 return-gap enforcement (overtaker stays spilled until a safe re-entry gap ahead of the
+  passed leader; `RungD2ReturnGapTests`). **D3** coupled OV2/OV4 cooperative side-by-side pass on a
+  wide-enough lane (`scenarios/59-overtake-cooperative`, corridor predicate self-gates so scenario 57
+  is byte-identical; `RungD3CooperativeOvertakeTests`). **D1** (explicit cross-lane brake) was
+  re-investigated under D3's optimistic commitment and STILL does not bind — two overtakers spilling
+  head-on both abort and pass safely (the one-step abort is the safety response), so it stays unbuilt
+  rather than add speculative untestable code. Both engine changes: bench hash unchanged, inert for
+  non-lcOpposite, parity-reviewer ACCEPT.
 
-The `[net]` tail (T1/T2) is DONE — see the landed list above and `TAIL-NETWORK-REMAINING.md`.
+Group-E is COMPLETE — no remaining items. The `[net]` tail (T1/T2) is DONE (see the landed list above
+and `TAIL-NETWORK-REMAINING.md`).
 
-**Suggested Group-E order (done this session, in order):** F1 → W1 → W2 → OV1 → OV2 → OV3 → OV3b →
-OV4 → F2a → F2b → T1 → T2. Remaining: OV D1–D3 (offline, needs binding fixtures).
+**Group-E order (done this session, in order):** F1 → W1 → W2 → OV1 → OV2 → OV3 → OV3b → OV4 → F2a →
+F2b → T1 → T2 → D2 → D3 (with D1 confirmed unnecessary).
