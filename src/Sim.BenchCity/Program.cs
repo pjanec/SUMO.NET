@@ -62,6 +62,7 @@ internal static class Program
         string? summaryOut = null;
         var stuckWindowSeconds = 120.0;
         var stuckSpeedThreshold = 0.1;
+        var forceSerial = false;
         string? sumoSummaryPath = null;
         string? sumoTripinfoPath = null;
         string? aggregateTolerancePath = null;
@@ -97,6 +98,11 @@ internal static class Program
                 case "--aggregate-tolerance" when i + 1 < args.Length:
                     aggregateTolerancePath = args[++i];
                     break;
+                case "--serial":
+                    // Force the fully single-threaded path (no Parallel.For over plan/willPass/emit),
+                    // for a clean serial-vs-SUMO comparison independent of core count / affinity.
+                    forceSerial = true;
+                    break;
                 default:
                     Console.Error.WriteLine($"error: unrecognized argument: {args[i]}");
                     return 2;
@@ -121,6 +127,11 @@ internal static class Program
         summaryOut ??= Path.Combine(scenarioDir, "engine.summary.xml");
 
         var engine = new Engine();
+        if (forceSerial)
+        {
+            engine.UseParallelPlan = false; // pin the serial path (ShouldParallelizePlan -> false)
+        }
+
         engine.LoadScenario(net, rou, cfg);
 
         var process = Process.GetCurrentProcess();
