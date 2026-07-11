@@ -61,6 +61,37 @@ is XML-parsing-bound (a vType-resolve memoization was tried: no-op).
 A/B of two snapshotted builds** (build both, alternate runs, count paired wins) reliably resolves
 sub-5% changes — single-config medians taken minutes apart are confounded by drift.
 
+### The 4× target and the opt-in fast-mode gate (goal: ≥4× SUMO hot-path @8 cores)
+
+Precise hot-path gap: **SUMO sim-tick 17.19 s** (its own load is only 0.64 s) vs **engine
+step-loop @8t 5.62 s = 3.06×**. To reach 4× the step-loop must drop to **≤4.30 s (−23%)**.
+
+**Shipped: the opt-in fast-mode escape hatch + its automated behavioral validator** (commit
+`feat(fast)`). `Engine.FastMode` (default false → deterministic path byte-identical, untouched).
+`Sim.BenchCity --fast-gate` runs deterministic + fast on the same scenario and asserts fast mode is
+*behaviorally sound* without SUMO: **0 gridlock**, **aggregate parity vs the deterministic baseline**
+(arrived / mean duration / mean speed / trip-duration KS within a tight 2–5% tolerance, vs the loose
+0.35 SUMO bar), and **no vehicle overlaps** beyond the model-inherent baseline (relative criterion,
+internal junction lanes excluded). This makes any non-byte-identical fast-mode change auto-checkable.
+
+**Where 4× can and cannot come from (measured this session):**
+- **Serial tail is 44% of the tick @8t** (insert ~923 ms + speedGain ~391 + foeIndex ~353 + refill
+  ~195 + execute ~177 + serial-emit ~458) — the Amdahl anchor — but it **resists parallelization**:
+  `insert`/`speedGain` mutate shared lane state in order (the LC-arbitration order-sensitivity), and
+  a byte-identical **parallel `foeIndex`** (two-lowest-EntityIndex reduction under per-lane locks —
+  provably identical, verified by a serial-vs-parallel city-3000 trip SHA match) **REGRESSED**
+  (728 ms @8t vs 441 ms serial) on **lock contention** on popular junction lanes. Even a best-case
+  fast-mode parallelization of the tractable serial work maths to only **~3.3–3.5×**.
+- **So 4× fundamentally needs the PARALLEL phases (willPass+plan, 59% of the tick, ~3320 ms @8t)
+  to scale better than ~3×.** Getting them to ~5× (≈2000 ms) would hit ~4.0×. The only lever is
+  cutting their per-vehicle memory traffic = **source-of-truth SoA**: make the hot foe fields
+  (Pos/Speed/LatOffset + a vtype-index table) the AUTHORITATIVE store that `ExecuteMoves`/insertion
+  write directly (write-through at the few `Kinematics` write sites — no per-step refresh pass, which
+  is what made the earlier mirror probe regress), and read foe fields from those arrays across the
+  ~10 gap-math constraint methods. Byte-identical by construction, but a large dedicated rewrite with
+  still-uncertain payoff. This — or spatial partitioning *paired with region-local memory layout* —
+  is the only credible path to 4×; the serial-tail/fast-mode work alone cannot reach it.
+
 ---
 
 ## 0. The iron law (never negotiable)
