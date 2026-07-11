@@ -157,7 +157,7 @@ behavioral deviations permitted are those ECS parallelism structurally forces �
 - **Parallel by default at scale & deterministic** — the plan *and* export phases read only frozen
   start-of-step state and write only their own vehicle's intent/frame, so they are race-free by
   construction; they **auto-parallelize above 256 concurrent vehicles** (tiny parity scenarios stay
-  serial) for a **~2.7× city-scale speedup** (`city-3000`: 44.3 s single-thread → 16.4 s on 4 cores),
+  serial) for a **~2.2× city-scale speedup** (`city-3000`: ~36 s true-serial → 16.4 s on 4 cores),
   and single-threaded and parallel runs produce a byte-identical determinism hash (`909605E965BFFE59`).
 - **FastDataPlane-shaped** — int-handle identity, value-type components, immutable network blueprints,
   phased systems and an `IWorld`/`ICommandBuffer` seam make the engine droppable into an external ECS
@@ -244,9 +244,11 @@ outcome (see below). The perf work closed a ~39× gap (it was ~28 min before the
 scans were profiled and indexed away), and killing the saturation gridlock removed the remaining
 slowdown.
 
-**Scaling & the SUMO baseline.** SUMO is single-threaded, so on the same multi-core hardware the engine
-wins by parallelizing — and it scales: `city-3000` measures **44.3 s → 26.4 s → 16.4 s** on 1 → 2 → 4
-cores (an Amdahl serial fraction of ~16 %, so the many-core ceiling is ~5× SUMO). Two byte-identical
+**Scaling & the SUMO baseline.** With the plan passes fused, the engine's **true single-threaded**
+path (`--serial`, no `Parallel.For`) runs `city-3000` in **~36 s — at parity with single-threaded
+SUMO's ~35 s** (it was ~54 s before the fusion). On the same multi-core hardware the engine then wins
+by parallelizing, and it scales: **26.4 s → 16.4 s** on 2 → 4 cores (CPU-affinity-capped; an Amdahl
+serial fraction of ~16 %, so the many-core ceiling is ~5× SUMO). Two byte-identical
 optimizations drive the latest gains: the **Export phase now runs in parallel** (per-vehicle geometry
 into a reusable index-keyed buffer; the comparator/determinism hash are (vehicle, time)-keyed so
 emission order is irrelevant), and the **willPass pre-pass is fused into `PlanMovements`** — the engine
