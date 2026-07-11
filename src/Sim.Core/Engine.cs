@@ -112,6 +112,31 @@ public sealed partial class Engine : IEngine
     // (all committed scenarios + the bench) takes zero opposite-direction work and stays identical.
     private bool _anyLcOpposite;
 
+    // Perf (willPass/plan fusion): the disqualifier master-switches. The fusion (PlanMovements reuses
+    // the willPass pre-pass Intent instead of recomputing it) is byte-identical ONLY when every
+    // prePass/real divergence OTHER than the crossing-yield relax is inert -- see the FusionEligible
+    // property. `_anyKraussDawdle` = some vType takes a Krauss dawdle RNG draw (sigma>0): its pre-pass
+    // uses a throwaway RNG copy, so reusing that Intent would skip the real RngState advance and desync
+    // the sigma>0 stream. `_anyIdmm` = some vType is IDMM: the real pass advances LevelOfService, the
+    // pre-pass does not. Both aggregated in CreateRuntime exactly like _anyBluelight (so a runtime flow
+    // that introduces such a vType flips them too). Bluelight/lcOpposite reuse the switches above.
+    private bool _anyKraussDawdle;
+    private bool _anyIdmm;
+
+    // Perf (willPass/plan fusion): false iff actionStepLength > 0 and != the step length -- an
+    // action-step-skipped plan records LastActionTime only in the real pass, so reusing the pre-pass
+    // Intent would drop that write. Computed once per LoadScenario from the immutable config.
+    private bool _actionStepFusionOk = true;
+
+    // Perf (willPass/plan fusion): fusion is byte-identical only when NONE of the side-effect
+    // divergences between the pre-pass and the real plan can fire this step. Obstacles are checked
+    // live (they can be added mid-run and drive LatOffset via ComputeLateralEvasion); the rest are
+    // load-time (or flow-time) master switches. When true, PlanMovements reuses the pre-pass Intent
+    // for every non-crossing-yield vehicle; when false the exact two-pass path runs (byte-identical).
+    private bool FusionEligible =>
+        _actionStepFusionOk && !_anyKraussDawdle && !_anyIdmm && !_anyBluelight && !_anyLcOpposite
+        && _obstacles.Count == 0;
+
     // F2 (probabilistic flow): per-<flow probability=> runtime insertion state, index-aligned with
     // _demand.ProbabilisticFlows. `_probFlowRng[i]` is that flow's own seeded Bernoulli stream (one
     // draw per active flow per step); `_probFlowCounter[i]` is its running arrival counter (the k in
@@ -537,6 +562,12 @@ public sealed partial class Engine : IEngine
         // re-LoadScenario on the same Engine never inherits the previous demand's answer).
         _anyBluelight = false;
         _anyLcOpposite = false;
+        // Perf (willPass/plan fusion): reset + recompute the disqualifiers for this scenario (same
+        // reset discipline as the give-way switch above). CreateRuntime OR's in the per-vType ones.
+        _anyKraussDawdle = false;
+        _anyIdmm = false;
+        _actionStepFusionOk = _config.ActionStepLength <= 0.0
+            || Math.Abs(_config.ActionStepLength - _config.StepLength) < 1e-12;
         foreach (var def in _demand.Vehicles)
         {
             CreateRuntime(def);
@@ -572,6 +603,11 @@ public sealed partial class Engine : IEngine
         _anyBluelight |= vType.HasBluelight;
         // Rung OV1: flip the opposite-overtake master switch on if any vType allows it.
         _anyLcOpposite |= vType.LcOpposite;
+        // Perf (willPass/plan fusion): flip the disqualifiers -- a Krauss vType with sigma>0 (takes a
+        // dawdle RNG draw the pre-pass only makes on a throwaway copy) or an IDMM vType (real-pass-only
+        // LevelOfService advance) makes the pre-pass Intent unsafe to reuse. See FusionEligible.
+        _anyKraussDawdle |= vType.CarFollowModel == "Krauss" && vType.Sigma > 0.0;
+        _anyIdmm |= vType.CarFollowModel == "IDMM";
         // D3: EntityIndex is this vehicle's stable index in _vehicles, set once here -- see
         // VehicleRuntime.EntityIndex's own comment.
         var entityIndex = _vehicles.Count;
@@ -1793,8 +1829,11 @@ public sealed partial class Engine : IEngine
             System.Threading.Tasks.Parallel.For(0, _vehicles.Count, i =>
             {
                 var v = _vehicles[i];
-                if (!v.Inserted || v.Arrived)
+                if (!v.Inserted || v.Arrived || v.ReuseIntent)
                 {
+                    // ReuseIntent: the willPass pre-pass already computed this vehicle's final Intent
+                    // (fusion-eligible, no crossing-yield relax) -- reuse it verbatim, skip the
+                    // redundant recompute. See PrePlanVehicle / FusionEligible.
                     return;
                 }
 
@@ -1806,6 +1845,10 @@ public sealed partial class Engine : IEngine
         // D6: the Query() analog -- see ActiveVehicles()'s own comment.
         foreach (var v in ActiveVehicles())
         {
+            if (v.ReuseIntent)
+            {
+                continue; // fused: keep the pre-pass Intent (see PrePlanVehicle)
+            }
 
             v.Intent = ComputeMoveIntent(v, neighbors, time);
         }
@@ -2502,21 +2545,22 @@ public sealed partial class Engine : IEngine
         // NUMERICAL_EPS_SPEED (MSVehicle.cpp:124): 0.1 * NUMERICAL_EPS * TS, TS == the step length.
         var willPassSpeedEps = 0.1 * KraussModel.NumericalEps * _config!.StepLength;
         var dt = _config.StepLength;
+        // Perf (willPass/plan fusion): snapshot the eligibility ONCE for the whole step. When set, a
+        // relevant vehicle's pre-pass MoveIntent (cached into v.Intent below) is REUSED by
+        // PlanMovements verbatim -- unless it took the crossing yield (v.CrossingYieldTaken), the only
+        // term the real pass relaxes. Byte-identical (see FusionEligible); on the city-scale grid it
+        // removes the redundant second ComputeMoveIntent for the ~2/3 of the plan that is
+        // near-junction traffic. When NOT eligible, ReuseIntent stays false and the exact original
+        // two-pass path runs.
+        var eligible = FusionEligible;
 
         if (ShouldParallelizePlan())
         {
             // L1: per-index Parallel.For, matching PlanMovements (see there for why chunking was
-            // reverted). Each iteration writes only its own v.WillPass (race-free); byte-identical.
+            // reverted). Each iteration writes only its own vehicle's fields (race-free); byte-identical.
             System.Threading.Tasks.Parallel.For(0, _vehicles.Count, i =>
             {
-                var v = _vehicles[i];
-                if (!v.Inserted || v.Arrived)
-                {
-                    return;
-                }
-
-                v.WillPass = !WillPassRelevant(v, dt)
-                    || ComputeMoveIntent(v, neighbors, time, prePass: true).NewSpeed > willPassSpeedEps;
+                PrePlanVehicle(_vehicles[i], neighbors, time, dt, willPassSpeedEps, eligible);
             });
             ResolveRightBeforeLeftCycles(dt);
             return;
@@ -2524,11 +2568,40 @@ public sealed partial class Engine : IEngine
 
         foreach (var v in ActiveVehicles())
         {
-            v.WillPass = !WillPassRelevant(v, dt)
-                || ComputeMoveIntent(v, neighbors, time, prePass: true).NewSpeed > willPassSpeedEps;
+            PrePlanVehicle(v, neighbors, time, dt, willPassSpeedEps, eligible);
         }
 
         ResolveRightBeforeLeftCycles(dt);
+    }
+
+    // C4-viii pre-pass body (willPass) + the willPass/plan fusion bookkeeping. Computes this
+    // vehicle's WillPass from its pre-pass planned vNext and, when the scenario is fusion-eligible,
+    // decides whether PlanMovements may REUSE the pre-pass Intent instead of recomputing it:
+    //   - a vehicle too far to have its WillPass read (WillPassRelevant false) is NOT pre-planned; its
+    //     Intent is computed once, in PlanMovements, exactly as before (ReuseIntent = false).
+    //   - a relevant vehicle is pre-planned here (Intent cached); if it did not take the crossing yield
+    //     it is reused (ReuseIntent = true), else PlanMovements recomputes it with the foe-willPass
+    //     refinement. Writes only this vehicle's own fields -> parallel-safe (Engine.UseParallelPlan).
+    private void PrePlanVehicle(
+        VehicleRuntime v, LaneNeighborQuery neighbors, double time, double dt, double willPassSpeedEps, bool eligible)
+    {
+        if (!v.Inserted || v.Arrived)
+        {
+            return;
+        }
+
+        if (!WillPassRelevant(v, dt))
+        {
+            v.WillPass = true;
+            v.ReuseIntent = false; // computed once, in PlanMovements (unchanged path)
+            return;
+        }
+
+        v.CrossingYieldTaken = false;
+        var intent = ComputeMoveIntent(v, neighbors, time, prePass: true);
+        v.Intent = intent; // tentative -- reused by PlanMovements iff eligible && !CrossingYieldTaken
+        v.WillPass = intent.NewSpeed > willPassSpeedEps;
+        v.ReuseIntent = eligible && !v.CrossingYieldTaken;
     }
 
     // C4-viii-b (bug C: symmetric right-before-left circular-yield deadlock). SUMO's
@@ -3503,12 +3576,22 @@ public sealed partial class Engine : IEngine
                 // yield. Inert (IgnoresApproachingFoe returns false) for every vType that leaves
                 // jmIgnoreFoeProb at its 0 default.
                 var ignoresFoe = IgnoresApproachingFoe(v, foe.Kinematics.Speed, time);
-                thisConstraint = egoOnInternal || foeWillNotPass || foeNotApproaching || foeYieldsThisStep || ignoresFoe
-                    ? double.PositiveInfinity
-                    : StopSpeedFor(
+                var takesCrossingYield = !(egoOnInternal || foeWillNotPass || foeNotApproaching || foeYieldsThisStep || ignoresFoe);
+                // Perf (willPass/plan fusion): a finite approaching-foe crossing yield taken in the
+                // pre-pass is the ONLY thing the real pass can relax (via `!foe.WillPass`), so flag it
+                // -- PlanMovements must then RECOMPUTE this vehicle rather than reuse the pre-pass
+                // Intent. Set only in the pre-pass; the real pass never reuses, so it never reads this.
+                if (prePass && takesCrossingYield)
+                {
+                    v.CrossingYieldTaken = true;
+                }
+
+                thisConstraint = takesCrossingYield
+                    ? StopSpeedFor(
                         v.VType, v.Kinematics.Speed,
                         approachLane!.Length - v.Kinematics.Pos - PositionEps,
-                        laneVehicleMaxSpeed, dt, actionStepLengthSecs, v.LevelOfService);
+                        laneVehicleMaxSpeed, dt, actionStepLengthSecs, v.LevelOfService)
+                    : double.PositiveInfinity;
             }
             else
             {

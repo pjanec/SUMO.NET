@@ -250,6 +250,24 @@ internal sealed class VehicleRuntime
     // (every committed scenario) -- there, no vehicle's WillPass is ever read.
     public bool WillPass;
 
+    // Perf (willPass/plan fusion): set by JunctionYieldConstraint DURING the willPass pre-pass
+    // (Engine.ComputeWillPass) iff this vehicle takes the finite approaching-foe CROSSING yield --
+    // the ONE and only place a real (prePass=false) plan can differ from the pre-pass plan (the
+    // `!foe.WillPass` short-circuit at line ~3499 relaxes exactly that finite yield). Every other
+    // prePass/real divergence is a side-effect (RngState/LevelOfService/GiveWaySide/LatOffset/
+    // LastActionTime) that Engine._fusionEligible excludes at load time. When the scenario is
+    // fusion-eligible and this flag is false, PlanMovements REUSES the pre-pass MoveIntent instead
+    // of recomputing it -- byte-identical, and it halves the per-junction-vehicle plan cost. Reset
+    // to false before each pre-pass ComputeMoveIntent; only ever written by that vehicle's own
+    // pre-pass (parallel-safe, per-ego field).
+    public bool CrossingYieldTaken;
+
+    // Perf (willPass/plan fusion): the pre-pass tells PlanMovements to REUSE this vehicle's already-
+    // computed Intent (skip the second ComputeMoveIntent). True iff the scenario is _fusionEligible,
+    // the vehicle was WillPassRelevant (so the pre-pass actually computed its Intent), and it did NOT
+    // take the crossing yield (CrossingYieldTaken == false). Own-field, set once per step.
+    public bool ReuseIntent;
+
     // B3: live reroute-around-blockage bookkeeping (DESIGN.md "Two futures" -- not a SUMO
     // field). BlockedByObstacleSeconds accumulates dt while a FUTURE edge of this vehicle's
     // remaining route is sitting under an active external obstacle; reset to 0 the moment no
