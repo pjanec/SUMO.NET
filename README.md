@@ -239,8 +239,27 @@ crossings, bidirectional single-track, traction model) — see *What is simulate
 Struct-of-arrays + zero-alloc hot path targets large scenarios. The scaling ladder
 (`scenarios/_bench/SCALING.md`) validates statistical agreement with SUMO up to **~15,000 peak
 concurrent** vehicles; `city-3000` (≈4,300 concurrent) passes the distribution (KS) and stability
-(0 stuck / 0 teleport) checks. Perf figures there are provisional (measured with FCD writing on under
-CPU contention); the correctness/stability columns are deterministic.
+(0 stuck / 0 teleport) checks. Perf figures there are provisional (measured under CPU contention); the
+correctness/stability columns are deterministic.
+
+**Engine vs real SUMO on the same scenario.** `Sim.BenchCity` compares an engine run against a
+committed SUMO 1.20.0 reference (`--sumo-summary`/`--sumo-tripinfo`/`--aggregate-tolerance`) on
+arrivals, mean trip duration, mean speed, and the trip-time distribution (KS). On `city-300`
+(724 vehicles, seed 42) the aggregates land **within 0.5 % of SUMO on every metric** (arrived
+238→237 = 0.42 %, mean duration 424.65→425.15 s = 0.12 %, mean speed 13.27→13.22 m/s = 0.36 %,
+KS distance 0.027 — all well inside the 35 % statistical band):
+
+```bash
+dotnet run -c Release --project src/Sim.BenchCity -- scenarios/_bench/city-300 \
+  --sumo-summary   scenarios/_bench/city-300/summary.xml \
+  --sumo-tripinfo  scenarios/_bench/city-300/tripinfo.xml \
+  --aggregate-tolerance scenarios/_bench/city-300/aggregate-tolerance.json
+# … AGGREGATE COMPARISON: PASS
+```
+
+The same command runs against `city-30` / `city-3000` / `city-15000` (each ships the SUMO reference
+trio); the larger two are minutes-long full runs — a known super-linear cost at ~4 k+ concurrent that
+is the next profiling target on the perf roadmap.
 
 ---
 
