@@ -287,6 +287,7 @@ public sealed partial class Engine : IEngine
     private int[] _laneRegion = System.Array.Empty<int>();
     private int _regionCount;
     private List<int>[] _regionActive = System.Array.Empty<List<int>>();
+    private List<int>[] _regionLanes = System.Array.Empty<List<int>>();
 
     // Assign every lane to a spatial region (G x G grid tile over the network's lane-centroid bounding
     // box), once per LoadScenario. A vehicle's region is its current lane's region. Cheap, cold path.
@@ -333,9 +334,18 @@ public sealed partial class Engine : IEngine
         }
 
         _regionActive = new List<int>[_regionCount];
+        _regionLanes = new List<int>[_regionCount];
         for (var r = 0; r < _regionCount; r++)
         {
             _regionActive[r] = new List<int>();
+            _regionLanes[r] = new List<int>();
+        }
+
+        // Inverse map region -> its lane handles (for region-parallel refill: each region owns a
+        // disjoint set of lanes, so its buckets are written by only its task -- no contention).
+        for (var h = 0; h < laneCount; h++)
+        {
+            _regionLanes[_laneRegion[h]].Add(h);
         }
     }
 
@@ -1115,8 +1125,37 @@ public sealed partial class Engine : IEngine
             }
 
             var neighbors = _neighborQuery!;
+
+            // Perf (dense active list) + domain decomposition: compact the active-vehicle indices and
+            // (opt-in) group them by spatial region BEFORE the neighbour refill, so the refill itself
+            // can run region-parallel (each region refills its own disjoint lanes). Active set is
+            // frozen from here through PlanMovements (arrival is applied later, in ExecuteMoves).
+            if (ShouldParallelizePlan())
+            {
+                BuildActiveIndices();
+                if (RegionPlan)
+                {
+                    var pRg = PhaseStart();
+                    BuildRegionActive();
+                    PhaseEnd("region", pRg);
+                }
+            }
+
             var pRefill = PhaseStart();
-            neighbors.Refill(ActiveVehicles());
+            if (RegionPlan && ShouldParallelizePlan())
+            {
+                // Domain decomposition: region-parallel refill -- each region refills its disjoint
+                // lanes from its own vehicles, no shared bucket. Byte-identical to the serial Refill.
+                System.Threading.Tasks.Parallel.For(0, _regionCount, _parallelOptions, r =>
+                {
+                    neighbors.RefillRegion(_regionActive[r], _vehicles, _regionLanes[r]);
+                });
+            }
+            else
+            {
+                neighbors.Refill(ActiveVehicles());
+            }
+
             PhaseEnd("refill", pRefill);
             // Perf (super-linear fix): (re)build the O(1) foe-approach index from the SAME frozen
             // start-of-step routes the plan phase reads. Both readers of it -- ComputeWillPass and
@@ -1125,35 +1164,13 @@ public sealed partial class Engine : IEngine
             var pFoe = PhaseStart();
             BuildFoeApproachIndex();
             PhaseEnd("foeIndex", pFoe);
-            // C4-viii: cache each vehicle's willPass (does it intend to ENTER its upcoming junction link
-            // this step) from the frozen snapshot BEFORE PlanMovements, so JunctionYieldConstraint's
-            // crossing arm can skip a foe that is itself braking-to-stop this step -- SUMO's
-            // setApproaching-before-opened() ordering. See ComputeWillPass's header.
-            // Perf (dense active list): compact the active-vehicle indices ONCE per step, before the
-            // parallel willPass/plan phases both consume it. Only the parallel path reads it, so the
-            // serial path (small parity scenarios) skips the O(N) build. The active set is frozen
-            // from here through PlanMovements (arrival is applied later, in ExecuteMoves).
-            if (ShouldParallelizePlan())
+            // SPATIAL-OPT probe: build the (lane,pos)-ordered packed hot array + leader-slot map that
+            // PlanMovements' spatial branch reads (needs the refilled buckets + the active indices).
+            if (ShouldParallelizePlan() && SpatialPlan)
             {
-                BuildActiveIndices();
-                // SPATIAL-OPT probe: build the (lane,pos)-ordered packed hot array + leader-slot map
-                // that PlanMovements' spatial branch reads. Only when opted in; the packed array
-                // reads the same frozen start-of-step snapshot as the plan (built after Refill).
-                if (SpatialPlan)
-                {
-                    var pPk = PhaseStart();
-                    BuildPacked(neighbors);
-                    PhaseEnd("packed", pPk);
-                }
-
-                // Domain decomposition: group active vehicles by spatial region for the
-                // region-parallel plan/willPass (opt-in RegionPlan). Serial O(N), before the phases.
-                if (RegionPlan)
-                {
-                    var pRg = PhaseStart();
-                    BuildRegionActive();
-                    PhaseEnd("region", pRg);
-                }
+                var pPk = PhaseStart();
+                BuildPacked(neighbors);
+                PhaseEnd("packed", pPk);
             }
 
             var pWill = PhaseStart();

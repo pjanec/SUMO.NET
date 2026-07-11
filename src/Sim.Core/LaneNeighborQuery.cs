@@ -75,6 +75,30 @@ internal sealed class LaneNeighborQuery
         }
     }
 
+    // Domain decomposition: refill ONLY the given region's lanes from its own vehicles. Each region
+    // owns a DISJOINT set of lane handles and its vehicles are all on those lanes (a vehicle's region
+    // is its lane's region), so many regions may run this concurrently with no shared bucket -- no
+    // lock. Byte-identical to Refill for that region's lanes: same vehicles per bucket, same
+    // pos-sort. `vehicleIndices` are indices into `vehicles` (the engine's _vehicles list).
+    public void RefillRegion(List<int> vehicleIndices, List<VehicleRuntime> vehicles, List<int> lanes)
+    {
+        for (var li = 0; li < lanes.Count; li++)
+        {
+            _byLaneHandle[lanes[li]].Clear();
+        }
+
+        for (var i = 0; i < vehicleIndices.Count; i++)
+        {
+            var v = vehicles[vehicleIndices[i]];
+            _byLaneHandle[v.LaneHandle].Add(v);
+        }
+
+        for (var li = 0; li < lanes.Count; li++)
+        {
+            _byLaneHandle[lanes[li]].Sort((a, b) => a.Kinematics.Pos.CompareTo(b.Kinematics.Pos));
+        }
+    }
+
     // MSLane::getLeader (same-lane branch): the nearest inserted, not-arrived vehicle strictly
     // ahead of ego (pos > egoPos) on ego's own lane, or null if none -- O(log n) via binary
     // search over the lane's pos-sorted list (the "sorted lane list" DESIGN.md's seam 1 calls
