@@ -30,6 +30,15 @@ public sealed partial class Engine : IEngine
     // reads _laneSeqArrival) is byte-identical to reading _laneSeqPool there.
     private readonly List<int> _laneSeqArrival = new();
 
+    // Perf (PERF-ROADMAP.md Layer 0b): memoize NetworkModel.ComputeBestLanes -- a PURE function of
+    // (route, current edge), both immutable for the scenario's lifetime. Without this it re-allocated
+    // a List<LaneContinuation> (records) per lane-considering vehicle per step; with it, each unique
+    // (routeId, edgeId) is computed ONCE and shared for the whole run. ConcurrentDictionary + a
+    // state-passing GetOrAdd keeps it thread-safe AND allocation-free on the (overwhelmingly common)
+    // cache-hit path under UseParallelPlan; the value factory is a pure function of immutable inputs,
+    // so which thread first computes a given key can never change the result (determinism preserved).
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<(string RouteId, string EdgeId), IReadOnlyList<LaneContinuation>> _bestLanesCache = new();
+
     // R4 (rail signal): for each lane whose outgoing connection is controlled by a rail_signal
     // junction, the set of "conflict lane" HANDLES that must be clear for the signal to show green --
     // ported from MSRailSignal::DriveWay::conflictLaneOccupied (the driveway's forward block's bidi
@@ -455,6 +464,7 @@ public sealed partial class Engine : IEngine
         _laneSeqArrival.Clear();
         _stopsByEntity.Clear();
         _avoidedByEntity.Clear();
+        _bestLanesCache.Clear(); // L0b: route/edge-keyed memo is scenario-specific
         // W1: a freshly (re)loaded scenario is a fresh timeline -- the next Run/WarmUp resets the
         // state machines and starts the clock at Begin.
         _elapsedSteps = 0;
@@ -5444,6 +5454,17 @@ public sealed partial class Engine : IEngine
     // and TraCI cross-check.
     private const double KeepRightTurnLaneDist = 200.0; // MSLCM_LC2013.cpp:71 TURN_LANE_DIST
 
+    // Perf (PERF-ROADMAP.md Layer 0b): memoized NetworkModel.ComputeBestLanes accessor -- see
+    // _bestLanesCache. State-passing GetOrAdd so a cache HIT allocates nothing and the value factory
+    // (a pure function of the immutable route + network) captures no closure. Shared across every
+    // vehicle and step for the scenario's lifetime; cleared per LoadScenario. Byte-identical to
+    // calling ComputeBestLanes directly (same immutable inputs -> same result).
+    private IReadOnlyList<LaneContinuation> BestLanesCached(string routeId, IReadOnlyList<string> routeEdges, string edgeId)
+        => _bestLanesCache.GetOrAdd(
+            (routeId, edgeId),
+            static (key, state) => state.Network.ComputeBestLanes(state.RouteEdges, key.EdgeId),
+            (Network: _network!, RouteEdges: routeEdges));
+
     private bool KeepRightStrategicStay(VehicleRuntime v, Lane fromLane, int rightLaneIndex)
     {
         var route = _demand!.RoutesById[v.Def.RouteId];
@@ -5452,7 +5473,7 @@ public sealed partial class Engine : IEngine
             return false;
         }
 
-        var bestLanes = _network!.ComputeBestLanes(route.Edges, fromLane.EdgeId);
+        var bestLanes = BestLanesCached(v.Def.RouteId, route.Edges, fromLane.EdgeId);
         var currContinues = false;
         var rightLeavesRoute = false;
         var rightSoon = false;
@@ -5605,7 +5626,7 @@ public sealed partial class Engine : IEngine
         }
 
         var route = _demand!.RoutesById[v.Def.RouteId];
-        var bestLanes = _network.ComputeBestLanes(route.Edges, lane.EdgeId);
+        var bestLanes = BestLanesCached(v.Def.RouteId, route.Edges, lane.EdgeId);
 
         LaneContinuation? curr = null;
         foreach (var continuation in bestLanes)
