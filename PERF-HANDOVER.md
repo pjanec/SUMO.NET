@@ -9,114 +9,139 @@ this file assumes them.
 
 ---
 
-## SESSION RESULTS (on-target Windows, 16-core/24-thread) — read this before §2–§4
+## ON-TARGET SESSION LOG — what was tried, what happened, why (READ THIS FIRST)
 
-An on-target session ran the plan below. Its findings **supersede the SoA recommendation in
-§4** — read them first.
+> This log **supersedes the SoA recommendation in §2/§4 below** — §4's "source-of-truth SoA is the
+> main event" was tried in full and it **regresses**. §2–§6 are the original (pre-measurement) plan,
+> kept for context; where they disagree with this log, the log is right (it was measured on-target).
+>
+> **The one-paragraph summary:** the engine is **~3× single-threaded SUMO on the hot-path tick @8
+> cores** (3.06× measured) with 3 byte-identical wins banked and an opt-in fast-mode + behavioral
+> gate shipped. The bottleneck is **memory bandwidth from random neighbor access** in the plan phase.
+> The **≥4× goal is not reached**, and every data-layout and serial-tail lever tried this session to
+> close the gap either did nothing or regressed — for reasons now understood (below). The only
+> untried paths are spatial memory reordering or an aggressive lossy fast-mode; both are research.
 
-**Toolchain / gates:** now **229 passed, 1 skipped** (added one determinism test pinning the
-parallel-export path byte-identical). Determinism hash unchanged: `909605E965BFFE59`.
+### Current state (measured)
 
-**Bottleneck: CONFIRMED memory-bandwidth, not GC.** `dotnet-counters`: `% Time in GC` avg 6.5%;
-Server GC A/B a wash (5.83 vs 5.85s) → GC is not the wall. CPU avg **11.4% of 24 cores** (~2.9
-busy) → box not saturated (a bandwidth wall leaves cores stalled, not busy). Per-phase 1→8t
-scaling: `plan` peaks **3.43×@8t** then regresses; `willPass` **2.56×@8t** then regresses;
-16/24 threads are *slower* than 8 (HT oversubscription). Sweet spot for city-3000 = **8 threads**.
+- **Hot-path (step loop) @8 threads: 5.62 s → 3.06× vs single-threaded SUMO 1.20.0** on this box
+  (SUMO sim-tick 17.19 s; SUMO's own load is only 0.64 s). Serial engine ~1.3×. Sweet spot = **8
+  threads** (16/24 are *slower* — HT oversubscription).
+- **Gates:** `dotnet test` **229 passed / 1 skipped**; determinism hash **`909605E965BFFE59`**
+  (single == parallel); city-3000 **0 stuck + aggregate PASS**. All wins below hold all three.
+- **Whole-process** (load+sim+output) looks like only ~1.4× SUMO, but that is a **benchmark-harness
+  artifact**: `Sim.BenchCity` post-processing (dict of ~5M points + `OrderBy`/vehicle + tripinfo/
+  summary XML) adds ~4.6 s that SUMO doesn't do. Engine `LoadScenario` itself is only ~1.1 s
+  (XML-parsing-bound). Compare the **step loop** for engine speed, not whole-process.
 
-**Three byte-identical wins committed** (each: 3 gates green + parity-reviewer ACCEPT):
-- `perf(export)` — serial emit by default (opt-in `Engine.ParallelExport`); parallel emit was a
-  net loss here (0.56–0.71× at every thread count). ~3% @8t.
-- `perf(plan)` — dense active-index list; the parallel loops dispatched over all `_vehicles` and
-  touched ~40% dead (not-departed/arrived) scattered object headers per step just to skip them.
-  ~2.5% @8t (9/12 paired rounds).
-- `perf(insert)` — int `LaneHandle` filter (was string `LaneId`) + `LanesByHandle[h]` re-resolution
-  (drops a per-candidate closure alloc) in `TryInsertOnLane`. ~noisy few %.
+### Bottleneck diagnosis (confirmed, not guessed)
 
-**vs single-threaded SUMO 1.20.0 on THIS box** (measured; SUMO installed from the win64 zip):
-SUMO 1-thread ≈ 17–18 s. Engine **step-loop** (the hot path): serial ~1.3×, **8-thread ~2.4–3×
-faster**. Whole-process is dragged to ~1.4× ONLY because `Sim.BenchCity`'s own post-processing
-(build a dict of ~5M points + `OrderBy` per vehicle + tripinfo/summary XML) adds ~4.6 s that SUMO
-doesn't do — that is a benchmark-harness artifact, NOT engine cost. Engine `LoadScenario` ≈ 1.1 s.
+- **Not GC.** `dotnet-counters`: `% Time in GC` avg 6.5%; **Server GC A/B is a wash** (5.83 vs
+  5.85 s). If GC were the wall, per-core heaps would have moved it.
+- **Memory bandwidth, from random neighbor access.** CPU avg **11.4% of 24 cores** (~2.9 busy) → the
+  box is *not* saturated; cores stall on loads. Per-phase 1→8t scaling: `plan` peaks **3.43×@8t**
+  then regresses, `willPass` **2.56×@8t** then regresses. The hot loop's dominant cost is a follower
+  dereferencing its **leader/foe** (`Kinematics` etc.) at a **random** heap address — ~1 cache-line
+  miss per foe read, per vehicle, per step, and it doesn't parallelize past ~3× because the memory
+  subsystem saturates.
 
-**SoA (§4): TWO NEGATIVE RESULTS — do NOT re-attempt the mirror approach.**
-1. Caching `Pos` inline in the `LaneNeighborQuery` buckets (so sort/binary-search stop chasing
-   pointers): **null** (−0.1% wall). The search/sort chases were not the cost.
-2. Full foe-field SoA *probe* on the dominant hot read (`LeaderFollowSpeedConstraint`): pack
-   Pos/Speed/LatOffset/Length/Decel/Width/isCacc into `EntityIndex`-keyed arrays, have the
-   leader lookup return an index, read the leader entirely from the arrays (zero foe-object
-   touch). Byte-identical, but **REGRESSED ~3–4%** (plan phase got *worse*). Root cause: refreshing
-   the arrays each step reads every active vehicle's scattered `Kinematics`/`VType` — the *same*
-   traffic it was meant to avoid — then the plan reads it *again*. Net memory traffic goes **up**.
-   The "cheap sequential refresh from objects" premise in §4 is **false** on this workload.
-   For SoA to help it must be the **source of truth** (remove `Kinematics` from `VehicleRuntime`,
-   `ExecuteMoves` writes the arrays, hundreds of read/write sites migrate) — a massive, high-risk
-   rewrite with now-*demonstrated-uncertain* payoff. Not justified for the current ~2.4× at 8t.
+### Experiments log — MOST OPTIMIZATION IDEAS HERE WERE ALREADY TRIED. Check before repeating.
 
-**Practical conclusion:** in this reference-object architecture the hot-path bandwidth wall is
-the ceiling (~2.4× SUMO @8t) for byte-identical work; the remaining lever is a source-of-truth
-SoA/struct rewrite (huge, risky) or SIMD (marginal, gather-heavy — see DESIGN.md). Load (~1.1 s)
-is XML-parsing-bound (a vType-resolve memoization was tried: no-op).
+Legend: **WIN** = shipped (committed); **NULL** = byte-identical but no measurable gain (reverted);
+**REGRESS** = made it slower (reverted). All A/B is **interleaved paired** (see methodology note).
 
-**Measurement note:** the box is noisy (~8% run-to-run, thermal drift). Only **interleaved paired
-A/B of two snapshotted builds** (build both, alternate runs, count paired wins) reliably resolves
-sub-5% changes — single-config medians taken minutes apart are confounded by drift.
+**Shipped wins (byte-identical, parity-reviewer ACCEPT):**
+1. **WIN — serial emit by default** (`perf(export)`, opt-in `Engine.ParallelExport`). The parallel
+   Export path (compute-into-scratch-then-append) is a net loss here (0.56–0.71× at every thread
+   count) — per-vehicle geometry is memory-light, so `Parallel.For` dispatch + scratch write/re-read
+   dominates. Serial emit ~+3% @8t.
+2. **WIN — dense active-index list** (`perf(plan)`). The parallel willPass/plan loops dispatched over
+   ALL `_vehicles` and touched the scattered header of every not-yet-departed/arrived vehicle (~40%)
+   just to skip it. Compact active indices once/step → dispatch over the dense list. ~+2.5% @8t
+   (9/12 paired rounds).
+3. **WIN — insert int `LaneHandle` filter** (`perf(insert)`). `TryInsertOnLane`'s leader scan
+   filtered `ActiveVehicles()` by *string* `LaneId`; switched to the dense int `LaneHandle` (in
+   lockstep, provably equivalent) + `LanesByHandle[h]` re-resolution (drops a per-candidate closure
+   alloc). Strict work reduction; wall gain small/noisy.
 
-### The 4× target and the opt-in fast-mode gate (goal: ≥4× SUMO hot-path @8 cores)
+**Blind alleys (do NOT repeat — each was built, measured, reverted):**
+4. **REGRESS — source-of-truth per-field SoA for foe reads** (the big one §4 recommends). Full
+   write-through design, NO per-step refresh pass: neighbor buckets return an `EntityIndex`;
+   `EntityIndex`-keyed arrays `_soaPos/Speed/LatOffset/Length/Decel/Width/IsCacc` written through at
+   insertion + end of `ExecuteMoves` + snapshot restore; `LeaderFollowSpeedConstraint` reads the
+   leader entirely from the arrays (zero foe-object touch). **Fully byte-identical** (229 tests, hash
+   held, city-3000 serial-vs-parallel trip SHA match, aggregate PASS). Result @8t: **plan −5.4%,
+   wall neutral-to-worse.** **Root cause / the lesson:** the gap math reads **~7 fields of ONE
+   leader** — an **AoS-shaped** access the `VehicleRuntime` object already packs into 1–2 cache
+   lines. Per-field SoA splits them into **7 separate arrays = 7 cache lines** for one foe read.
+   SoA-per-field is for streaming ONE field over MANY entities; it is the wrong layout for MANY
+   fields of ONE foe. An AoS-struct-array (`HotFields[]`) would be ~neutral (still 1 random line);
+   the cost is the *random* `leaderIdx` access, ~1 line regardless of layout. **Per-field SoA cannot
+   help this access pattern — do not retry it.**
+5. **REGRESS (earlier variant) — mirror SoA with a per-step refresh pass.** Same arrays but
+   *refreshed* each step from the objects. Regressed ~3–4% because the refresh re-reads every active
+   vehicle's scattered `Kinematics`/`VType` — the SAME traffic it was meant to avoid — then the plan
+   reads it again. (Superseded by #4, which removed the refresh and STILL regressed for the deeper
+   AoS reason.)
+6. **NULL — inline `Pos` in the `LaneNeighborQuery` buckets.** Store the sort key inline so the
+   per-step sort + leader binary-search stop chasing pointers. Byte-identical, **−0.1%** (noise). The
+   search/sort pointer-chases were NOT the cost; the gap-math foe deref is.
+7. **REGRESS — byte-identical parallel `foeIndex`.** `BuildFoeApproachIndex`'s output is the two
+   lowest-EntityIndex vehicles per internal lane (order-independent), so a parallel two-lowest
+   reduction under per-lane locks is provably identical (verified by a serial-vs-parallel city-3000
+   trip SHA match). But it **regressed 728 ms vs 441 ms @8t** on **lock contention** on popular
+   junction lanes (+ dispatch overhead over tiny per-vehicle work). Lock-free partial-merge might
+   avoid it but the phase is only ~6% of the tick — low ceiling.
+8. **NULL — vType-resolve memoization** (load-time). `CreateRuntime` calls `VTypeDefaults.Resolve`
+   per vehicle (3000× for one shared type on city-3000). Memoizing (resolve each distinct vType once)
+   is byte-identical and a strict alloc reduction, but **no measurable load gain** — load is
+   XML-parsing-bound, not resolve-bound. Reverted (kept the codebase clean).
+9. **Server GC** — a wash (see diagnosis). `<ServerGarbageCollection>` left false.
 
-Precise hot-path gap: **SUMO sim-tick 17.19 s** (its own load is only 0.64 s) vs **engine
-step-loop @8t 5.62 s = 3.06×**. To reach 4× the step-loop must drop to **≤4.30 s (−23%)**.
+**Serial-tail parallelization — why it's blocked (analysis, mostly not attempted after #7):** the
+serial tail is **44% of the tick @8t** (insert ~923 ms + speedGain ~391 + foeIndex ~353 + refill
+~195 + execute ~177 + serial-emit ~458). But `insert` and `speedGain` **mutate shared lane state in
+order** (the lane-change-arbitration order-sensitivity DESIGN.md warns about) → not parallelizable
+byte-identically; `foeIndex` regressed on locks (#7); `refill`-sort and `execute`-integration are
+individually tiny/independent (dispatch overhead ≈ work). Even a best-case fast-mode parallelization
+of the tractable serial work maths to only **~3.3–3.5×**.
 
-**Shipped: the opt-in fast-mode escape hatch + its automated behavioral validator** (commit
-`feat(fast)`). `Engine.FastMode` (default false → deterministic path byte-identical, untouched).
-`Sim.BenchCity --fast-gate` runs deterministic + fast on the same scenario and asserts fast mode is
-*behaviorally sound* without SUMO: **0 gridlock**, **aggregate parity vs the deterministic baseline**
-(arrived / mean duration / mean speed / trip-duration KS within a tight 2–5% tolerance, vs the loose
-0.35 SUMO bar), and **no vehicle overlaps** beyond the model-inherent baseline (relative criterion,
-internal junction lanes excluded). This makes any non-byte-identical fast-mode change auto-checkable.
+### Shipped enabler: opt-in fast-mode + automated behavioral gate
 
-**Where 4× can and cannot come from (measured this session):**
-- **Serial tail is 44% of the tick @8t** (insert ~923 ms + speedGain ~391 + foeIndex ~353 + refill
-  ~195 + execute ~177 + serial-emit ~458) — the Amdahl anchor — but it **resists parallelization**:
-  `insert`/`speedGain` mutate shared lane state in order (the LC-arbitration order-sensitivity), and
-  a byte-identical **parallel `foeIndex`** (two-lowest-EntityIndex reduction under per-lane locks —
-  provably identical, verified by a serial-vs-parallel city-3000 trip SHA match) **REGRESSED**
-  (728 ms @8t vs 441 ms serial) on **lock contention** on popular junction lanes. Even a best-case
-  fast-mode parallelization of the tractable serial work maths to only **~3.3–3.5×**.
-- **So 4× fundamentally needs the PARALLEL phases (willPass+plan, 59% of the tick, ~3320 ms @8t)
-  to scale better than ~3×.** Getting them to ~5× (≈2000 ms) would hit ~4.0×. The only lever is
-  cutting their per-vehicle memory traffic = **source-of-truth SoA**: make the hot foe fields
-  (Pos/Speed/LatOffset + a vtype-index table) the AUTHORITATIVE store that `ExecuteMoves`/insertion
-  write directly (write-through at the few `Kinematics` write sites — no per-step refresh pass, which
-  is what made the earlier mirror probe regress), and read foe fields from those arrays across the
-  ~10 gap-math constraint methods. Byte-identical by construction, but a large dedicated rewrite with
-  still-uncertain payoff. This — or spatial partitioning *paired with region-local memory layout* —
-  is the only credible path to 4×; the serial-tail/fast-mode work alone cannot reach it.
+`Engine.FastMode` (default false → deterministic path byte-identical, untouched — no committed
+test/scenario sets it). `Sim.BenchCity --fast-gate` validates a non-byte-identical fast-mode change
+**behaviorally, without SUMO**: runs deterministic + fast on the same scenario and asserts (1) **0
+gridlock**, (2) **aggregate parity vs the deterministic baseline** (arrived / mean duration / mean
+speed / trip-duration KS within a tight **2–5%** tolerance — much tighter than the 0.35 SUMO bar),
+(3) **no vehicle overlaps** beyond the model-inherent baseline (relative criterion; internal junction
+lanes excluded). Bootstrap (fast==deterministic) passes. **This is how any future fast-mode work is
+checked** — it answers "behaviorally sound, not just faster?" automatically.
 
-**UPDATE — the source-of-truth SoA was BUILT and MEASURED, and it REGRESSES. Do not retry per-field
-SoA.** Implemented the full write-through design (no refresh pass): neighbor buckets return an
-EntityIndex, EntityIndex-keyed arrays (`_soaPos/Speed/LatOffset/Length/Decel/Width/IsCacc`) written
-through at insertion + end of `ExecuteMoves` + snapshot restore (the snapshot test caught a missing
-write site — fixed), and `LeaderFollowSpeedConstraint` reads the leader entirely from the arrays
-(zero foe-object touch). **Fully byte-identical** (229 tests, hash `909605E965BFFE59`, city-3000
-serial-vs-parallel trip SHA match, aggregate PASS). Interleaved paired A/B @8t: **plan phase −5.4%
-(worse), wall neutral-to-worse (4/12 rounds).** Root cause, and the general lesson: **the gap math
-reads ~7 fields of a SINGLE leader (Pos/Speed/LatOffset/Length/Decel/Width/isCacc) — an AoS-shaped
-access.** The `VehicleRuntime` object already packs those into 1–2 cache lines; **per-field SoA
-splits them into 7 separate arrays = 7 cache lines for one foe read.** SoA-per-field wins for
-streaming ONE field over MANY entities; it is the WRONG layout for MANY fields of ONE foe. An
-AoS-struct-array (`HotFields[]` indexed by EntityIndex) would be ~neutral, not a win: the real cost
-is the **random leader access** (`leaderIdx` is arbitrary → ~1 random cache line), which is ~1 line
-regardless of AoS/SoA and is only removable by **spatial memory reordering** (physically sorting
-vehicles by position each step so a follower's leader is adjacent in memory) — a far more invasive
-change with its own per-step reordering overhead and uncertain net payoff.
+### The ≥4× verdict and the only untried paths
 
-**Bottom line on 4× (@8 cores, hot-path):** not reachable via the data-layout or serial-tail levers
-explored this session. The parallel phases are capped by random-neighbor-access bandwidth (SoA
-doesn't fix it — wrong access shape); the serial tail (44%) is order-dependent / lock-contended.
-The only untried theoretical paths are (a) **spatial memory reordering** of the vehicle store, or
-(b) an aggressive **fast-mode** that approximates/skips work (validated by the shipped `--fast-gate`)
-— both high-effort, high-risk, uncertain. Shipped this session: 3 byte-identical wins + the
-fast-mode scaffold + behavioral gate; measured hot-path **3.06× SUMO @8t**.
+Gap: step-loop must drop **5.62 s → ≤4.30 s (−23%)**. This session ruled out the credible byte-
+identical levers: the **parallel phases (59% of tick)** are capped by random-neighbor-access
+bandwidth and **SoA is the wrong access shape** (#4), and the **serial tail (44%)** is
+order-dependent / lock-contended. So 4× is **not reachable** via data-layout or serial-tail
+parallelization. The only remaining theoretical paths, both **high-effort / high-risk / uncertain**:
+- **(a) Spatial memory reordering** of the vehicle store — physically sort the hot per-vehicle data
+  by lane+position each step so a follower's leader is *adjacent in memory* (turns the random foe
+  access into a sequential one, the only thing that actually attacks the wall). Has its own per-step
+  reorder cost; net benefit unknown. This is the one lever that could plausibly move the parallel
+  phases — prototype it in isolation and measure before committing.
+- **(b) Aggressive opt-in fast-mode** that approximates/skips work (e.g. coarser neighbor queries,
+  parallelized-with-deterministic-tie-break serial tail), validated by `--fast-gate`. Buys the
+  serial tail but not the parallel-phase bandwidth wall; realistically ~3.5×, not 4×, unless combined
+  with (a).
+
+### Measurement methodology (critical — the box is noisy)
+
+Run-to-run noise is ~8% (thermal drift). Only **interleaved paired A/B of two snapshotted builds**
+reliably resolves sub-5% changes: build BOTH variants, copy each `bin/Release/net8.0` aside, then
+**alternate** runs (old, new, old, new…) and count paired wins + compare medians. Single-config
+medians taken minutes apart are confounded by drift and will lie. Verify byte-identity of a change on
+a **junction** scenario via `city-3000 --serial` vs default **tripinfo SHA match** (the determinism
+hash in `Sim.Bench` uses a junction-free highway, so it does NOT exercise junction/foe-index code).
 
 ---
 
@@ -246,6 +271,11 @@ is JIT warm-up). The VM was too noisy and too few cores to see these — you can
 ---
 
 ## 4. The SoA refactor (do this if §2 confirms memory-bound)
+
+> ⛔ **OUTDATED — this was BUILT, MEASURED, and it REGRESSES.** See experiment #4 in the ON-TARGET
+> SESSION LOG at the top of this file. The per-field-SoA hypothesis below is *wrong for this access
+> pattern*: the gap math reads ~7 fields of ONE foe (AoS-shaped), so per-field SoA turns one foe read
+> into 7 cache-line touches. Do not re-attempt it. The section is kept only for historical context.
 
 **Hypothesis:** `ComputeMoveIntent`'s hot loop reads the ego `VehicleRuntime` (a large heap *class* in
 `List<VehicleRuntime> _vehicles`) plus *random* neighbor/foe `VehicleRuntime` objects. Scattered large
