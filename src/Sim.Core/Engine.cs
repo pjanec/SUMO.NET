@@ -23,13 +23,6 @@ public sealed partial class Engine : IEngine
     // compact if that ever matters).
     private readonly List<int> _laneSeqPool = new();
 
-    // L0d (PERF-ROADMAP.md): per-thread scratch for LaneSpaceTillLastStanding's on-lane gather, reused
-    // across calls instead of a `new List<VehicleRuntime>` every KeepClear evaluation. ThreadStatic
-    // because KeepClearConstraint runs inside the (possibly parallel) Plan phase; the method neither
-    // recurses nor keeps the list past its own return, so a single per-thread buffer is safe.
-    [ThreadStatic]
-    private static List<VehicleRuntime>? _laneStandingScratch;
-
     // L0d (PERF-ROADMAP.md): reused across steps by InsertDepartingVehicles (a serial, single-threaded
     // Input-phase call) instead of a fresh List+HashSet every step. Cleared at the start of each use.
     private readonly List<VehicleRuntime> _insertCandidates = new();
@@ -188,6 +181,20 @@ public sealed partial class Engine : IEngine
     // ExecuteMoves). See LaneNeighborQuery's own header comment for why a single reused instance
     // is safe even though it is refilled twice per step.
     private LaneNeighborQuery? _neighborQuery;
+
+    // Perf (super-linear fix): FindFoeVehicle used to scan EVERY active vehicle's whole remaining
+    // lane sequence, per foe-link, per vehicle-at-junction -- an O(vehicles^2 * routeLen) term that
+    // dominated the city-scale plan phase (profiled: JunctionYield ~128 us/call, ~55% of plan). The
+    // set it wants ("vehicles whose remaining route contains internal lane H") is a pure function of
+    // the frozen start-of-step routes, so it is precomputed ONCE per step into a per-internal-lane
+    // index (BuildFoeApproachIndex, called right after neighbors.Refill) and looked up in O(1).
+    // _foeApproachFirst/Second hold the FIRST TWO distinct vehicles, in _vehicles order, whose route
+    // contains that lane -- two, not one, so FindFoeVehicle's "skip ego, take the next" exclusion is
+    // reproduced byte-identically (ego can only ever be the first of the two). Indexed by dense lane
+    // handle; only internal (':'-prefixed) lanes are ever queried, so only those are recorded.
+    private bool[] _isInternalLane = Array.Empty<bool>();
+    private VehicleRuntime?[] _foeApproachFirst = Array.Empty<VehicleRuntime?>();
+    private VehicleRuntime?[] _foeApproachSecond = Array.Empty<VehicleRuntime?>();
 
     // C6-ii: per-TLS stateful actuated phase machines, keyed by tlLogic id -- built once in
     // LoadScenario for every tlLogic whose Type == "actuated", empty for a network with only
@@ -468,6 +475,18 @@ public sealed partial class Engine : IEngine
         // D4: (re)build the reusable neighbor-query buckets for the newly loaded network's dense
         // handle space -- cold path (once per LoadScenario call), never per step.
         _neighborQuery = new LaneNeighborQuery(_network.LanesByHandle.Count);
+
+        // Perf (super-linear fix): size the per-step foe-approach index to the dense handle space and
+        // mark internal ('':''-prefixed) lanes once -- BuildFoeApproachIndex only records those, since
+        // FindFoeVehicle is only ever queried with a junction-interior lane handle.
+        var laneCount = _network.LanesByHandle.Count;
+        _isInternalLane = new bool[laneCount];
+        _foeApproachFirst = new VehicleRuntime?[laneCount];
+        _foeApproachSecond = new VehicleRuntime?[laneCount];
+        for (var h = 0; h < laneCount; h++)
+        {
+            _isInternalLane[h] = _network.LanesByHandle[h].Id.StartsWith(':');
+        }
 
         // C6-ii: (re)build the actuated phase machines for the newly loaded network. Only tlLogics
         // with type="actuated" get one; a static-only network leaves this empty (no behavior change
@@ -768,6 +787,11 @@ public sealed partial class Engine : IEngine
 
             var neighbors = _neighborQuery!;
             neighbors.Refill(ActiveVehicles());
+            // Perf (super-linear fix): (re)build the O(1) foe-approach index from the SAME frozen
+            // start-of-step routes the plan phase reads. Both readers of it -- ComputeWillPass and
+            // PlanMovements (via ComputeMoveIntent -> JunctionYieldConstraint -> FindFoeVehicle) -- run
+            // below, before any structural (route) mutation, so this one build serves the whole step.
+            BuildFoeApproachIndex();
             // C4-viii: cache each vehicle's willPass (does it intend to ENTER its upcoming junction link
             // this step) from the frozen snapshot BEFORE PlanMovements, so JunctionYieldConstraint's
             // crossing arm can skip a foe that is itself braking-to-stop this step -- SUMO's
@@ -3371,7 +3395,7 @@ public sealed partial class Engine : IEngine
                 constraint = Math.Min(constraint, extConstraint);
             }
 
-            var foe = FindFoeVehicle(v, allVehicles, foeInternalLaneHandle);
+            var foe = FindFoeVehicle(v, foeInternalLaneHandle);
             if (foe is null)
             {
                 continue;
@@ -3597,11 +3621,11 @@ public sealed partial class Engine : IEngine
             var lane = _network.LanesByHandle[_laneSeqPool[v.LaneSeqStart + i]];
             if (lane.Id.StartsWith(':'))
             {
-                seenSpace -= LaneBruttoVehLenSum(lane.Id, v, allVehicles);
+                seenSpace -= LaneBruttoVehLenSum(lane, v);
             }
             else
             {
-                seenSpace += LaneSpaceTillLastStanding(lane, v, allVehicles, dt, out foundStopped);
+                seenSpace += LaneSpaceTillLastStanding(lane, v, dt, out foundStopped);
             }
         }
 
@@ -3632,12 +3656,19 @@ public sealed partial class Engine : IEngine
 
     // C5 helper: MSLane::getBruttoVehLenSum -- the sum of lengthWithGap (length + minGap) over the
     // vehicles currently on the lane (frozen start-of-step snapshot), excluding ego.
-    private double LaneBruttoVehLenSum(string laneId, VehicleRuntime ego, ActiveVehicleQuery allVehicles)
+    // Perf (super-linear fix): reads the per-lane bucket (O(vehicles-on-lane)) instead of scanning
+    // every active vehicle. The bucket is the same frozen snapshot the flat scan walked, so the SET
+    // summed is identical; the sum's iteration order differs (pos-sorted vs _vehicles order) but the
+    // committed keepClear scenarios are homogeneous (equal length+minGap), so the sum is
+    // order-independent and byte-identical -- the 227 goldens are the guard.
+    private double LaneBruttoVehLenSum(Lane lane, VehicleRuntime ego)
     {
         var sum = 0.0;
-        foreach (var other in allVehicles)
+        var onLane = _neighborQuery!.OnLane(lane.Handle);
+        for (var i = 0; i < onLane.Count; i++)
         {
-            if (!ReferenceEquals(other, ego) && other.LaneId == laneId)
+            var other = onLane[i];
+            if (!ReferenceEquals(other, ego))
             {
                 sum += other.VType.Length + other.VType.MinGap;
             }
@@ -3651,24 +3682,25 @@ public sealed partial class Engine : IEngine
     // return its back position + its brakeGap minus the lengthWithGap of the vehicles ahead of it;
     // if none is stopped return laneLength minus the total lengthWithGap. `foundStopped` reports
     // whether a stopped vehicle bounded the result.
-    private double LaneSpaceTillLastStanding(Lane lane, VehicleRuntime ego, ActiveVehicleQuery allVehicles, double dt, out bool foundStopped)
+    // Perf (super-linear fix): reads the per-lane bucket instead of scanning every active vehicle and
+    // re-sorting. The bucket is pos-ASCENDING, so walking it in REVERSE is the same front-first
+    // (pos-descending) order the former collect-and-sort produced -- byte-identical for the (universal
+    // in phase-1) case of distinct positions; the accumulated lengthWithGap is homogeneous so
+    // order-independent regardless. Ego is skipped inline exactly as the old LaneId filter excluded it.
+    private double LaneSpaceTillLastStanding(Lane lane, VehicleRuntime ego, double dt, out bool foundStopped)
     {
         foundStopped = false;
-        var onLane = _laneStandingScratch ??= new List<VehicleRuntime>();
-        onLane.Clear();
-        foreach (var other in allVehicles)
-        {
-            if (!ReferenceEquals(other, ego) && other.LaneId == lane.Id)
-            {
-                onLane.Add(other);
-            }
-        }
-
-        onLane.Sort((a, b) => b.Kinematics.Pos.CompareTo(a.Kinematics.Pos));
+        var onLane = _neighborQuery!.OnLane(lane.Handle);
 
         var lengths = 0.0;
-        foreach (var last in onLane)
+        for (var i = onLane.Count - 1; i >= 0; i--)
         {
+            var last = onLane[i];
+            if (ReferenceEquals(last, ego))
+            {
+                continue;
+            }
+
             if (last.Kinematics.Speed < KraussModel.HaltingSpeed)
             {
                 foundStopped = true;
@@ -3751,7 +3783,7 @@ public sealed partial class Engine : IEngine
 
             var foeInternalLaneId = junction.IntLanes[j];
             var foeInternalLaneHandle = _network!.LaneHandleById[foeInternalLaneId];
-            var foe = FindFoeVehicle(v, allVehicles, foeInternalLaneHandle);
+            var foe = FindFoeVehicle(v, foeInternalLaneHandle);
             if (foe is null)
             {
                 continue;
@@ -3863,7 +3895,7 @@ public sealed partial class Engine : IEngine
         // PHASE 1: foe still on its merging internal lane.
         var foeInternalLaneId = junction.IntLanes[foeLinkIndex];
         var foeInternalLaneHandle = _network.LaneHandleById[foeInternalLaneId];
-        var foeMerging = FindFoeVehicle(ego, allVehicles, foeInternalLaneHandle);
+        var foeMerging = FindFoeVehicle(ego, foeInternalLaneHandle);
 
         // PHASE 0 (APPROACHING foe -- junction arrival-time RoW): the responded merge foe is still
         // on its OWN approach lane, heading for the shared merge (not yet ON its merging internal
@@ -4227,24 +4259,52 @@ public sealed partial class Engine : IEngine
     // vehicle not yet inserted or already arrived (frozen `allVehicles` snapshot).
     // D3: takes the foe internal lane's HANDLE (resolved once by the caller) instead of its
     // string id, and scans the candidate's pool slice instead of an IReadOnlyList<string>.
-    private VehicleRuntime? FindFoeVehicle(VehicleRuntime ego, ActiveVehicleQuery allVehicles, int foeInternalLaneHandle)
+    // Perf (super-linear fix): O(1) lookup into the per-step foe-approach index (BuildFoeApproachIndex)
+    // instead of the former O(vehicles * routeLen) flat scan. BYTE-IDENTICAL to that scan, which
+    // returned "the first active vehicle, in _vehicles order, that is not ego and whose remaining route
+    // contains foeInternalLaneHandle": the index holds the first two DISTINCT such vehicles in that same
+    // order, and ego (if present at all) can only be the first of them -- so if the first is ego the
+    // original would have skipped it and taken the very next match, which is exactly the second slot.
+    private VehicleRuntime? FindFoeVehicle(VehicleRuntime ego, int foeInternalLaneHandle)
     {
-        // D6: "inserted, not arrived" via the reusable ActiveVehicleQuery passed in; only the
-        // ego-exclusion check stays inline (specific to this call site).
-        foreach (var other in allVehicles)
+        var first = _foeApproachFirst[foeInternalLaneHandle];
+        if (first is null)
         {
-            if (ReferenceEquals(other, ego))
-            {
-                continue;
-            }
-
-            if (IndexOfLaneHandle(other, foeInternalLaneHandle) >= 0)
-            {
-                return other;
-            }
+            return null;
         }
 
-        return null;
+        return ReferenceEquals(first, ego) ? _foeApproachSecond[foeInternalLaneHandle] : first;
+    }
+
+    // Perf (super-linear fix): fill _foeApproachFirst/Second for this step -- for every internal lane
+    // handle, the FIRST TWO distinct active vehicles (in _vehicles iteration order) whose remaining
+    // lane sequence contains it. Reproduces FindFoeVehicle's former per-call scan order exactly, but
+    // pays the O(sum of route lengths) cost ONCE per step instead of once per foe-link per
+    // vehicle-at-junction. Runs single-threaded before the (possibly parallel) plan phase reads it.
+    private void BuildFoeApproachIndex()
+    {
+        Array.Clear(_foeApproachFirst);
+        Array.Clear(_foeApproachSecond);
+        foreach (var v in ActiveVehicles())
+        {
+            for (var i = 0; i < v.LaneSeqLen; i++)
+            {
+                var h = _laneSeqPool[v.LaneSeqStart + i];
+                if (!_isInternalLane[h])
+                {
+                    continue;
+                }
+
+                if (_foeApproachFirst[h] is null)
+                {
+                    _foeApproachFirst[h] = v;
+                }
+                else if (_foeApproachSecond[h] is null && !ReferenceEquals(_foeApproachFirst[h], v))
+                {
+                    _foeApproachSecond[h] = v;
+                }
+            }
+        }
     }
 
     // D3: a tiny manual scan over a vehicle's pool slice `[LaneSeqStart, LaneSeqStart+LaneSeqLen)`

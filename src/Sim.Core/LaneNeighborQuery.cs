@@ -82,6 +82,14 @@ internal sealed class LaneNeighborQuery
     // vehicle. Cross-lane/consecutive-lane lookup (MSLane.cpp's getLeaderOnConsecutive, for when
     // no leader exists on the current lane) is out of scope until a multi-edge-route scenario
     // needs it -- rung 4 is single-lane.
+    // Perf (super-linear fix): the pos-ASCENDING vehicle list currently on `laneHandle`. The
+    // keepClear space-accounting helpers (LaneBruttoVehLenSum / LaneSpaceTillLastStanding) used to
+    // find "vehicles on lane X" by scanning EVERY active vehicle and filtering on LaneId -- an O(N)
+    // scan per lane, per keepClear vehicle, per step. This exposes the per-lane bucket this query
+    // already maintains so those helpers become O(vehicles-on-that-lane). Same frozen start-of-step
+    // snapshot the rest of the plan phase reads (Refill runs once, before PlanMovements).
+    public IReadOnlyList<VehicleRuntime> OnLane(int laneHandle) => _byLaneHandle[laneHandle];
+
     public VehicleRuntime? GetLeader(VehicleRuntime ego) => GetLeaderOnLane(ego, ego.LaneHandle);
 
     // Rung A2 (speed-gain lane change): the same "nearest ahead" lookup as GetLeader, but
