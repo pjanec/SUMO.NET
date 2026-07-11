@@ -45,6 +45,12 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+# Locale-proof: parse and format numbers with '.' decimals regardless of the
+# box's culture (e.g. cs-CZ formats as "9,231"). This makes the script's own
+# [double] casts, :N2 formatting and Export-Csv use invariant decimals; the
+# wall-time parser below additionally tolerates a comma in the engine output.
+[System.Threading.Thread]::CurrentThread.CurrentCulture = [System.Globalization.CultureInfo]::InvariantCulture
+
 # Resolve repo root from this script's location so it runs from anywhere.
 $repoRoot = Split-Path -Parent $PSScriptRoot
 Set-Location $repoRoot
@@ -72,9 +78,11 @@ dotnet build -c Release src/Sim.BenchCity/Sim.BenchCity.csproj -v q | Out-Null
 function Invoke-Bench {
     param([string[]] $ExtraArgs)
     $out = dotnet run -c Release --project src/Sim.BenchCity -- `
-        $Scenario --fcd-out "" @ExtraArgs 2>&1 | Out-String
-    if ($out -match 'wall time\s*:\s*([0-9.]+)\s*s') {
-        $wall = [double]$Matches[1]
+        $Scenario --no-fcd @ExtraArgs 2>&1 | Out-String
+    if ($out -match 'wall time\s*:\s*([0-9]+(?:[.,][0-9]+)?)\s*s') {
+        # Normalize a locale comma to a dot, then parse invariantly (so a cs-CZ
+        # "9,231" and an en-US "9.231" both read as 9.231 seconds).
+        $wall = [double]::Parse(($Matches[1] -replace ',', '.'), [System.Globalization.CultureInfo]::InvariantCulture)
     } else {
         throw "Could not parse wall time from Sim.BenchCity output:`n$out"
     }

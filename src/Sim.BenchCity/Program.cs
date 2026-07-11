@@ -41,6 +41,11 @@ internal static class Program
 {
     private static int Main(string[] args)
     {
+        // Emit all metric numbers with invariant '.' decimals regardless of the OS locale, so the
+        // "wall time : 9.231 s" line parses the same on an en-US and a cs-CZ box (which would
+        // otherwise print "9,231 s" and break downstream parsers such as scripts/bench-scaling.ps1).
+        CultureInfo.CurrentCulture = CultureInfo.InvariantCulture;
+
         if (args.Length == 0 || args[0] is "-h" or "--help")
         {
             Console.Error.WriteLine(
@@ -64,6 +69,7 @@ internal static class Program
         var stuckSpeedThreshold = 0.1;
         var forceSerial = false;
         var maxParallelism = -1;
+        var noFcd = false;
         string? sumoSummaryPath = null;
         string? sumoTripinfoPath = null;
         string? aggregateTolerancePath = null;
@@ -108,6 +114,11 @@ internal static class Program
                     // Cap the engine's Parallel.For degree -- sweep 1..coreCount for a scaling curve.
                     maxParallelism = int.Parse(args[++i], CultureInfo.InvariantCulture);
                     break;
+                case "--no-fcd":
+                    // Skip FCD export without the "" empty-string arg (PowerShell drops "", which
+                    // silently shifts the following flag into --fcd-out's value). Prefer this in scripts.
+                    noFcd = true;
+                    break;
                 default:
                     Console.Error.WriteLine($"error: unrecognized argument: {args[i]}");
                     return 2;
@@ -127,7 +138,7 @@ internal static class Program
 
         var config = ScenarioConfigParser.Parse(cfg);
         var steps = stepsOverride ?? (int)Math.Round((config.End - config.Begin) / config.StepLength);
-        fcdOut ??= Path.Combine(scenarioDir, "engine.fcd.xml");
+        fcdOut = noFcd ? "" : (fcdOut ?? Path.Combine(scenarioDir, "engine.fcd.xml"));
         tripinfoOut ??= Path.Combine(scenarioDir, "engine.tripinfo.xml");
         summaryOut ??= Path.Combine(scenarioDir, "engine.summary.xml");
 
