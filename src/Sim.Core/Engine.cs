@@ -1935,7 +1935,30 @@ public sealed partial class Engine : IEngine
             // Rung OV1: form an opposite-direction overtake intent (held up behind a slower leader,
             // oncoming lane clear ahead). Real pass only; inert (false, no scan) when no vType has
             // lcOpposite. Written to the ego's own field, read by the OV2/OV3 arms and exported.
-            v.OvertakeActive = DetectOvertake(v, lane, neighbors);
+            //
+            // Rung D2 (return-gap enforcement): the raw held-up decision drops the instant ego noses
+            // ahead of the leader (GetLeader no longer returns it), which would recenter ego right in
+            // front of the leader. So once ego is committed and has passed the leader, KEEP it spilled
+            // until the re-entry gap to that just-passed leader is safe (OvertakeReturnGapSafe). An
+            // ABORT (gap acceptance refused while ego is still BEHIND the leader) is NOT a return, so
+            // OvertakeReturnGapSafe returns true there and ego recenters as before. Inert for every
+            // non-lcOpposite vehicle (heldUp false and OvertakeActive already false -> the else arm).
+            var heldUp = DetectOvertake(v, lane, neighbors, out var overtakeLeaderIndex);
+            if (heldUp)
+            {
+                v.OvertakeActive = true;
+                v.OvertakePassedLeaderIndex = overtakeLeaderIndex;
+            }
+            else if (v.OvertakeActive && v.OvertakePassedLeaderIndex >= 0
+                && !OvertakeReturnGapSafe(v, v.OvertakePassedLeaderIndex, dt))
+            {
+                v.OvertakeActive = true; // passed the leader but not yet a safe gap ahead -> stay spilled
+            }
+            else
+            {
+                v.OvertakeActive = false;
+                v.OvertakePassedLeaderIndex = -1;
+            }
 
             // Rung OV4: the mirror -- an oncoming driver forms a "make room" intent when a spilled
             // overtaker is closing head-on down its bidi lane, and drifts to its own outer edge. Real
@@ -2053,8 +2076,9 @@ public sealed partial class Engine : IEngine
     //
     // Inert: returns false immediately when the scenario has no lcOpposite vType (_anyLcOpposite
     // false), when ego is not lcOpposite, or when ego's lane has no opposite (bidi) partner.
-    private bool DetectOvertake(VehicleRuntime v, Lane lane, LaneNeighborQuery neighbors)
+    private bool DetectOvertake(VehicleRuntime v, Lane lane, LaneNeighborQuery neighbors, out int leaderIndex)
     {
+        leaderIndex = -1;
         if (!_anyLcOpposite || !v.VType.LcOpposite)
         {
             return false;
@@ -2081,6 +2105,10 @@ public sealed partial class Engine : IEngine
         {
             return false;
         }
+
+        // D2: remember the leader we are held up behind, so once we nose ahead of it (GetLeader stops
+        // returning it) the caller can keep us spilled until the re-entry gap to it is safe.
+        leaderIndex = leader.EntityIndex;
 
         // Opposite lane clear enough? Map ego and each oncoming vehicle to a world coordinate and
         // measure the head-on gap along ego's travel direction. (Straight-road model: ego's forward
@@ -2130,6 +2158,37 @@ public sealed partial class Engine : IEngine
             (egoFreeSpeed + nearestOncomingSpeed) * overtakeTime + OvertakeSafetyGap);
 
         return nearestAhead > requiredClear;
+    }
+
+    // Rung D2 (OV3 return-gap enforcement). After an overtaker has nosed ahead of the leader it was
+    // passing (so DetectOvertake no longer reports "held up"), decide whether it may recenter yet:
+    // true = safe to drop the spill, false = stay spilled a little longer. Reads only the frozen
+    // start-of-step snapshot (the just-passed leader, looked up by the remembered EntityIndex).
+    //
+    //  - passed leader gone (arrived / off ego's lane) -> safe (nothing to cut in front of);
+    //  - ego NOT actually ahead of it -> this is an ABORT, not a return, so safe (recenter/abort as
+    //    before -- preserves the OV3b abort-mid-spill behaviour);
+    //  - ego ahead -> require the same follower secure-gap a real lane change back into the lane would
+    //    (IsTargetLaneSafe's neighFollow branch), so ego does not merge back within the leader's
+    //    braking distance.
+    private bool OvertakeReturnGapSafe(VehicleRuntime v, int passedLeaderIndex, double dt)
+    {
+        VehicleRuntime? leader = null;
+        foreach (var o in ActiveVehicles())
+        {
+            if (o.EntityIndex == passedLeaderIndex)
+            {
+                leader = o;
+                break;
+            }
+        }
+
+        if (leader is null || leader.LaneHandle != v.LaneHandle || leader.Kinematics.Pos >= v.Kinematics.Pos)
+        {
+            return true;
+        }
+
+        return IsTargetLaneSafe(v, neighLead: null, neighFollow: leader, dt);
     }
 
     // Rung OV4 (cooperative oncoming shift) DETECTION. The mirror of ER3's give-way detection, for

@@ -48,16 +48,18 @@ with no non-vacuous test is speculative, so it was reverted (Engine.cs left byte
 If a future scenario shows OV2 committing optimistically (e.g. a *dynamic* new oncoming appearing
 inside the committed window), re-add the constraint AND a fixture that forces it to bind.
 
-### D2 — OV3 RETURN-GAP enforcement (a real pre-existing OV3 bug the adversarial run surfaced)
-Past ~t=13 in `ov3b-adversarial`, once the oncoming clears, ego re-commits and overtakes the
-now-fast leader a second time; its RETURN cuts back in only ~4 m ahead of the 11 m/s leader (a body
-overlap during the recenter). Cause: the return is triggered implicitly by "no longer held up"
-(`GetLeader` returns null once `ego.Pos > leader.Pos`), i.e. it recenters the instant it nudges
-ahead, without enforcing a safe re-entry gap. Fix sketch: keep `OvertakeActive` true (stay spilled)
-until ego is a safe following-gap AHEAD of the just-passed leader — which needs tracking the passed
-leader for a step or two after `GetLeader` stops returning it (small per-ego state, e.g. an
-`OvertakePassedLeaderPos` remembered until the gap is safe). Then extend the OV3 no-collision test to
-the full run (not just the abort window).
+### D2 — OV3 RETURN-GAP enforcement — DONE
+Past ~t=21 in `ov3b-adversarial`, once the oncoming cleared, ego re-committed and overtook the
+now-fast leader a second time; its RETURN cut back in only ~3.6 m ahead of the 11 m/s leader (a body
+overlap during the recenter). Cause: the return was triggered implicitly by "no longer held up"
+(`DetectOvertake` returns false once `ego.Pos > leader.Pos`), i.e. it recentered the instant it
+nudged ahead, without enforcing a safe re-entry gap. FIX (landed): `VehicleRuntime`
+`OvertakePassedLeaderIndex` remembers the leader being passed; when the held-up decision drops but ego
+has nosed AHEAD of that leader, `OvertakeReturnGapSafe` keeps `OvertakeActive` true (stay spilled)
+until the re-entry gap is safe (`IsTargetLaneSafe`'s neighFollow secure-gap). An ABORT (ego still
+BEHIND the leader) returns true there, so the OV3b abort-mid-spill behaviour is preserved. Inert for
+non-`lcOpposite`. `RungD2ReturnGapTests` runs the FULL `ov3b-adversarial` run: no pair overlaps, and
+ego recenters only with a safe gap (it now recenters ~15-20 m ahead, at t=27, not 3.6 m).
 
 ### D3 — coupled OV2/OV4 decision (a genuine side-by-side pass): NOT started
 OV4 (above) widens the corridor but OV2 decides independently and conservatively, so the overtaker

@@ -293,6 +293,14 @@ internal sealed class VehicleRuntime
     // opposite-direction overtaking is absent. Consumed by the OV2/OV3 decision/execution arms.
     public bool OvertakeActive;
 
+    // Rung D2 (OV3 return-gap enforcement): while overtaking, the EntityIndex of the same-lane leader
+    // this vehicle is passing (-1 = none). Remembered when the overtake commits (DetectOvertake held
+    // up), and read AFTER this vehicle has nosed ahead of that leader -- once GetLeader no longer
+    // returns it -- so the overtaker stays spilled until it is a safe following gap AHEAD of the
+    // just-passed leader before recentering, instead of cutting back in the instant it edges past.
+    // Transient plan-phase state like OvertakeActive (not captured in the file snapshot); default -1.
+    public int OvertakePassedLeaderIndex = -1;
+
     // Rung OV4 (cooperative oncoming shift): true iff this vehicle is an oncoming driver that sees a
     // spilled opposite-direction overtaker (a bidi-lane vehicle encroaching across the centre line)
     // closing head-on within range, and is therefore pulling to its OWN outer lane edge to widen the
