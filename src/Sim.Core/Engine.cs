@@ -1,3 +1,4 @@
+using System.Runtime.InteropServices;
 using Sim.Ingest;
 
 namespace Sim.Core;
@@ -21,6 +22,18 @@ public sealed partial class Engine : IEngine
     // vehicle's slice -- the pool only grows (a reroute abandons its old slice in place; D7 can
     // compact if that ever matters).
     private readonly List<int> _laneSeqPool = new();
+
+    // L0d (PERF-ROADMAP.md): per-thread scratch for LaneSpaceTillLastStanding's on-lane gather, reused
+    // across calls instead of a `new List<VehicleRuntime>` every KeepClear evaluation. ThreadStatic
+    // because KeepClearConstraint runs inside the (possibly parallel) Plan phase; the method neither
+    // recurses nor keeps the list past its own return, so a single per-thread buffer is safe.
+    [ThreadStatic]
+    private static List<VehicleRuntime>? _laneStandingScratch;
+
+    // L0d (PERF-ROADMAP.md): reused across steps by InsertDepartingVehicles (a serial, single-threaded
+    // Input-phase call) instead of a fresh List+HashSet every step. Cleared at the start of each use.
+    private readonly List<VehicleRuntime> _insertCandidates = new();
+    private readonly HashSet<string> _insertBlockedLanes = new(StringComparer.Ordinal);
 
     // C2-v: the ARRIVAL-lane pool, parallel to _laneSeqPool slot-for-slot (same LaneSeqStart/Len
     // slice). _laneSeqPool[k] is the lane the vehicle must reach to continue its route (the
@@ -866,7 +879,8 @@ public sealed partial class Engine : IEngine
         // it (they are not attempted this step). For every scenario without a cross-lane insertion
         // dependence, the outcome is independent of this cross-lane order (verified: the D1
         // determinism hash and all committed scenarios are unchanged).
-        var candidates = new List<VehicleRuntime>();
+        var candidates = _insertCandidates;
+        candidates.Clear();
         foreach (var v in _vehicles)
         {
             if (v.Inserted || v.Arrived || v.Def.Depart > time)
@@ -877,12 +891,34 @@ public sealed partial class Engine : IEngine
             candidates.Add(v);
         }
 
-        var blockedLanes = new HashSet<string>(StringComparer.Ordinal);
-        foreach (var v in candidates.OrderBy(c => c.Def.Depart))
+        // L0d: `_vehicles` (hence `candidates`) is in ascending-EntityIndex definition order, so an
+        // in-place sort keyed by (Depart, EntityIndex) is byte-identical to the former stable
+        // `OrderBy(c => c.Def.Depart)` -- same depart-time order, same definition-order ties -- without
+        // allocating the OrderBy's ordered-enumerable + buffer every step.
+        candidates.Sort(static (a, b) =>
+        {
+            var byDepart = a.Def.Depart.CompareTo(b.Def.Depart);
+            return byDepart != 0 ? byDepart : a.EntityIndex.CompareTo(b.EntityIndex);
+        });
+
+        var blockedLanes = _insertBlockedLanes;
+        blockedLanes.Clear();
+        foreach (var v in candidates)
         {
             var route = _demand!.RoutesById[v.Def.RouteId];
             var edge = _network!.EdgesById[route.Edges[0]];
-            var laneId = edge.Lanes.First(l => l.Index == v.Def.DepartLaneIndex).Id;
+
+            // L0d: manual lane-by-index scan instead of `edge.Lanes.First(l => l.Index == ...)`, whose
+            // predicate captured `v` into a fresh closure per candidate. Same first-match result.
+            string laneId = null!;
+            for (var li = 0; li < edge.Lanes.Count; li++)
+            {
+                if (edge.Lanes[li].Index == v.Def.DepartLaneIndex)
+                {
+                    laneId = edge.Lanes[li].Id;
+                    break;
+                }
+            }
 
             if (blockedLanes.Contains(laneId))
             {
@@ -995,11 +1031,13 @@ public sealed partial class Engine : IEngine
         // scan (the neighbor query is not yet refilled at insertion time). Uses insertionFollowSpeed
         // = maximumSafeFollowSpeed(gap, ..., onInsertion:true) (MSCFModel::insertionFollowSpeed).
         // Inert unless a close cross-junction leader exists (every other scenario inserts unchanged).
-        var downstreamAtInsert = poolSeq.Length > 1 ? poolSeq[1..] : Array.Empty<int>();
+        // L0d: span over poolSeq (no `poolSeq[1..]` array copy); the rearmost source is a by-value
+        // struct (ActiveRearmost) instead of a RearmostOnLaneAmongActive method-group delegate.
+        var downstreamAtInsert = poolSeq.Length > 1 ? poolSeq.AsSpan(1) : ReadOnlySpan<int>.Empty;
         if (downstreamAtInsert.Length > 0
             && TryFindCrossJunctionLeader(
                 v.Def.DepartSpeed, v.VType, v, lane.Handle, v.Def.DepartPos, downstreamAtInsert,
-                RearmostOnLaneAmongActive, _config!.StepLength, out var insLeader, out var insGap))
+                new ActiveRearmost(this), _config!.StepLength, out var insLeader, out var insGap))
         {
             var insSpeed = KraussModel.MaximumSafeFollowSpeed(
                 insGap, v.Def.DepartSpeed, insLeader.Kinematics.Speed, insLeader.VType.Decel,
@@ -3616,7 +3654,8 @@ public sealed partial class Engine : IEngine
     private double LaneSpaceTillLastStanding(Lane lane, VehicleRuntime ego, ActiveVehicleQuery allVehicles, double dt, out bool foundStopped)
     {
         foundStopped = false;
-        var onLane = new List<VehicleRuntime>();
+        var onLane = _laneStandingScratch ??= new List<VehicleRuntime>();
+        onLane.Clear();
         foreach (var other in allVehicles)
         {
             if (!ReferenceEquals(other, ego) && other.LaneId == lane.Id)
@@ -4362,15 +4401,24 @@ public sealed partial class Engine : IEngine
     // dominated; when ego proceeds, this is the leader it will actually follow through.
     private double CrossJunctionLeaderConstraint(VehicleRuntime ego, LaneNeighborQuery neighbors, double dt, double time, double laneVehicleMaxSpeed)
     {
-        var downstream = new List<int>();
-        for (var i = ego.LaneSeqIndex + 1; i < ego.LaneSeqLen; i++)
+        // L0d (PERF-ROADMAP.md): the downstream (route-ahead) pool lanes are the CONTIGUOUS slice of
+        // `_laneSeqPool` immediately after ego's current slot -- a zero-alloc `ReadOnlySpan<int>` over
+        // it instead of copying into a per-vehicle-per-step `new List<int>`. The pool is stable during
+        // the Plan phase (appended only at insertion, in the earlier Input phase), so the span is safe
+        // to read even when Plan runs in parallel. The rearmost-leader source is a by-value struct
+        // callback (see NeighborRearmost) instead of a `h => neighbors.GetRearmost(ego, h)` closure.
+        var downstreamCount = ego.LaneSeqLen - ego.LaneSeqIndex - 1;
+        if (downstreamCount <= 0)
         {
-            downstream.Add(_laneSeqPool[ego.LaneSeqStart + i]);
+            return double.PositiveInfinity;
         }
+
+        var downstream = CollectionsMarshal.AsSpan(_laneSeqPool)
+            .Slice(ego.LaneSeqStart + ego.LaneSeqIndex + 1, downstreamCount);
 
         if (!TryFindCrossJunctionLeader(
                 ego.Kinematics.Speed, ego.VType, ego, ego.LaneHandle, ego.Kinematics.Pos,
-                downstream, h => neighbors.GetRearmost(ego, h), dt, out var leader, out var gap))
+                downstream, new NeighborRearmost(neighbors, ego), dt, out var leader, out var gap))
         {
             return double.PositiveInfinity;
         }
@@ -4404,11 +4452,18 @@ public sealed partial class Engine : IEngine
     // cross-boundary gap. Only the FIRST (nearest) downstream leader is returned -- sufficient for
     // this rung's single-leader anchor; a multi-leader min across several downstream lanes is not
     // needed here (documented).
-    private bool TryFindCrossJunctionLeader(
+    //
+    // L0d (PERF-ROADMAP.md): `downstreamLanes` is a `ReadOnlySpan<int>` (zero-alloc slice of the
+    // caller's pool/array, no `List`/array copy) and `rearmostOnLane` is a by-value struct callback
+    // (`where TRearmost : struct, IRearmostSource`) so the JIT specializes the call and no `Func`
+    // closure is allocated on the per-vehicle-per-step planning path. The body is otherwise
+    // byte-identical to the former IReadOnlyList/Func version.
+    private bool TryFindCrossJunctionLeader<TRearmost>(
         double egoSpeed, ResolvedVType egoVType, VehicleRuntime? egoSelf,
-        int startLaneHandle, double startPos, IReadOnlyList<int> downstreamLanes,
-        Func<int, VehicleRuntime?> rearmostOnLane, double dt,
+        int startLaneHandle, double startPos, ReadOnlySpan<int> downstreamLanes,
+        TRearmost rearmostOnLane, double dt,
         out VehicleRuntime leader, out double gap)
+        where TRearmost : struct, IRearmostSource
     {
         leader = null!;
         gap = double.PositiveInfinity;
@@ -4425,7 +4480,7 @@ public sealed partial class Engine : IEngine
                 break;
             }
 
-            var cand = rearmostOnLane(laneHandle);
+            var cand = rearmostOnLane.Rearmost(laneHandle);
             if (cand is not null && (egoSelf is null || !ReferenceEquals(cand, egoSelf)))
             {
                 gap = seen + (cand.Kinematics.Pos - cand.VType.Length) - egoVType.MinGap;
@@ -4437,6 +4492,38 @@ public sealed partial class Engine : IEngine
         }
 
         return false;
+    }
+
+    // L0d: a lane's rearmost (nearest-to-junction) vehicle, supplied to TryFindCrossJunctionLeader as
+    // a by-value struct so the generic call is JIT-specialized and allocates no closure. Two
+    // implementations: NeighborRearmost reads the frozen start-of-step neighbor query (planning);
+    // ActiveRearmost scans ActiveVehicles (insertion, before the neighbor query is refilled).
+    private interface IRearmostSource
+    {
+        VehicleRuntime? Rearmost(int laneHandle);
+    }
+
+    private readonly struct NeighborRearmost : IRearmostSource
+    {
+        private readonly LaneNeighborQuery _neighbors;
+        private readonly VehicleRuntime _ego;
+
+        public NeighborRearmost(LaneNeighborQuery neighbors, VehicleRuntime ego)
+        {
+            _neighbors = neighbors;
+            _ego = ego;
+        }
+
+        public VehicleRuntime? Rearmost(int laneHandle) => _neighbors.GetRearmost(_ego, laneHandle);
+    }
+
+    private readonly struct ActiveRearmost : IRearmostSource
+    {
+        private readonly Engine _engine;
+
+        public ActiveRearmost(Engine engine) => _engine = engine;
+
+        public VehicleRuntime? Rearmost(int laneHandle) => _engine.RearmostOnLaneAmongActive(laneHandle);
     }
 
     // B1/B5-i: external-obstacle constraint. Treats the nearest active obstacle ahead of `v` on

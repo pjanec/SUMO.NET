@@ -166,6 +166,7 @@ Landed on `main` (perf commits), each parity-gated: full suite **227 passed / 1 
 | **L0b** | memoize `ComputeBestLanes` (pure fn of route+edge) in a `ConcurrentDictionary`, state-passing `GetOrAdd` (alloc-free hits, thread-safe) | alloc/veh-step 774 -> 348 B (**-55%**); parallel flips from 0.80x (loss) to **1.22x** (win) |
 | **L1** | size-gated AUTO-parallel: `UseParallelPlan` is an explicit override, else auto when `_vehicles.Count >= 256` (tiny parity scenarios + the test loop stay serial; large city auto-parallelizes) | keeps per-index `Parallel.For` |
 | **L0c** | `ResolveSequenceCore` (per-vehicle-at-insertion) called `ComputeBestLanes` per edge AND per hop, each re-running the whole route-end backward pass -> O(N²) `BackwardPassEdge` calls (each ~10 collection allocs). New `ComputeAllBestLanes` captures EVERY edge's LaneQ from ONE backward pass (O(N)); byte-identical (same threading, first-occurrence dict). | city-mixed-1k total engine alloc 3780 -> 1842 MiB (**-51%**) |
+| **L0d** | per-step junction-constraint allocs: `CrossJunctionLeaderConstraint` List+closure -> span + by-value struct callback; `LaneSpaceTillLastStanding` List -> `[ThreadStatic]` scratch; `InsertDepartingVehicles` LINQ (`OrderBy`/`.First`/`new List`/`new HashSet`) -> in-place stable `Sort` + manual loop + reused buffers. Parallel byte-identical (forced ser-vs-par on junction-heavy city-300). | city-mixed-1k 1842 -> 1156 MiB (**-37%**; L0c+L0d **-69%** vs 3780) |
 
 City scale (`city-3000`, 756 concurrent): parallel **~2.4x** over single, byte-identical (hashPar ==
 hashA). A CHUNKED range partitioner was tried for L1 and REVERTED: it regressed city from ~2.4x to
@@ -199,14 +200,23 @@ engine allocation −51% (3780 -> 1842 MiB). It is a per-vehicle-ONCE cost (domi
 per-step allocators below dominate LONG sims), and it is SERIAL (Input phase), so reducing it also
 unblocks parallel scaling.
 
-Remaining per-step allocators to clean up (each helps every step forever, lower risk than insertion):
-- `CrossJunctionLeaderConstraint` — `new List<int>` + a `h => neighbors.GetRearmost(ego, h)` CLOSURE
-  per vehicle per step. Fix: pass a `ReadOnlySpan<int>` over the (plan-phase-stable) `_laneSeqPool`
-  slice, and a generic struct callback (`where T : struct`) instead of the closure -> zero alloc.
-- `LaneSpaceTillLastStanding` (KeepClear) — `new List<VehicleRuntime>` per call; reuse a thread-local
-  scratch buffer.
-- `InsertDepartingVehicles` per-step LINQ — `candidates.OrderBy(...)` (-> stable in-place `Sort`) and
-  `edge.Lanes.First(l => l.Index == ...)` closure (-> manual loop). Parity-safe, quick.
+Per-step allocators — **DONE (L0d)**, each byte-identical (hash `909605E965BFFE59` unchanged, 227
+tests green + a forced serial-vs-parallel check on the junction-heavy city-300, since highway-dense
+has no junctions to exercise these paths):
+- `CrossJunctionLeaderConstraint` — was `new List<int>` + a `h => neighbors.GetRearmost(ego, h)`
+  CLOSURE per vehicle per step. Now a `ReadOnlySpan<int>` over the (plan-phase-stable) `_laneSeqPool`
+  slice + a by-value struct callback (`where TRearmost : struct, IRearmostSource`, JIT-specialized),
+  so zero alloc. The insertion caller's `poolSeq[1..]` array copy became `poolSeq.AsSpan(1)` too.
+- `LaneSpaceTillLastStanding` (KeepClear) — was `new List<VehicleRuntime>` per call; now a
+  `[ThreadStatic]` scratch reused across calls (thread-local because KeepClear runs in the parallel
+  Plan phase; the method neither recurses nor keeps the list past its return).
+- `InsertDepartingVehicles` per-step LINQ — `candidates.OrderBy(Depart)` (stable) became an in-place
+  `Sort` keyed by `(Depart, EntityIndex)` (byte-identical since `_vehicles` is ascending-EntityIndex
+  order), the per-candidate `edge.Lanes.First(l => l.Index == ...)` closure became a manual loop, and
+  the per-step `candidates`/`blockedLanes` collections are reused instance buffers.
+
+Combined L0c+L0d win: city-mixed-1k total engine allocation **3780 -> 1156 MiB (-69%)** (L0c 3780
+-> 1842, L0d 1842 -> 1156).
 
 ## Cumulative estimate (4 cores, ~1k+ concurrent, vs today's single-thread)
 
