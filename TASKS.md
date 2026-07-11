@@ -2345,3 +2345,19 @@ and `TAIL-NETWORK-REMAINING.md`).
 
 **Group-E order (done this session, in order):** F1 → W1 → W2 → OV1 → OV2 → OV3 → OV3b → OV4 → F2a →
 F2b → T1 → T2 → D2 → D3 (with D1 confirmed unnecessary).
+
+---
+
+## Perf: multi-core scaling — on-target (Windows 16-core) — see `PERF-HANDOVER.md`
+
+This session (on a 4-core VM) landed the **willPass/plan fusion** + **parallel Export phase**
+(both byte-identical, hash `909605E965BFFE59`) and the **measurement toolkit** (`--serial`,
+`--max-parallelism`, `--no-fcd`, `--profile`, `scripts/bench-scaling.ps1`). Serial city-3000
+dropped ~54s→~36s (VM); ~2.15× on 4 cores.
+
+The 24-thread scaling curve (measured on target) plateaus at **~2×**; the `--profile` breakdown
+shows ~88% of work is in the *already-parallel* plan/willPass/emit phases, so the ceiling is the
+**memory-bound parallel phases not scaling**, not a serial tail. Next steps (confirm GC vs bandwidth,
+then dealloc / partitioner / dense-active / **SoA of hot per-vehicle fields**, and the multilane `-L2`
+route-resolution generalization) are handed off to a Claude Code session running **on the target
+hardware** — full plan, ranked backlog, and the parity gates are in `PERF-HANDOVER.md`.
