@@ -232,6 +232,34 @@ public sealed partial class Engine : IEngine
     // (_vehicles is append-only, so Count is monotonic -- no stale slot survives).
     private TrajectoryPoint?[] _emitScratch = Array.Empty<TrajectoryPoint?>();
 
+    // Perf (dense active list): reused per-step compaction of the ACTIVE vehicle indices
+    // (Inserted && !Arrived) into a dense list, so the parallel willPass/plan loops dispatch over
+    // ~active-count work items instead of _vehicles.Count. On city-3000 ~40% of _vehicles are not-
+    // yet-departed or already-arrived; the old per-index Parallel.For touched each of those
+    // scattered heap objects' headers (the Inserted/Arrived bools) once per phase per step just to
+    // skip them -- pure bandwidth waste on a memory-bound loop. Rebuilt once per step (serial O(N),
+    // cache-linear over _vehicles) from the frozen post-insertion active set, which is stable
+    // through the plan phases (arrival is applied later, in ExecuteMoves). Byte-identical: same
+    // vehicles, same per-ego writes, order-independent (the loops write only each ego's own fields).
+    private readonly List<int> _activeIndices = new();
+
+    // Compact the current active set (Inserted && !Arrived) into _activeIndices in ascending
+    // _vehicles order (so iteration order matches the former 0..Count scan, minus the gaps). Called
+    // once per step before the parallel willPass/plan phases; only needed on the parallel path.
+    private void BuildActiveIndices()
+    {
+        _activeIndices.Clear();
+        var vehicles = _vehicles;
+        for (var i = 0; i < vehicles.Count; i++)
+        {
+            var v = vehicles[i];
+            if (v.Inserted && !v.Arrived)
+            {
+                _activeIndices.Add(i);
+            }
+        }
+    }
+
     // Perf (on-target measurement): opt-in for the parallel Export path (EmitTrajectory's
     // compute-into-scratch-then-append branch). OFF by default because on the 16-core/24-thread
     // target box it is a consistent NET LOSS -- measured serial emit ~421 ms vs parallel 588-755 ms
@@ -902,6 +930,15 @@ public sealed partial class Engine : IEngine
             // this step) from the frozen snapshot BEFORE PlanMovements, so JunctionYieldConstraint's
             // crossing arm can skip a foe that is itself braking-to-stop this step -- SUMO's
             // setApproaching-before-opened() ordering. See ComputeWillPass's header.
+            // Perf (dense active list): compact the active-vehicle indices ONCE per step, before the
+            // parallel willPass/plan phases both consume it. Only the parallel path reads it, so the
+            // serial path (small parity scenarios) skips the O(N) build. The active set is frozen
+            // from here through PlanMovements (arrival is applied later, in ExecuteMoves).
+            if (ShouldParallelizePlan())
+            {
+                BuildActiveIndices();
+            }
+
             var pWill = PhaseStart();
             ComputeWillPass(neighbors, time);
             PhaseEnd("willPass", pWill);
@@ -1887,20 +1924,26 @@ public sealed partial class Engine : IEngine
         // re-checked inline per index, matching ActiveVehicleQuery.Enumerator's own predicate.
         if (ShouldParallelizePlan())
         {
-            // L1: per-INDEX Parallel.For. A chunked range partitioner was tried and REVERTED -- it
-            // regressed the city case badly (2.99x -> ~1.0x) because most of _vehicles are not-yet-
-            // departed/arrived (a sparse-active list), so static contiguous chunks load-imbalance;
-            // per-index work-stealing balances the sparse case (its higher overhead is worth it, and
-            // is now negligible next to the plan work post-L0). Each iteration writes only its own
-            // v.Intent (race-free, see UseParallelPlan's header); byte-identical to serial.
-            System.Threading.Tasks.Parallel.For(0, _vehicles.Count, _parallelOptions, i =>
+            // L1: per-index Parallel.For over the DENSE active list (built once per step in
+            // AdvanceOneStep), not 0.._vehicles.Count. The old sparse scan dispatched over every
+            // not-yet-departed/arrived index and touched its scattered object header only to skip it;
+            // the dense list drops that ~40% bandwidth waste. A chunked range partitioner over the
+            // sparse list was tried and reverted earlier (it load-imbalanced on the gaps); the dense
+            // list removes the gaps, but per-index work-stealing is retained here to balance the
+            // still-uneven PER-VEHICLE cost (a near-junction vehicle with many foes costs far more
+            // than a free-flowing one). Each iteration writes only its own v.Intent (race-free, see
+            // UseParallelPlan's header); byte-identical to serial.
+            var active = _activeIndices;
+            var vehicles = _vehicles;
+            System.Threading.Tasks.Parallel.For(0, active.Count, _parallelOptions, k =>
             {
-                var v = _vehicles[i];
-                if (!v.Inserted || v.Arrived || v.ReuseIntent)
+                var v = vehicles[active[k]];
+                if (v.ReuseIntent)
                 {
                     // ReuseIntent: the willPass pre-pass already computed this vehicle's final Intent
                     // (fusion-eligible, no crossing-yield relax) -- reuse it verbatim, skip the
-                    // redundant recompute. See PrePlanVehicle / FusionEligible.
+                    // redundant recompute. See PrePlanVehicle / FusionEligible. (Inserted && !Arrived
+                    // is guaranteed by the dense active list, so it is no longer re-checked here.)
                     return;
                 }
 
@@ -2623,11 +2666,16 @@ public sealed partial class Engine : IEngine
 
         if (ShouldParallelizePlan())
         {
-            // L1: per-index Parallel.For, matching PlanMovements (see there for why chunking was
-            // reverted). Each iteration writes only its own vehicle's fields (race-free); byte-identical.
-            System.Threading.Tasks.Parallel.For(0, _vehicles.Count, _parallelOptions, i =>
+            // L1: per-index Parallel.For over the DENSE active list (built once per step in
+            // AdvanceOneStep) rather than 0.._vehicles.Count -- skips dispatching over (and touching
+            // the scattered header of) every not-yet-departed/arrived vehicle. Each iteration writes
+            // only its own vehicle's fields (race-free); byte-identical (same active set, same order
+            // basis; PrePlanVehicle keeps its own Inserted/Arrived guard for the serial path).
+            var active = _activeIndices;
+            var vehicles = _vehicles;
+            System.Threading.Tasks.Parallel.For(0, active.Count, _parallelOptions, k =>
             {
-                PrePlanVehicle(_vehicles[i], neighbors, time, dt, willPassSpeedEps, eligible);
+                PrePlanVehicle(vehicles[active[k]], neighbors, time, dt, willPassSpeedEps, eligible);
             });
             ResolveRightBeforeLeftCycles(dt);
             return;
