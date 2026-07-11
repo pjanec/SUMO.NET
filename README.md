@@ -258,8 +258,11 @@ dotnet run -c Release --project src/Sim.BenchCity -- scenarios/_bench/city-300 \
 ```
 
 The same command runs against `city-30` / `city-3000` / `city-15000` (each ships the SUMO reference
-trio); the larger two are minutes-long full runs — a known super-linear cost at ~4 k+ concurrent that
-is the next profiling target on the perf roadmap.
+trio). `city-3000` (7,632 vehicles, ~4,300 concurrent) also **passes** the aggregate comparison, but
+nearer the band: ~34 % fewer arrivals and ~19 % lower mean speed than SUMO, with a still-tight
+trip-shape KS distance (0.07) — i.e. the engine over-congests at saturation while the trips that *do*
+complete match SUMO's distribution well. That saturation divergence (and the ~0.7 steps/s runtime
+behind it) is a super-linear cost at ~4 k+ concurrent — the next profiling target on the perf roadmap.
 
 ---
 
