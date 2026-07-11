@@ -196,6 +196,17 @@ public sealed partial class Engine : IEngine
     private VehicleRuntime?[] _foeApproachFirst = Array.Empty<VehicleRuntime?>();
     private VehicleRuntime?[] _foeApproachSecond = Array.Empty<VehicleRuntime?>();
 
+    // Perf (Export-phase parallelism): a reusable, index-keyed buffer for the parallel EmitTrajectory
+    // branch. Emit's per-vehicle cost is the LaneGeometry.PositionAtOffset trig, which reads only
+    // immutable geometry + the vehicle's OWN settled Kinematics -- independent per vehicle, so it is
+    // computed concurrently into slot i (== _vehicles[i]; null == inactive this step) and then appended
+    // to the TrajectorySet serially. Byte-identical to the serial append: the comparator and the
+    // determinism hash both key by (vehicle, time) (TrajectoryComparator / TrajectorySet.Index), so
+    // emission order is irrelevant, and each slot holds the SAME pure-function value the serial path
+    // would compute. Grown on demand (never shrunk); every in-range slot is overwritten each step
+    // (_vehicles is append-only, so Count is monotonic -- no stale slot survives).
+    private TrajectoryPoint?[] _emitScratch = Array.Empty<TrajectoryPoint?>();
+
     // C6-ii: per-TLS stateful actuated phase machines, keyed by tlLogic id -- built once in
     // LoadScenario for every tlLogic whose Type == "actuated", empty for a network with only
     // 'static' programs (so RedLightConstraint's actuated branch is never entered and the static
@@ -6132,6 +6143,56 @@ public sealed partial class Engine : IEngine
         for (var i = 0; i < _exportObservers.Count; i++)
         {
             _exportObservers[i].OnFrameBegin(time);
+        }
+
+        // Perf (Export-phase parallelism): on a large scenario with NO registered export observer,
+        // compute each vehicle's frame concurrently into _emitScratch, then append serially. The
+        // determinism/parity test loop and the city benchmark (--fcd-out "") both satisfy the
+        // no-observer gate; the FCD-writer observer path falls through to the serial branch below so
+        // its file-emission order is preserved exactly. Race-free (index i writes only slot i) and
+        // byte-identical (TrajectorySet's query surface is by-(vehicle,time), emission-order
+        // independent -- see _emitScratch's header). Size-gated by ShouldParallelizePlan so every
+        // small parity scenario stays on the serial path.
+        if (_exportObservers.Count == 0 && ShouldParallelizePlan())
+        {
+            if (_emitScratch.Length < _vehicles.Count)
+            {
+                _emitScratch = new TrajectoryPoint?[_vehicles.Count];
+            }
+
+            var scratch = _emitScratch;
+            System.Threading.Tasks.Parallel.For(0, _vehicles.Count, i =>
+            {
+                var v = _vehicles[i];
+                if (!v.Inserted || v.Arrived)
+                {
+                    scratch[i] = null;
+                    return;
+                }
+
+                var laneP = _network!.LanesById[v.LaneId];
+                var (xp, yp, anglep) = LaneGeometry.PositionAtOffset(laneP.Shape, v.Kinematics.Pos, v.Kinematics.LatOffset);
+                scratch[i] = new TrajectoryPoint(
+                    VehicleId: v.Def.Id,
+                    Time: time,
+                    Lane: v.LaneId,
+                    Pos: v.Kinematics.Pos,
+                    Speed: v.Kinematics.Speed,
+                    X: xp,
+                    Y: yp,
+                    Angle: anglep,
+                    Acceleration: null);
+            });
+
+            for (var i = 0; i < _vehicles.Count; i++)
+            {
+                if (scratch[i] is { } point)
+                {
+                    trajectory.Add(point);
+                }
+            }
+
+            return;
         }
 
         // D6: the Query() analog -- see ActiveVehicles()'s own comment.
