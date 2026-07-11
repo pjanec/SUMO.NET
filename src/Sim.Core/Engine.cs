@@ -243,6 +243,102 @@ public sealed partial class Engine : IEngine
     // vehicles, same per-ego writes, order-independent (the loops write only each ego's own fields).
     private readonly List<int> _activeIndices = new();
 
+    // Perf (SPATIAL-OPT probe -- see SPATIAL-OPT.md): the per-vehicle hot fields the SAME-LANE gap
+    // math reads off a foe, packed AoS into one ~cache-line struct. `_packed` is rebuilt each step in
+    // (lane, pos-ascending) order, so a vehicle's same-lane leader is a NEARBY slot (sequential /
+    // prefetched) instead of a random foe-object deref -- the only thing that attacks the random-
+    // access bandwidth wall (per-field SoA and AoS-by-EntityIndex both failed because the index is
+    // random; see PERF-HANDOVER.md). doubles (not floats) for the vType scalars so the arithmetic is
+    // byte-identical. Off by default (`SpatialPlan`), so the deterministic path is untouched.
+    internal readonly struct HotVeh
+    {
+        public readonly double Pos;
+        public readonly double Speed;
+        public readonly double LatOffset;
+        public readonly double Length;
+        public readonly double Decel;
+        public readonly double Width;
+        public readonly bool IsCacc;
+        public readonly int EntityIndex;
+        public readonly int LaneHandle;
+        public HotVeh(double pos, double speed, double latOffset, double length, double decel, double width, bool isCacc, int entityIndex, int laneHandle)
+        {
+            Pos = pos; Speed = speed; LatOffset = latOffset;
+            Length = length; Decel = decel; Width = width; IsCacc = isCacc;
+            EntityIndex = entityIndex; LaneHandle = laneHandle;
+        }
+    }
+
+    private HotVeh[] _packed = System.Array.Empty<HotVeh>();
+    private int[] _leaderSlotByPacked = System.Array.Empty<int>();
+    private int _packedCount;
+
+    // Perf (SPATIAL-OPT probe): opt-in for the spatial plan path (iterate `_packed` in (lane,pos)
+    // order, same-lane leader read from the adjacent packed slot). OFF by default -> deterministic
+    // path (hash 909605E965BFFE59) untouched. Byte-identical when on (the packed leader is the same
+    // vehicle GetLeader returns, same start-of-step field values); it is a SCHEDULE/locality change.
+    public bool SpatialPlan;
+
+    // SPATIAL-OPT probe: build `_packed` in (lane, pos-ascending) order from the already-sorted
+    // neighbor buckets, and precompute each slot's same-lane leader slot (nearest strictly-ahead by
+    // pos, co-located skipped -- byte-identical to GetLeader's selection). O(active); short forward
+    // scans. Called after Refill + BuildActiveIndices, before the plan phases read it.
+    private void BuildPacked(LaneNeighborQuery neighbors)
+    {
+        var n = _activeIndices.Count;
+        if (_packed.Length < n)
+        {
+            _packed = new HotVeh[n];
+            _leaderSlotByPacked = new int[n];
+        }
+
+        // Gather + leader-slot precompute, SERIAL. Parallelizing per-lane was tried and REGRESSED
+        // (525 ms vs 305 ms @8t): the gather is scattered Kinematics reads (bandwidth-bound), so
+        // spreading them across threads only adds contention + dispatch over many empty lanes. The
+        // deeper problem this exposes: this per-step random gather from scattered objects costs about
+        // as much as the sequential-leader read saves in the plan (~305 ms vs ~239 ms), so total
+        // scattered-read traffic is CONSERVED, not reduced -- net-neutral wall. See SPATIAL-OPT.md:
+        // a real win needs a PERSISTENT spatially-ordered store (incremental re-sort across steps),
+        // not this rebuild-from-scratch gather. This probe validates the mechanism (plan -11%,
+        // byte-identical) and is the groundwork for that; it is off by default (SpatialPlan).
+        var laneCount = _network!.LanesByHandle.Count;
+        var idx = 0;
+        for (var h = 0; h < laneCount; h++)
+        {
+            var bucket = neighbors.OnLane(h); // pos-ascending
+            for (var k = 0; k < bucket.Count; k++)
+            {
+                var v = bucket[k];
+                var kin = v.Kinematics;
+                var vt = v.VType;
+                _packed[idx++] = new HotVeh(
+                    kin.Pos, kin.Speed, kin.LatOffset,
+                    vt.Length, vt.Decel, vt.Width, vt.CarFollowModel == "CACC",
+                    v.EntityIndex, h);
+            }
+        }
+
+        _packedCount = idx;
+
+        for (var i = 0; i < _packedCount; i++)
+        {
+            var slot = -1;
+            var egoPos = _packed[i].Pos;
+            var egoLane = _packed[i].LaneHandle;
+            for (var j = i + 1; j < _packedCount && _packed[j].LaneHandle == egoLane; j++)
+            {
+                if (_packed[j].Pos > egoPos)
+                {
+                    slot = j; // nearest strictly-ahead same-lane vehicle = the leader
+                    break;
+                }
+                // Pos == egoPos (co-located): not strictly ahead -> skip, matching GetLeader.
+            }
+
+            _leaderSlotByPacked[i] = slot;
+        }
+    }
+
     // Compact the current active set (Inserted && !Arrived) into _activeIndices in ascending
     // _vehicles order (so iteration order matches the former 0..Count scan, minus the gaps). Called
     // once per step before the parallel willPass/plan phases; only needed on the parallel path.
@@ -950,6 +1046,15 @@ public sealed partial class Engine : IEngine
             if (ShouldParallelizePlan())
             {
                 BuildActiveIndices();
+                // SPATIAL-OPT probe: build the (lane,pos)-ordered packed hot array + leader-slot map
+                // that PlanMovements' spatial branch reads. Only when opted in; the packed array
+                // reads the same frozen start-of-step snapshot as the plan (built after Refill).
+                if (SpatialPlan)
+                {
+                    var pPk = PhaseStart();
+                    BuildPacked(neighbors);
+                    PhaseEnd("packed", pPk);
+                }
             }
 
             var pWill = PhaseStart();
@@ -1958,6 +2063,29 @@ public sealed partial class Engine : IEngine
             // UseParallelPlan's header); byte-identical to serial.
             var active = _activeIndices;
             var vehicles = _vehicles;
+
+            // SPATIAL-OPT probe: iterate `_packed` in (lane,pos) order (contiguous chunks = spatial
+            // regions per thread) and thread each ego's packed slot so LeaderFollowSpeedConstraint
+            // reads its same-lane leader from the adjacent packed slot (sequential) rather than a
+            // random foe-object deref. Byte-identical (same leader, same field values, order-
+            // independent per-ego writes). Every OTHER constraint still uses `neighbors` unchanged.
+            if (SpatialPlan)
+            {
+                var packed = _packed;
+                var n = _packedCount;
+                System.Threading.Tasks.Parallel.For(0, n, _parallelOptions, i =>
+                {
+                    var v = vehicles[packed[i].EntityIndex];
+                    if (v.ReuseIntent)
+                    {
+                        return;
+                    }
+
+                    v.Intent = ComputeMoveIntent(v, neighbors, time, prePass: false, packedEgoSlot: i);
+                });
+                return;
+            }
+
             System.Threading.Tasks.Parallel.For(0, active.Count, _parallelOptions, k =>
             {
                 var v = vehicles[active[k]];
@@ -2007,7 +2135,11 @@ public sealed partial class Engine : IEngine
     // advance are all suppressed/copied so the pre-pass is a pure read whose only observable output is
     // its caller's `v.WillPass = ...` write. With prePass=false (the normal PlanMovements call) this is
     // byte-identical to the pre-C4-viii method except the crossing arm now additionally reads foe.WillPass.
-    private MoveIntent ComputeMoveIntent(VehicleRuntime v, LaneNeighborQuery neighbors, double time, bool prePass = false)
+    // SPATIAL-OPT probe: `packedEgoSlot` is this vehicle's slot in `_packed` when PlanMovements takes
+    // the spatial branch (else -1). When >= 0, LeaderFollowSpeedConstraint reads the same-lane leader
+    // from the packed array (sequential) via `_leaderSlotByPacked[packedEgoSlot]`; otherwise it uses
+    // the neighbor query. Byte-identical either way. Every other constraint ignores it.
+    private MoveIntent ComputeMoveIntent(VehicleRuntime v, LaneNeighborQuery neighbors, double time, bool prePass = false, int packedEgoSlot = -1)
     {
         // D2: hot per-vehicle, per-step lookup -- handle-indexed array instead of a string hash.
         var lane = _network!.LanesByHandle[v.LaneHandle];
@@ -2075,7 +2207,7 @@ public sealed partial class Engine : IEngine
         // C11-i: for an IDM-resolved vType this dispatches to IdmModel.FollowSpeed
         // (MSCFModel_IDM.cpp:104-107) instead -- see FollowSpeedFor's own header comment; the
         // Krauss arm is the SAME KraussModel.FollowSpeed call this line always made.
-        vPos = Math.Min(vPos, LeaderFollowSpeedConstraint(v, neighbors, dt, time, laneVehicleMaxSpeed));
+        vPos = Math.Min(vPos, LeaderFollowSpeedConstraint(v, neighbors, dt, time, laneVehicleMaxSpeed, packedEgoSlot));
 
         // Cross-junction leader following: car-follow a slow leader that has already crossed onto a
         // downstream lane, while ego is still on its approach (the same-lane constraint above cannot
@@ -4656,8 +4788,48 @@ public sealed partial class Engine : IEngine
     // C8-iii: instance (was static) only so it can read the immutable `_config.Ballistic` flag for
     // the FollowSpeedFor call below -- a read of load-time-constant config, safe under UseParallelPlan
     // (the parallel-plan invariant forbids WRITING shared state during planning, not reading it).
-    private double LeaderFollowSpeedConstraint(VehicleRuntime ego, LaneNeighborQuery neighbors, double dt, double time, double laneVehicleMaxSpeed)
+    private double LeaderFollowSpeedConstraint(VehicleRuntime ego, LaneNeighborQuery neighbors, double dt, double time, double laneVehicleMaxSpeed, int packedEgoSlot = -1)
     {
+        // SPATIAL-OPT probe: when the plan takes the spatial branch, the same-lane leader is the
+        // adjacent packed slot (sequential/prefetched) instead of a random foe-object deref. The
+        // packed leader is byte-identically the same vehicle GetLeader returns (nearest strictly-
+        // ahead by pos, co-located skipped) with the same frozen start-of-step field values (doubles),
+        // so this returns the identical speed. Every OTHER neighbor read in this method's callers is
+        // unchanged (still on `neighbors`); only this same-lane leader read moves to `_packed`.
+        if (packedEgoSlot >= 0)
+        {
+            var leaderSlot = _leaderSlotByPacked[packedEgoSlot];
+            if (leaderSlot < 0)
+            {
+                return double.PositiveInfinity;
+            }
+
+            ref readonly var lp = ref _packed[leaderSlot];
+            if (!FootprintsOverlap(lp.LatOffset, lp.Width, ego.Kinematics.LatOffset, ego.VType.Width))
+            {
+                return double.PositiveInfinity;
+            }
+
+            var gapP = (lp.Pos - lp.Length) - ego.VType.MinGap - ego.Kinematics.Pos;
+            return FollowSpeedFor(
+                ego.VType,
+                egoSpeed: ego.Kinematics.Speed,
+                gap: gapP,
+                predSpeed: lp.Speed,
+                predMaxDecel: lp.Decel,
+                laneVehicleMaxSpeed: laneVehicleMaxSpeed,
+                dt: dt,
+                time: time,
+                accControlMode: ref ego.AccControlMode,
+                accLastUpdateTime: ref ego.AccLastUpdateTime,
+                caccControlMode: ref ego.CaccControlMode,
+                egoAcceleration: ego.Acceleration,
+                hasPred: true,
+                predIsCacc: lp.IsCacc,
+                levelOfService: ego.LevelOfService,
+                ballistic: _config!.Ballistic);
+        }
+
         var leader = neighbors.GetLeader(ego);
         if (leader is null)
         {

@@ -1,9 +1,41 @@
 # SPATIAL-OPT.md — design for spatial (cache-local) parallelization of the plan phase
 
-**Status: DESIGN / not yet built.** This is the one lever left to attack the hot-path memory-bandwidth
-wall (see `PERF-HANDOVER.md` — the ON-TARGET SESSION LOG). It is **research**: a projected win with a
-real chance of not panning out, so it is designed prove-or-kill with a cheap probe and hard kill
-criteria. Read `PERF-HANDOVER.md` first — this assumes its diagnosis and its list of what already failed.
+**Status: PROBE BUILT + MEASURED (§8). Mechanism VALIDATED; naive version net-neutral on wall; the
+real win needs a persistent store (below).** This is the one lever left to attack the hot-path
+memory-bandwidth wall (see `PERF-HANDOVER.md` — the ON-TARGET SESSION LOG). Read `PERF-HANDOVER.md`
+first — this assumes its diagnosis and its list of what already failed.
+
+## 0. PROBE RESULTS (measured — read before the design below)
+
+The §8 probe was built (opt-in `Engine.SpatialPlan` / `Sim.BenchCity --spatial`, off by default,
+byte-identical — 229 tests, hash `909605E965BFFE59`, city-3000 default-vs-`--spatial` trip SHA match)
+and measured @8t (interleaved, same build, flag toggle):
+
+- **Mechanism VALIDATED:** the same-lane leader read from the adjacent packed slot (sequential) makes
+  the **`plan` phase ~11% faster** (1952 ms vs 2191 ms), consistently (every spatial run < every base
+  run). This is the **first thing all session to actually speed up the plan phase** — the
+  sequential-leader hypothesis is real.
+- **But WALL is net-neutral**, because building `_packed` costs **`packed` = 305 ms serial** (a
+  per-step **random gather** of every vehicle's `Kinematics`/vType from scattered objects) ≈ the
+  239 ms the plan saved. **Total scattered-read traffic is CONSERVED, just relocated** from the
+  parallel plan to the (serial) build.
+- **Parallelizing the gather REGRESSED it** (525 ms vs 305 ms @8t): the gather is bandwidth-bound
+  scattered reads, so spreading them across threads only adds contention + dispatch over many empty
+  lanes. There is no cheap shortcut — to build a (lane,pos)-sorted array you must read the data in
+  some order, and it's random either way (bucket order ≠ EntityIndex order ≠ heap order).
+
+**Verdict:** the sequential-leader mechanism works, but a **rebuild-from-scratch gather each step**
+cannot win — it re-pays the exact bandwidth it saves. **A real win requires a PERSISTENT
+spatially-ordered hot store**: keep `_packed` (or equivalent) sorted by (lane, pos) *across* steps and
+**incrementally re-sort** only the few vehicles that changed relative order (moved past a neighbor /
+changed lane) — so there is NO per-step random gather. The probe is kept (gated off, byte-identical)
+as the validated groundwork (`HotVeh`, the packed leader read in `LeaderFollowSpeedConstraint`, the
+spatial plan branch); the persistent store replaces only `BuildPacked`. That is the next, bigger step
+— see §10 (added).
+
+---
+
+**Original design (below).** It is **research**: a projected win, prototyped prove-or-kill.
 
 ---
 
@@ -168,3 +200,47 @@ parity for speed — a different bar, not a bandwidth fix.
   start-of-step `_packed`, so it iterates packed order too — same treatment.
 - **Chunk size / partitioner** for the parallel plan over `_packed` (contiguous ranges vs work-stealing):
   contiguous ranges are the point (cache locality); measure chunk size.
+
+## 10. The persistent spatially-ordered store (the real fix — next step, bigger)
+
+The §8 probe (§0 results) proved the sequential-leader read speeds the plan ~11%, but the per-step
+gather that builds `_packed` re-pays that bandwidth. To actually bank the win, `_packed` must NOT be
+rebuilt-by-gather each step — it must **persist across steps, already in (lane, pos) order**, so the
+plan reads it with no random gather.
+
+**Core idea.** Make the hot data (`HotVeh`, keyed by a *slot*, not EntityIndex) the store that
+`ExecuteMoves` writes **in place** (write-through, like the reverted SoA but AoS + spatially ordered),
+and keep it sorted by (lane, pos) by **incremental re-sort** each step:
+- Vehicles move a little each step, so the array is **almost sorted**; only vehicles that (a) passed a
+  same-lane neighbor or (b) changed lane are out of order.
+- An **insertion-sort-style local repair** (or a per-lane merge of the handful of movers) fixes it in
+  ~O(N + swaps), with swaps ≈ the small number of order changes — far cheaper than an O(N) random
+  gather + full sort. Almost-sorted arrays are the best case for insertion sort.
+- Lane changes / insertions / arrivals move a slot between lane segments — handle via the command
+  buffer at step end (same discipline as structural mutations today).
+
+**Why this removes the gather.** `ExecuteMoves` already computes each vehicle's new Pos/Speed and
+already touches that vehicle — writing it into its (persistent) slot is free (no separate gather pass).
+The plan then reads `_packed` sequentially. No per-step random read of scattered objects at all — the
+hot data LIVES in the sorted array; the `VehicleRuntime` object is touched only for cold fields.
+
+**Risks / unknowns (why it's still research):**
+- The incremental re-sort cost must stay well below the gather it replaces. If churn is high (dense,
+  lots of overtaking / lane changes), the swap count grows. Measure on city-3000.
+- Slot identity vs EntityIndex: every site that today keys by EntityIndex (side tables, snapshot,
+  command buffer) must map through a slot↔EntityIndex index, or the object keeps EntityIndex and only
+  the hot store is slot-keyed. Design the seam carefully.
+- It's a substantial change (a second source-of-truth store with its own lifecycle). Byte-identity must
+  hold throughout (trip-SHA on a junction scenario every slice).
+
+**Incremental path:** (a) add the persistent `HotVeh` store written-through at `ExecuteMoves`/insertion,
+kept EntityIndex-keyed first (byte-identical, no perf change — proves the write-through). (b) Add the
+(lane,pos) ordering + incremental re-sort, and point the plan's spatial branch at it instead of
+`BuildPacked`. Measure the re-sort cost vs the gather it replaces. (c) If the wall improves and scales,
+extend the packed reads to `willPass` (the bigger phase — another ~11% on ~2500 ms) and to the
+cross-lane / junction foe lookups via segment offsets.
+
+**Kill criterion:** if the incremental re-sort is not decisively cheaper than the 305 ms gather (i.e.
+the wall still doesn't improve @8t in interleaved paired A/B, byte-identical), then the random-access
+wall is unbeatable in this architecture for byte-identical work, and the remaining option is an
+opt-in fast-mode (validated by `--fast-gate`), not a bandwidth fix.

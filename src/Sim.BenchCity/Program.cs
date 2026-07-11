@@ -74,6 +74,7 @@ internal static class Program
         var parallelExport = false;
         var fast = false;
         var fastGate = false;
+        var spatial = false;
         string? sumoSummaryPath = null;
         string? sumoTripinfoPath = null;
         string? aggregateTolerancePath = null;
@@ -137,6 +138,11 @@ internal static class Program
                     // behavior with --fast-gate, never against the goldens.
                     fast = true;
                     break;
+                case "--spatial":
+                    // SPATIAL-OPT probe: opt into the (lane,pos)-ordered spatial plan path (byte-
+                    // identical; a locality experiment). Off by default.
+                    spatial = true;
+                    break;
                 case "--fast-gate":
                     // Run the deterministic AND the fast engine on this scenario and assert fast mode
                     // is BEHAVIORALLY sound: 0 gridlock, aggregate parity vs the deterministic run
@@ -190,6 +196,7 @@ internal static class Program
         engine.ProfilePhases = profile; // per-phase wall-time accounting (printed below)
         engine.ParallelExport = parallelExport; // opt-in parallel Export (off = faster on target box)
         engine.FastMode = fast; // opt-in fast mode (off = deterministic/byte-identical path)
+        engine.SpatialPlan = spatial; // opt-in spatial plan probe (off = default; byte-identical when on)
 
         engine.LoadScenario(net, rou, cfg);
 
