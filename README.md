@@ -261,8 +261,10 @@ The same command runs against `city-30` / `city-3000` / `city-15000` (each ships
 trio). `city-3000` (7,632 vehicles, ~4,300 concurrent) also **passes** the aggregate comparison, but
 nearer the band: ~34 % fewer arrivals and ~19 % lower mean speed than SUMO, with a still-tight
 trip-shape KS distance (0.07) — i.e. the engine over-congests at saturation while the trips that *do*
-complete match SUMO's distribution well. That saturation divergence (and the ~0.7 steps/s runtime
-behind it) is a super-linear cost at ~4 k+ concurrent — the next profiling target on the perf roadmap.
+complete match SUMO's distribution well. That saturation over-congestion is a known open **behavioral**
+gap (not a perf one: the two per-vehicle O(N²) junction/keepClear scans that once made `city-3000` run
+at ~0.7 steps/s were profiled and indexed away — it now runs the full 1,200-step scenario at ~31
+steps/s, a ~44× speedup, byte-identically).
 
 ---
 

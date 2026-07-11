@@ -218,6 +218,43 @@ has no junctions to exercise these paths):
 Combined L0c+L0d win: city-mixed-1k total engine allocation **3780 -> 1156 MiB (-69%)** (L0c 3780
 -> 1842, L0d 1842 -> 1156).
 
+### L2 — the ~4k-concurrent super-linear TIME term (profiled + fixed), byte-identical
+
+The alloc work above cut GC pressure; it did NOT touch the per-step COMPUTE, and `city-3000` (~4,300
+concurrent) still ran at **~0.7 steps/s** (~28 min for the 1200-step run). Per-constraint timing
+(city-mixed-1k, `Stopwatch` probe, reverted) found the cause — two per-vehicle constraints were **~88%
+of the whole plan phase**, both doing a flat O(N) scan over EVERY active vehicle, called per vehicle =>
+**O(N²)**:
+
+```
+JunctionYield  128,296 ns/call   (~55% of plan)   <- FindFoeVehicle: scan all vehicles x whole route
+KeepClear      100,933 ns/call   (~43% of plan)   <- LaneBruttoVehLenSum / LaneSpaceTillLastStanding
+CrossJunction         275 ns/call (~0%)           <- uses the pos-sorted per-lane index (cheap)
+```
+
+Car-following is ~275 ns/call; these were ~400x slower purely from re-scanning the population. Both
+fixed with a per-lane / per-internal-lane index and NO behavioral change:
+- **`FindFoeVehicle`** — a per-step index (`BuildFoeApproachIndex`, built once right after
+  `neighbors.Refill`) maps each internal lane handle to the FIRST TWO distinct vehicles (in `_vehicles`
+  order) whose route contains it; the lookup is O(1) and byte-identical (ego can only be the first of
+  the two, so "first non-ego match" == `first != ego ? first : second`).
+- **`LaneBruttoVehLenSum` / `LaneSpaceTillLastStanding`** — read the pos-sorted per-lane bucket
+  `LaneNeighborQuery` already maintains (`OnLane(handle)`) instead of filtering all active vehicles;
+  byte-identical (same frozen snapshot; homogeneous sum is order-independent; the space-walk reverses
+  the bucket for the same front-first order).
+
+Result (byte-identical: 227 goldens + hash `909605E965BFFE59` unchanged single AND parallel; the
+`city-3000` vs-SUMO aggregates are numerically IDENTICAL pre/post, proving only speed changed):
+
+| Scenario | before | after | speedup |
+|---|---|---|---|
+| city-mixed-1k (steps/s) | 35.3 | **112.4** | **3.2x** |
+| city-3000 full 1200-step run | ~0.7 steps/s (~28 min) | **31.1 steps/s (38.6 s)** | **~44x** |
+
+This is the item flagged as "super-linear scaling unprofiled at the top end" below — now profiled and
+fixed. The remaining `city-3000` vs-SUMO accuracy gap (~34% fewer arrivals at saturation) is a
+SEPARATE behavioral question, untouched by this byte-identical change.
+
 ## Cumulative estimate (4 cores, ~1k+ concurrent, vs today's single-thread)
 
 | Layer | Local win | Cumulative | Risk | Effort |
@@ -244,9 +281,10 @@ is the last ~1.2× at high risk.
    floor (a perf smoke test) BEFORE optimizing, or regressions land silently.
 5. **Junction order-sensitivity** (DESIGN.md) — neutralized today via static matrix + frozen snapshot;
    preserve it under any partition/parallel change.
-6. **Super-linear scaling unprofiled at the top end.** `city-15000` (25.7k veh) did not finish in the
-   measurement window — there is likely an O(N·junctions)-ish term worth profiling before claiming
-   linear parallel scaling holds at 25k+. An algorithmic fix there could dwarf SIMD.
+6. **Super-linear scaling — PROFILED + FIXED at ~4k concurrent (L2 above).** The O(N²) was
+   `FindFoeVehicle` + the keepClear space helpers scanning all vehicles per vehicle; indexing them
+   took `city-3000` from ~0.7 to 31.1 steps/s (~44x), byte-identical. `city-15000` (25.7k veh) should
+   now be re-measured — if a residual super-linear term remains at 25k+ it is a smaller, separate one.
 
 ## Suggested execution order (when this lands on a fresh main)
 
@@ -254,6 +292,7 @@ is the last ~1.2× at high risk.
 2. Layer 0a — stream emit / kill `TrajectoryPoint`+`SortedDictionary` churn. Re-measure.
 3. Layer 0b — best-lanes hand-loop + per-vehicle cache. Re-measure.
 4. Layer 1 — size-gated auto-parallel + chunk partitioner; then parallel execute/emit. Re-measure.
-5. Profile the city-15000 super-linear term; fix algorithmically if present.
-6. (Optional, last) Layer 2 — hot-columns SoA mirror + `Vector<double>` on the arithmetic inner loop,
+5. Profile the city-15000 super-linear term; fix algorithmically if present. **DONE at ~4k concurrent
+   (L2): FindFoeVehicle + keepClear scans were O(N²); indexed → city-3000 ~44x. Re-check 25k+.**
+6. (Optional, last) Layer 2 SIMD — hot-columns SoA mirror + `Vector<double>` on the arithmetic inner loop,
    FMA off, parity-gated. Only if Layers 0–1 leave a worthwhile arithmetic fraction on the table.
