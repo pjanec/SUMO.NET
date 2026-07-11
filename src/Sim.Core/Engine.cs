@@ -2601,7 +2601,14 @@ public sealed partial class Engine : IEngine
         var intent = ComputeMoveIntent(v, neighbors, time, prePass: true);
         v.Intent = intent; // tentative -- reused by PlanMovements iff eligible && !CrossingYieldTaken
         v.WillPass = intent.NewSpeed > willPassSpeedEps;
-        v.ReuseIntent = eligible && !v.CrossingYieldTaken;
+        // The pre-pass Intent carries LatOffset == 0 (prePass short-circuit). The real pass only
+        // reproduces that when ComputeLateralEvasion returns exactly 0 -- which, under an eligible
+        // scenario (no obstacle/EV/overtake trigger), holds iff the vehicle carries NO residual
+        // lateral offset. A vehicle mid-recenter (LatOffset != 0 after an obstacle was removed this
+        // run -- _obstacles.Count can toggle back to 0 via RemoveObstacle/ClearObstacles) would
+        // otherwise SNAP to centre instead of DriftToward-ing, so exclude it from reuse. Inert for
+        // every lane-centred vehicle (LatOffset always 0, the lane-mode invariant).
+        v.ReuseIntent = eligible && !v.CrossingYieldTaken && v.Kinematics.LatOffset == 0.0;
     }
 
     // C4-viii-b (bug C: symmetric right-before-left circular-yield deadlock). SUMO's
