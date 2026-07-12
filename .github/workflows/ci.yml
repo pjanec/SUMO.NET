@@ -1,0 +1,37 @@
+# Offline parity gate on every push / PR: build the solution and run the hermetic test suite (no SUMO,
+# no network). This is the same `dotnet test` loop CLAUDE.md defines as the correctness anchor, plus the
+# Sim.Bench determinism hash check.
+name: ci
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Restore
+        run: dotnet restore Traffic.sln
+
+      - name: Build (Release)
+        run: dotnet build Traffic.sln -c Release --no-restore
+
+      - name: Test (offline parity gate)
+        run: dotnet test Traffic.sln -c Release --no-build
+
+      # The determinism anchor must not move (single AND parallel plan).
+      - name: Determinism hash
+        run: |
+          out="$(dotnet run --project src/Sim.Bench -c Release --no-build)"
+          echo "$out"
+          echo "$out" | grep -q "hashA=909605E965BFFE59" || { echo "::error::single-thread determinism hash moved"; exit 1; }
+          echo "$out" | grep -q "hashPar=909605E965BFFE59" || { echo "::error::parallel determinism hash moved"; exit 1; }

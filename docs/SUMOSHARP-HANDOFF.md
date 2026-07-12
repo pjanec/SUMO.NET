@@ -41,6 +41,7 @@ so `apt-get update` first). SUMO is not needed for `dotnet test`.
 
 | Commit | What |
 |---|---|
+| *(this session)* | **Publish + CI workflows** `.github/workflows/publish.yml` (tag-gated pack+push, version-from-tag, SourceLink fetch-depth 0) and `ci.yml` (build/test/determinism-hash on push/PR). |
 | *(this session)* | **ns2.1 consumer sample** `samples/SumoSharp.GameHostSample` (multi-target net8.0/ns2.1; `GameHost` drop-in + runnable net8 demo; `RungB17`). |
 | *(this session)* | **Dense edge handles** `GetEdge`/`GetEdgeId`/`EdgeCount` + int Spawn/route overloads (`0ceeaf0`, `RungB16`). |
 | `3ac73c1` | **Async runner — snapshot pool (opt-in):** `EnableSnapshotPool(cap=3)` reuses backing arrays across Ticks (`RungB15`). Default off; contract unchanged when off. |
@@ -93,8 +94,10 @@ host game engine's convention), `VTypeHandle`, `AvoidanceClass`, `VehicleLifecyc
    ~~Unity/Godot sample~~ → landed as `samples/SumoSharp.GameHostSample` (a ns2.1-consumable `GameHost`
    integration class + runnable net8 headless demo; `RungB17`). Per steer, this replaces an in-editor
    Unity/Godot project (neither engine can run in this environment).
-2. **Publish CI** to nuget.org (a GitHub Actions workflow: pack + push `.nupkg`/`.snupkg`, gated on a
-   tag). Pin `RepositoryUrl`/commit for SourceLink (see gotcha below).
+2. ~~**Publish CI** to nuget.org (GitHub Actions: pack + push `.nupkg`/`.snupkg`, tag-gated)~~ — **DONE**
+   (`.github/workflows/publish.yml` on `v*` tags + `ci.yml` build/test/hash on every push/PR; API §1).
+   To actually publish: set the `NUGET_API_KEY` repo secret, bump `Version` in `Directory.Build.props`
+   (or just tag — the workflow packs at the tag's version), then push a `vX.Y.Z` tag.
 3. ~~**Async runner refinements (§7):** two-frame **interpolation hook** + **snapshot pool**~~ — **DONE**
    (commits `ce37400`, `3ac73c1`; see API §7). Both additive/async-only; pool is opt-in.
 4. ~~**`GetEdge(string) → int`** dense edge handles (§9)~~ — **DONE** (commit `0ceeaf0`; API §9).

@@ -1,0 +1,76 @@
+# Publish the SumoSharp packages to nuget.org (SUMOSHARP-API.md §1, handoff "Remaining work" #2).
+# Triggered ONLY by a version tag (e.g. `v0.1.0`). It runs the offline parity gate first, then packs
+# and pushes the .nupkg + .snupkg. The push is skipped (not failed) when NUGET_API_KEY is absent, so a
+# fork can still dry-run the pack.
+#
+# SourceLink: `actions/checkout` with fetch-depth 0 gives the full git history, and
+# Directory.Build.props sets PublishRepositoryUrl / EmbedUntrackedSources / ContinuousIntegrationBuild
+# (the last only under GITHUB_ACTIONS). Together with the RepositoryUrl pinned in Directory.Build.props,
+# Microsoft.SourceLink.GitHub resolves the commit so consumers can step into the source. (The "source
+# control information is not available" warning seen locally is only because the dev VM's git remote is a
+# local proxy URL; on real GitHub it resolves.)
+name: publish
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  pack-push:
+    runs-on: ubuntu-latest
+    env:
+      NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # full history so SourceLink can pin the commit
+
+      - name: Set up .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Restore
+        run: dotnet restore Traffic.sln
+
+      - name: Build (Release)
+        run: dotnet build Traffic.sln -c Release --no-restore
+
+      # Never publish a red build: gate on the hermetic parity suite.
+      - name: Test (offline parity gate)
+        run: dotnet test Traffic.sln -c Release --no-build
+
+      # The package version tracks the tag (v0.1.0 -> 0.1.0), overriding Directory.Build.props so a tag
+      # can never publish a mismatched version. Re-build under that version, then pack.
+      - name: Pack (version from tag)
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          echo "packing version $VERSION"
+          dotnet build Traffic.sln -c Release "-p:Version=$VERSION"
+          dotnet pack src/Sim.Core/Sim.Core.csproj    -c Release --no-build "-p:Version=$VERSION" -o ./nupkgs
+          dotnet pack src/Sim.Ingest/Sim.Ingest.csproj -c Release --no-build "-p:Version=$VERSION" -o ./nupkgs
+          ls -l ./nupkgs
+
+      - name: Upload packages as build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: nupkgs
+          path: ./nupkgs/*
+
+      - name: Push to nuget.org
+        if: ${{ env.NUGET_API_KEY != '' }}
+        run: |
+          dotnet nuget push "nupkgs/*.nupkg" \
+            --api-key "$NUGET_API_KEY" \
+            --source https://api.nuget.org/v3/index.json \
+            --skip-duplicate
+          # Symbol packages (.snupkg) alongside; --skip-duplicate covers the auto-pushed case.
+          dotnet nuget push "nupkgs/*.snupkg" \
+            --api-key "$NUGET_API_KEY" \
+            --source https://api.nuget.org/v3/index.json \
+            --skip-duplicate
+
+      - name: Note when publish is skipped
+        if: ${{ env.NUGET_API_KEY == '' }}
+        run: echo "::notice::NUGET_API_KEY secret not set - packed only, did not push."

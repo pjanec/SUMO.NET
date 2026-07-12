@@ -33,10 +33,12 @@ is byte-identical where the new paths are unused):
   SourceLink, and symbol packages — `dotnet pack` verified;
 - the **browser-live WebSocket demo** (§11, Phase 2): `Sim.LiveHost`, verified end-to-end.
 
-Items intentionally left as later refinements (not blockers): the two-frame interpolation hook and a
-snapshot pool (§7), a dense `GetEdge(string)→int` (§9), vehicle-slot recycling (§9), a Unity/Godot sample
-(Phase 3), and publishing to nuget.org + release CI. (**`netstandard2.1` multi-target on `Sim.Core` +
-`Sim.Ingest` has now landed** — see §3.)
+Landed since the initial Phase-1 cut (see the per-section STATUS notes): `netstandard2.1` multi-target on
+`Sim.Core` + `Sim.Ingest` (§3) with a Unity/Godot-reach consumer sample; the two-frame interpolation hook
+and an opt-in snapshot pool (§7); dense `GetEdge(string)→int` edge handles (§9); and the release/publish CI
+(§1). **Remaining refinement:** vehicle-slot recycling on `Despawn` (§9) — deliberately deferred (it is
+coupled to a lot of `EntityIndex`-keyed state on the shared vehicle-creation + lifecycle-diff paths; see the
+handoff's "Remaining work" for the specifics).
 
 **Coordinated with `docs/LANELESS-DIRECTION.md`** (the laneless/RVO branch) — see §15 for the shared
 obstacle-store ownership split, the lateral-state API requirements folded in, and the merge order.
@@ -76,6 +78,15 @@ microscopic simulation core. Not affiliated with or endorsed by the Eclipse SUMO
 `PackageTags` (`sumo;traffic;microsimulation;ecs;simulation;games`), `PackageReadmeFile`,
 `PackageProjectUrl`, `RepositoryUrl`, package icon, deterministic build,
 `Microsoft.SourceLink.GitHub`, symbol package (`.snupkg`).
+
+**STATUS: release/publish CI landed.** `.github/workflows/publish.yml` triggers on a `v*` tag: it runs the
+offline parity gate, packs `SumoSharp.Core` + `SumoSharp.Ingest` at the **tag's version** (`v0.1.0` → `0.1.0`,
+overriding `Directory.Build.props`), uploads the packages as a build artifact, and pushes the `.nupkg` +
+`.snupkg` to nuget.org (`--skip-duplicate`; push skipped, not failed, when the `NUGET_API_KEY` secret is
+absent, so forks can dry-run the pack). `actions/checkout` uses `fetch-depth: 0` so SourceLink pins the
+commit against the (already-pinned) `RepositoryUrl`. A companion `.github/workflows/ci.yml` runs
+build + `dotnet test` + the `Sim.Bench` determinism-hash check on every push/PR. Both pack targets and the
+version-override were verified locally (`lib/net8.0` + `lib/netstandard2.1` present in the `.nupkg`).
 
 ### License (adoption-critical — read before first publish)
 
