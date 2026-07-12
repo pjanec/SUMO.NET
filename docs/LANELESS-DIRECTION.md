@@ -143,6 +143,51 @@ adapter changes, not the solve.
    hold the same parity anchor (hash `909605E965BFFE59`, goldens byte-identical), so the merged result
    must too — both are additive/gated, so it should hold.
 
+### Reply to SUMOSHARP-API §15 / D15-D16 (A: merge order, B: sanity check)
+
+Read their §15 + D15/D16 — agreed on all of it (ownership split, the three folded flags, the merge
+invariant). Answers to their two asks:
+
+**A. Merge order — AGREED: your obstacle-store redesign lands to `main` first, then my Stage-3
+adapter collapses onto it.** Detail:
+- My **Stage 1–2** RVO (vehicle↔vehicle: `ComputeRvoLateral` + `RvoNeighbor` + `SeparationPush`) does
+  **not** touch the obstacle store at all — it reads the vehicle neighbour query. So Stages 1–2 are
+  **merge-order-independent** and can land whenever.
+- Only my **Stage 3** reads `_obstacles` (one transitional loop in `ComputeRvoLateral`, explicitly
+  marked). It stays on the current `_obstacles` until your SoA store lands (gated/byte-identical, so
+  it blocks nothing); when your store lands, **that one loop retargets** — build `RvoNeighbor` from the
+  SoA columns instead of the record. Confirmed: your store first, my adapter second.
+
+**B. Sanity check — does anything else in the laneless design need a public API shape you haven't
+accounted for?** Mostly confirmations; two genuinely new items:
+
+- **B1 (NEW — cheap to reserve now):** the SoA agent store should carry a **per-agent
+  "cooperative/avoidance-class" bit**. My solve picks the reciprocity `share`: `0.5` for a SUMO vehicle
+  (it runs the same solve, takes the other half) vs `1.0` one-sided for a dumb external obstacle. A
+  navmesh/RVO agent that DOES avoid reciprocally should get `0.5` too — which the solve can only know
+  from a per-agent flag. Reserve one column/bit now (e.g. `avoidanceKind: {StaticBlocker,
+  OneSided, Reciprocal}`); default `OneSided` = today's behaviour.
+- **B2 (NEW — semantic to document):** `Engine.LanelessRvo` currently only takes effect when
+  `LateralResolution > 0` (the RVO path is nested under the `_sublane` gate, to keep phase-1
+  byte-identical). The facade should **document that coupling** (RVO is a no-op unless
+  lateral-resolution is set), and note it may later be promoted to an **independent** continuous-lateral
+  mode (RVO does not conceptually need SUMO's `lateral-resolution`).
+- **B3 (CONFIRM — already covered by your columns):** the adapter iterates **active agents filtered by
+  lane** and reads `{laneHandle, frontPos, length, latPos, width, speed, startTime, endTime}` per
+  agent. All eight are in your §4.3 columns + the dense active list; just confirm the store supports
+  "iterate active agents (on a given lane)" read access. `RvoNeighbor` needs exactly
+  `{frontPos→pos, length, latPos→latOffset, width→halfWidth, speed}` — a direct column read, no new shape.
+- **B4 (CLARIFY — no Core impact):** `ToleranceConfig.PosLat` is **`Sim.Harness` (test-only,
+  `IsPackable=false`)**, not `SumoSharp.Core` — it's not a shipped public API. Only relevant if you
+  later ship `SumoSharp.Testing`.
+- **B5 (CONFIRM):** `DefineVType` must **default** `maxSpeedLat=1.0`, `latAlignment="center"`,
+  `minGapLat=0.6` when omitted (SUMO defaults, resolved in `VTypeDefaults.Resolve`), and these three are
+  **runtime-settable** vType params (your §14.1 open item) — pure behaviour, not net-fixed.
+- **No dependency** on: the vehicle read API (RVO reads internal `VehicleRuntime` via the neighbour
+  query, never the public read columns — your frozen vehicle SoA is untouched); vehicle handles; the
+  spatial hash (Stage-2b internal, no public surface); insertion/spawn. No new `ScenarioConfig` keys
+  beyond `LateralResolution`.
+
 ## What we explicitly do NOT do
 
 Port SUMO's persistent lateral state machine (`mySafeLatDist*` / `updateExpectedSublaneSpeeds` /
