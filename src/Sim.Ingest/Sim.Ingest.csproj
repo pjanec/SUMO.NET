@@ -8,9 +8,12 @@
   -->
 
   <PropertyGroup>
-    <TargetFramework>net8.0</TargetFramework>
+    <!-- net8.0 primary; netstandard2.1 for Unity/Godot reach (SUMOSHARP-API.md §3). Parsers are
+         self-contained and span-clean; compiler-support types are polyfilled for ns2.1. -->
+    <TargetFrameworks>net8.0;netstandard2.1</TargetFrameworks>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
+    <LangVersion>12</LangVersion>
 
     <!-- NuGet: the SUMO net/rou/sumocfg parsers + network model. A dependency of SumoSharp.Core. -->
     <IsPackable>true</IsPackable>
@@ -20,6 +23,11 @@
 
   <ItemGroup>
     <None Include="README.md" Pack="true" PackagePath="/" />
+    <Compile Include="..\Shared\NetstandardPolyfills.cs" Link="NetstandardPolyfills.cs" />
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(TargetFramework)' == 'netstandard2.1'">
+    <PackageReference Include="System.Memory" Version="4.5.5" />
   </ItemGroup>
 
 </Project>

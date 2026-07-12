@@ -34,8 +34,9 @@ is byte-identical where the new paths are unused):
 - the **browser-live WebSocket demo** (§11, Phase 2): `Sim.LiveHost`, verified end-to-end.
 
 Items intentionally left as later refinements (not blockers): the two-frame interpolation hook and a
-snapshot pool (§7), a dense `GetEdge(string)→int` (§9), vehicle-slot recycling (§9), `netstandard2.1`
-multi-target + a Unity/Godot sample (Phase 3), and publishing to nuget.org + release CI.
+snapshot pool (§7), a dense `GetEdge(string)→int` (§9), vehicle-slot recycling (§9), a Unity/Godot sample
+(Phase 3), and publishing to nuget.org + release CI. (**`netstandard2.1` multi-target on `Sim.Core` +
+`Sim.Ingest` has now landed** — see §3.)
 
 **Coordinated with `docs/LANELESS-DIRECTION.md`** (the laneless/RVO branch) — see §15 for the shared
 obstacle-store ownership split, the lateral-state API requirements folded in, and the merge order.
@@ -122,6 +123,24 @@ optional package.
   `Memory<T>` are available on netstandard2.1 (via `System.Memory`), so the non-allocating obstacle
   and read APIs (§4, §5) are **one API** for Unity and net8 alike — net8 just JITs it faster. No
   API bifurcation. Multi-target *after* the API surface stabilizes, so we multi-target a stable API.
+
+**STATUS: landed.** `Sim.Core` and `Sim.Ingest` now `<TargetFrameworks>net8.0;netstandard2.1</TargetFrameworks>`.
+The API surface is one code path across both; the net8-only touch-points turned out to be tiny and are all
+either `#if`-guarded (byte-identical net8 branch) or rewritten to a form valid on both frameworks:
+- `System.Runtime.InteropServices.CollectionsMarshal.AsSpan(_laneSeqPool)` (hot path, `Engine.cs`) — net8
+  keeps the zero-copy span; ns2.1 copies the small downstream slice into a stack buffer (not the parity path).
+- `Array.Clear(array)` (1-arg, net6+) → `Array.Clear(array, 0, Length)` (both; identical).
+- `ArgumentNullException.ThrowIfNull` (net6+) → explicit `throw new ArgumentNullException(nameof(x))` (both).
+- `NetworkRouter.Route`'s `IReadOnlySet<string>` param (net5+) → `ISet<string>` (both; only `.Contains`
+  is called, every caller passes a `HashSet<string>`, so behavior-identical).
+- Compiler-support types the ns2.1 corlib lacks (`IsExternalInit` for `init`/records; the `required`-member
+  trio) are polyfilled in `src/Shared/NetstandardPolyfills.cs`, linked into both projects under
+  `#if !NET8_0_OR_GREATER` so net8 compiles them away entirely.
+- `System.Memory` (`Span`/`Memory` backing) is referenced only on the ns2.1 target.
+Both projects build clean for both TFMs; the net8 parity gate (250 → **253** with the B13 guard test, 1
+skipped, 0 failed) and the determinism anchor `909605E965BFFE59` (single + parallel) are unchanged. A
+`RungB13PackagingTargetsTests` guard fails if the ns2.1 target or the polyfills are ever dropped. **Still to
+do here:** a small Unity/Godot **sample** consuming the ns2.1 package (Phase 3).
 
 ---
 

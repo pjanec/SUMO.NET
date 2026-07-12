@@ -8,7 +8,8 @@ Continuation notes for the **SumoSharp** library/packaging effort. Pairs with
 
 - **Branch:** `claude/sumo-csharp-nuget-strategy-4vlkki` (all work pushed).
 - **Gates (must stay true after every change):**
-  - `dotnet test` → **250 passed, 1 skipped, 0 failed**.
+  - `dotnet test` → **0 failed, 1 skipped**; the pass count grows as new-surface tests are added
+    (**250** at the start of the packaging work → **253** after the B13 multi-target guard test).
   - `Sim.Bench` determinism hash → **`909605E965BFFE59`** (single **and** parallel).
 - **What exists now:** the whole Phase-1 public API + NuGet packaging + a working browser-live demo.
   Every addition is *additive / inert-when-absent*, so it is byte-identical where the new paths are
@@ -40,6 +41,7 @@ so `apt-get update` first). SUMO is not needed for `dotnet test`.
 
 | Commit | What |
 |---|---|
+| *(this session)* | **`netstandard2.1` multi-target** on `Sim.Core` + `Sim.Ingest` (Unity/Godot reach): polyfills (`src/Shared/NetstandardPolyfills.cs`), `System.Memory` on ns2.1, 4 net8-only sites guarded/rewritten, `RungB13` guard test. Gate unchanged (`909605E965BFFE59`; 253/1/0). |
 | `958b5ad` | **Phase 2** browser-live demo (`src/Sim.LiveHost/`) |
 | `e818cc6` | **Phase 0** NuGet packaging (`SumoSharp.Core` + `SumoSharp.Ingest`) |
 | `e3756be` | Removed the transitional **string obstacle API**; handle-only + all callers migrated |
@@ -83,9 +85,8 @@ host game engine's convention), `VTypeHandle`, `AvoidanceClass`, `VehicleLifecyc
 
 ## Remaining work (prioritized, none blocking)
 
-1. **`netstandard2.1` multi-target** on `Sim.Core` + `Sim.Ingest` (Unity/Godot reach). The perf surface
-   (spans) is already netstandard2.1-clean; expect to `#if NET8_0_OR_GREATER`-guard a few APIs. Then a
-   small Unity/Godot sample (Phase 3).
+1. ~~**`netstandard2.1` multi-target** on `Sim.Core` + `Sim.Ingest`~~ — **DONE** (see below / API §3).
+   Still open: a small Unity/Godot **sample** consuming the ns2.1 package (Phase 3).
 2. **Publish CI** to nuget.org (a GitHub Actions workflow: pack + push `.nupkg`/`.snupkg`, gated on a
    tag). Pin `RepositoryUrl`/commit for SourceLink (see gotcha below).
 3. **Async runner refinements (§7):** the two-frame **interpolation hook** (publish last two snapshots +

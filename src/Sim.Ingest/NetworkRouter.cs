@@ -84,7 +84,10 @@ public sealed class NetworkRouter
     // duration (MSDevice_Routing / <rerouter> closingReroute) rather than removing it from the
     // graph -- behaviorally equivalent (a closed/avoided edge can never be the argmin of any
     // relaxation), and simpler to express directly as a skip here.
-    public IReadOnlyList<string>? Route(string fromEdge, string toEdge, IReadOnlySet<string> avoidEdges)
+    // `avoidEdges` is `ISet<string>` (not `IReadOnlySet<string>`) so the signature compiles on
+    // netstandard2.1, which predates IReadOnlySet<T>; only `.Contains` is called, so widening the
+    // parameter is behavior-identical and every caller already passes a HashSet<string>.
+    public IReadOnlyList<string>? Route(string fromEdge, string toEdge, ISet<string> avoidEdges)
     {
         if (IsInternal(fromEdge) || IsInternal(toEdge))
         {

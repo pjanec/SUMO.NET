@@ -5322,8 +5322,8 @@ public sealed partial class Engine : IEngine
     // vehicle-at-junction. Runs single-threaded before the (possibly parallel) plan phase reads it.
     private void BuildFoeApproachIndex()
     {
-        Array.Clear(_foeApproachFirst);
-        Array.Clear(_foeApproachSecond);
+        Array.Clear(_foeApproachFirst, 0, _foeApproachFirst.Length);
+        Array.Clear(_foeApproachSecond, 0, _foeApproachSecond.Length);
         foreach (var v in ActiveVehicles())
         {
             for (var i = 0; i < v.LaneSeqLen; i++)
@@ -5552,8 +5552,25 @@ public sealed partial class Engine : IEngine
             return double.PositiveInfinity;
         }
 
-        var downstream = CollectionsMarshal.AsSpan(_laneSeqPool)
-            .Slice(ego.LaneSeqStart + ego.LaneSeqIndex + 1, downstreamCount);
+        var downstreamStart = ego.LaneSeqStart + ego.LaneSeqIndex + 1;
+#if NET8_0_OR_GREATER
+        // net8.0 (the parity target): zero-copy span over the pool's backing array. Byte-identical
+        // to the frozen behavior -- this branch is exactly the original code.
+        ReadOnlySpan<int> downstream = CollectionsMarshal.AsSpan(_laneSeqPool)
+            .Slice(downstreamStart, downstreamCount);
+#else
+        // netstandard2.1 (Unity/Godot): CollectionsMarshal is unavailable, so copy the small
+        // downstream slice into a stack buffer (heap only for the rare long-route case). Not on the
+        // parity path -- ns2.1 is not golden-checked -- and functionally identical to the span above.
+        Span<int> downstreamBuf = downstreamCount <= 64
+            ? stackalloc int[downstreamCount]
+            : new int[downstreamCount];
+        for (int i = 0; i < downstreamCount; i++)
+        {
+            downstreamBuf[i] = _laneSeqPool[downstreamStart + i];
+        }
+        ReadOnlySpan<int> downstream = downstreamBuf;
+#endif
 
         if (!TryFindCrossJunctionLeader(
                 ego.Kinematics.Speed, ego.VType, ego, ego.LaneHandle, ego.Kinematics.Pos,

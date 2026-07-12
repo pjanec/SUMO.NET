@@ -49,7 +49,7 @@ public sealed class SimulationRunner : IDisposable
     // SetDestination, Reroute, a batched obstacle update, ...).
     public void Post(Action<Engine> action)
     {
-        ArgumentNullException.ThrowIfNull(action);
+        if (action is null) throw new ArgumentNullException(nameof(action));
         lock (_cmdLock)
         {
             _incoming.Add(action);
@@ -61,7 +61,7 @@ public sealed class SimulationRunner : IDisposable
     // engine thread applies it at the next boundary. Do not call while Paused in threaded mode.
     public T Invoke<T>(Func<Engine, T> func)
     {
-        ArgumentNullException.ThrowIfNull(func);
+        if (func is null) throw new ArgumentNullException(nameof(func));
 
         if (!_running || (_thread is not null && Thread.CurrentThread == _thread))
         {
