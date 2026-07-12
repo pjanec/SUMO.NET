@@ -28,11 +28,14 @@ is byte-identical where the new paths are unused):
   (`Post`/`Invoke`), and an immutable double-buffered `SimulationSnapshot` (`Start`/`Stop`/`Pause`/
   `Resume`/`SpeedMultiplier`, or manual `Tick()`);
 - **string obstacle API removed** (D4): the obstacle API is now handle-only (`GetLane` + `ObstacleHandle`);
-  every caller (the B1/B5/B6 tests, `Sim.ExtDemo`) migrated, string→handle caching is the host's concern.
+  every caller (the B1/B5/B6 tests, `Sim.ExtDemo`) migrated, string→handle caching is the host's concern;
+- **NuGet packaging** (§1, Phase 0): `SumoSharp.Core` (+ `SumoSharp.Ingest`) with metadata, README,
+  SourceLink, and symbol packages — `dotnet pack` verified;
+- the **browser-live WebSocket demo** (§11, Phase 2): `Sim.LiveHost`, verified end-to-end.
 
-Phase-1 items intentionally left as later refinements (not blockers): the two-frame interpolation hook
-and a snapshot pool (§7), a dense `GetEdge(string)→int` (§9), vehicle-slot recycling (§9), and the NuGet
-packaging/metadata + `netstandard2.1` multi-target + browser-live demo (Phases 0/2/3).
+Items intentionally left as later refinements (not blockers): the two-frame interpolation hook and a
+snapshot pool (§7), a dense `GetEdge(string)→int` (§9), vehicle-slot recycling (§9), `netstandard2.1`
+multi-target + a Unity/Godot sample (Phase 3), and publishing to nuget.org + release CI.
 
 **Coordinated with `docs/LANELESS-DIRECTION.md`** (the laneless/RVO branch) — see §15 for the shared
 obstacle-store ownership split, the lateral-state API requirements folded in, and the merge order.
@@ -423,6 +426,13 @@ initiated it, so it already holds the correlation).
     around an obstacle *you just dropped* is the demo that sells the library.
   - **New code required:** the **screen→lane projection** (inverse of the x/y derivation — nearest-lane
     point projection) for obstacle/vehicle placement.
+
+**STATUS: landed** (`src/Sim.LiveHost/`). A minimal ASP.NET Core sample: `SimHost` runs the engine via
+`SimulationRunner` (30 Hz) with runtime-spawned routable traffic; `/ws` streams the network geometry once
+then the published snapshot at ~20 fps; the browser (inline canvas renderer) converts a click to world
+coordinates and the server projects it to the nearest lane + pos (`TryProjectToLane`) and injects a
+full-lane obstacle via the runner's dispatcher. Verified end-to-end (network + live frames + a
+click→obstacle round-trip over a real WebSocket). `dotnet run --project src/Sim.LiveHost`, open :5055.
 - **Keep the offline `replay.html`** (FCD → self-contained HTML) for docs and golden inspection.
 - **Later:** a Unity/Godot sample (gated on the netstandard2.1 multi-target, §3).
 
