@@ -344,8 +344,17 @@ between them. Safe before two frames exist (alpha 1.0 → latest) and when stamp
 correctly at 0/360. `InterpolatedVehicle` is a `readonly struct` (no host-render-path allocation). Tested
 by `RungB14InterpolationTests`.
 
-**Snapshot pool:** snapshots are still **allocated per Tick** by default; an opt-in pool is the next
-refinement (see below), left off by default so the immutable-forever `Snapshot` contract is unchanged.
+**Snapshot pool: landed (opt-in).** `EnableSnapshotPool(capacity = 3)` (call before `Start`/first `Tick`)
+rotates a ring of reusable backing-array sets so the big columnar arrays are no longer re-allocated every
+`Tick` — in steady state (stable vehicle count) only a small wrapper object is allocated per frame. The
+per-instance immutability of `SimulationSnapshot` is preserved (each `Tick` still hands out a fresh wrapper;
+only the arrays it *aliases* are pooled). **Tightened contract when on:** a snapshot reference is valid for
+`capacity - 1` further `Tick`s (the runner's own `Snapshot`/`PreviousSnapshot` are always within one Tick,
+so the interpolation hook is unaffected — `capacity >= 2` is enforced), and a pooled snapshot's columnar
+arrays may be **longer than `Count`** (read `[0, Count)`; `TryGetVehicle` and the shipped `Sim.LiveHost`
+consumer already do). **Default stays off**, so the original allocate-per-Tick / immutable-forever contract
+is unchanged for callers who don't opt in. Tested by `RungB15SnapshotPoolTests` (value-parity vs a bare
+engine, array recycling by reference, and interop with the interpolation hook).
 
 ---
 

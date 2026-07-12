@@ -31,6 +31,15 @@ public sealed class SimulationRunner : IDisposable
     private volatile bool _running;
     private volatile bool _paused;
 
+    // Opt-in snapshot pool (SUMOSHARP-API.md §7). Off by default -> Capture allocates a fresh, exact-size,
+    // immutable-forever snapshot each Tick (the original contract). When enabled, a ring of reusable
+    // backing-array sets is rotated so the big columnar arrays are NOT re-allocated every Tick; only a
+    // small wrapper object is. Tightened contract: a pooled snapshot's arrays are recycled after
+    // `capacity - 1` further Ticks, so a retained reference is valid for that many frames (the runner's own
+    // Snapshot/PreviousSnapshot are always within one Tick, so the interpolation hook is unaffected).
+    private SnapshotBuffers[]? _pool;
+    private int _poolCursor;
+
     // >1 runs faster than real time (digital-twin catch-up / training warm-up); <1 slows it down.
     public double SpeedMultiplier { get; set; } = 1.0;
 
@@ -50,6 +59,42 @@ public sealed class SimulationRunner : IDisposable
 
     public bool IsRunning => _running;
     public bool IsPaused => _paused;
+    public bool IsSnapshotPoolEnabled => _pool is not null;
+
+    // Enable the opt-in snapshot pool (SUMOSHARP-API.md §7): reuse `capacity` sets of backing arrays across
+    // Ticks instead of allocating them fresh each frame, cutting the per-frame GC pressure of a live render
+    // loop. `capacity` must be >= 2 (the pool retains at least the current + previous frame for the
+    // interpolation hook); the default 3 leaves a one-frame margin for a host reading slightly behind. Call
+    // before Start()/the first Tick(); a no-op if already enabled. Reminder: with the pool on, a snapshot
+    // reference is only valid for `capacity - 1` further Ticks, and its columnar arrays may be longer than
+    // `Count` (read `[0, Count)` -- the shipped consumers and TryGetVehicle already do).
+    public void EnableSnapshotPool(int capacity = 3)
+    {
+        if (_running)
+        {
+            throw new InvalidOperationException("Enable the snapshot pool before starting the runner.");
+        }
+
+        if (capacity < 2)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(capacity), capacity, "Snapshot-pool capacity must be at least 2 (current + previous frame).");
+        }
+
+        if (_pool is not null)
+        {
+            return;
+        }
+
+        var pool = new SnapshotBuffers[capacity];
+        for (var i = 0; i < capacity; i++)
+        {
+            pool[i] = new SnapshotBuffers();
+        }
+
+        _pool = pool;
+        _poolCursor = 0;
+    }
 
     // Enqueue a fire-and-forget mutation applied at the next Tick boundary (UpdateObstacle, Despawn,
     // SetDestination, Reroute, a batched obstacle update, ...).
@@ -99,7 +144,19 @@ public sealed class SimulationRunner : IDisposable
     {
         DrainCommands();
         _engine.Step();
-        var snap = SimulationSnapshot.Capture(_engine);
+
+        SimulationSnapshot snap;
+        if (_pool is { } pool)
+        {
+            var buf = pool[_poolCursor];
+            _poolCursor = (_poolCursor + 1) % pool.Length;
+            snap = buf.Fill(_engine);
+        }
+        else
+        {
+            snap = SimulationSnapshot.Capture(_engine);
+        }
+
         _previous = _published;
         _published = snap;
     }
@@ -255,4 +312,84 @@ public sealed class SimulationRunner : IDisposable
     }
 
     public void Dispose() => Stop();
+
+    // One reusable set of snapshot backing arrays (SUMOSHARP-API.md §7). Fill() copies the engine's current
+    // read state into these arrays -- growing an array only when the vehicle/event count exceeds its current
+    // capacity -- and returns a fresh, per-instance-immutable SimulationSnapshot that ALIASES them. So the
+    // big columnar arrays survive across Ticks (no per-frame allocation in steady state); only the small
+    // wrapper is allocated. Arrays may be longer than Count; the snapshot's Count/EventCount bound the valid
+    // region. Reused round-robin by SimulationRunner, so the caller must respect the capacity-frame validity
+    // window documented on EnableSnapshotPool.
+    private sealed class SnapshotBuffers
+    {
+        private VehicleHandle[] _handles = Array.Empty<VehicleHandle>();
+        private float[] _posX = Array.Empty<float>();
+        private float[] _posY = Array.Empty<float>();
+        private float[] _posZ = Array.Empty<float>();
+        private float[] _angle = Array.Empty<float>();
+        private float[] _speed = Array.Empty<float>();
+        private double[] _speedExact = Array.Empty<double>();
+        private int[] _laneHandle = Array.Empty<int>();
+        private double[] _pos = Array.Empty<double>();
+        private double[] _posLat = Array.Empty<double>();
+        private string[] _vehicleId = Array.Empty<string>();
+        private string[] _vehicleType = Array.Empty<string>();
+        private string[] _laneId = Array.Empty<string>();
+        private SimEvent[] _events = Array.Empty<SimEvent>();
+
+        public SimulationSnapshot Fill(Engine engine)
+        {
+            var n = engine.VehicleCount;
+            Copy(engine.VehicleHandles, ref _handles, n);
+            Copy(engine.PosX, ref _posX, n);
+            Copy(engine.PosY, ref _posY, n);
+            Copy(engine.PosZ, ref _posZ, n);
+            Copy(engine.Angle, ref _angle, n);
+            Copy(engine.Speed, ref _speed, n);
+            Copy(engine.SpeedExactColumn, ref _speedExact, n);
+            Copy(engine.LaneHandles, ref _laneHandle, n);
+            Copy(engine.Pos, ref _pos, n);
+            Copy(engine.PosLat, ref _posLat, n);
+            Copy(engine.VehicleIds, ref _vehicleId, n);
+            Copy(engine.VehicleTypes, ref _vehicleType, n);
+            Copy(engine.LaneIds, ref _laneId, n);
+
+            var events = engine.Events;
+            Copy(events, ref _events, events.Length);
+
+            return new SimulationSnapshot
+            {
+                Count = n,
+                Time = engine.CurrentTime,
+                StepCount = engine.StepCount,
+                Handles = _handles,
+                PosX = _posX,
+                PosY = _posY,
+                PosZ = _posZ,
+                Angle = _angle,
+                Speed = _speed,
+                SpeedExact = _speedExact,
+                LaneHandle = _laneHandle,
+                Pos = _pos,
+                PosLat = _posLat,
+                VehicleId = _vehicleId,
+                VehicleType = _vehicleType,
+                LaneId = _laneId,
+                Events = _events,
+                EventCount = events.Length,
+            };
+        }
+
+        // Copy `count` elements of `src` into `dst`, allocating a new (capacity) array only when `dst` is too
+        // small. `dst` may end up longer than `count`; the stale tail is never read (Count bounds it).
+        private static void Copy<T>(ReadOnlySpan<T> src, ref T[] dst, int count)
+        {
+            if (dst.Length < count)
+            {
+                dst = new T[count];
+            }
+
+            src.Slice(0, count).CopyTo(dst);
+        }
+    }
 }
