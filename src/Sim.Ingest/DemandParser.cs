@@ -72,7 +72,12 @@ public static class DemandParser
                 ResCoefLinear: ParseNullableDouble(vTypeEl, "resCoef_linear"),
                 ResCoefQuadratic: ParseNullableDouble(vTypeEl, "resCoef_quadratic"),
                 MassFactor: ParseNullableDouble(vTypeEl, "massFactor"),
-                Mass: ParseNullableDouble(vTypeEl, "mass"));
+                Mass: ParseNullableDouble(vTypeEl, "mass"),
+                // Phase 2 (sublane): SUMO's maxSpeedLat / latAlignment vType attributes. Absent
+                // for every phase-1 vType -> resolve to SUMO defaults (1.0 / "center") in
+                // VTypeDefaults.Resolve; inert unless the scenario sets lateral-resolution > 0.
+                MaxSpeedLat: ParseNullableDouble(vTypeEl, "maxSpeedLat"),
+                LatAlignment: vTypeEl.Attribute("latAlignment")?.Value);
 
             vTypes.Add(vType);
             vTypesById[vType.Id] = vType;

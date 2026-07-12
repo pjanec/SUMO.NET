@@ -127,6 +127,13 @@ public sealed partial class Engine : IEngine
     // (all committed scenarios + the bench) takes zero opposite-direction work and stays identical.
     private bool _anyLcOpposite;
 
+    // Phase 2 (sublane, P2.3): SUMO's MSGlobals::gLateralResolution master switch -- true iff the
+    // scenario sets lateral-resolution > 0. The GLOBAL sublane gate (not per-vType): the sublane
+    // lateral driver (ComputeSublaneLateral) runs ONLY when this is true, so every phase-1 scenario
+    // (lateral-resolution 0) takes exactly the pre-existing lane-centred path and stays byte-identical.
+    // Set once per LoadScenario from the immutable config.
+    private bool _sublane;
+
     // Perf (willPass/plan fusion): the disqualifier master-switches. The fusion (PlanMovements reuses
     // the willPass pre-pass Intent instead of recomputing it) is byte-identical ONLY when every
     // prePass/real divergence OTHER than the crossing-yield relax is inert -- see the FusionEligible
@@ -150,7 +157,7 @@ public sealed partial class Engine : IEngine
     // for every non-crossing-yield vehicle; when false the exact two-pass path runs (byte-identical).
     private bool FusionEligible =>
         _actionStepFusionOk && !_anyKraussDawdle && !_anyIdmm && !_anyBluelight && !_anyLcOpposite
-        && _obstacles.Count == 0;
+        && _obstacles.Count == 0 && !_sublane;
 
     // F2 (probabilistic flow): per-<flow probability=> runtime insertion state, index-aligned with
     // _demand.ProbabilisticFlows. `_probFlowRng[i]` is that flow's own seeded Bernoulli stream (one
@@ -867,6 +874,8 @@ public sealed partial class Engine : IEngine
         // re-LoadScenario on the same Engine never inherits the previous demand's answer).
         _anyBluelight = false;
         _anyLcOpposite = false;
+        // Phase 2 (sublane): the global sublane master switch, from the immutable config.
+        _sublane = _config!.LateralResolution > 0.0;
         // Perf (willPass/plan fusion): reset + recompute the disqualifiers for this scenario (same
         // reset discipline as the give-way switch above). CreateRuntime OR's in the per-vType ones.
         _anyKraussDawdle = false;
@@ -2595,7 +2604,12 @@ public sealed partial class Engine : IEngine
             // stays side-effect-free); ComputeLateralEvasion returns 0 for every vehicle with no
             // dodgeable obstacle in range, so this is inert wherever no lateral obstacle is present.
             // ER5 additionally routes an ER3 give-way intent through the same lateral-drift primitive.
-            LatOffset = prePass ? 0.0 : ComputeLateralEvasion(v, lane, neighbors, time, dt),
+            // Phase 2 (P2.3): when the sublane model is active, the SUMO sublane lateral driver
+            // (ComputeSublaneLateral) replaces the external-agent evasion path -- gated on _sublane,
+            // so every phase-1 scenario keeps exactly the ComputeLateralEvasion path below.
+            LatOffset = prePass ? 0.0
+                : _sublane ? ComputeSublaneLateral(v, lane, dt)
+                : ComputeLateralEvasion(v, lane, neighbors, time, dt),
             StopUpdate = stopUpdate,
         };
     }
@@ -5333,6 +5347,46 @@ public sealed partial class Engine : IEngine
     // so the same-lane !FootprintsOverlap leader bypass lets ego pass it.
     private const double OvertakeSpillGap = 0.5;
 
+    // Phase 2 (sublane, P2.3): the single-vehicle lateral driver -- SUMO's MSLCM_SL2015 preferred-
+    // alignment drift. Returns ego's NEW absolute lateral offset (posLat) this step: a bounded drift
+    // toward the lane position its latAlignment prefers, at maxSpeedLat. Ported from MSLCM_SL2015:
+    //   * the alignment target (MSLCM_SL2015.cpp:1891-1902 _wantsChangeSublane): RIGHT ->
+    //     -halfLaneWidth + halfVehWidth, LEFT -> +halfLaneWidth - halfVehWidth, CENTER -> 0, where
+    //   * halfVehWidth uses MSLCM_SL2015::getWidth() == vType.Width + NUMERICAL_EPS
+    //     (MSLCM_SL2015.cpp:3386) -- this is why SUMO settles at 1.4995, not 1.5, on a 4.8 m lane
+    //     with a 1.8 m car ((4.8-1.801)/2 = 1.4995);
+    //   * the per-step truncation to maxSpeedLat (MSLCM_SL2015.cpp:2301 computeSpeedLat
+    //     `latDist = MAX2(MIN2(latDist, maxDist), -maxDist)`, maxDist = maxSpeedLat*dt), applied here
+    //     by DriftToward.
+    // For a LONE vehicle the lane-edge safe clamp (mySafeLatDistRight, checkBlocking:2339) exactly
+    // coincides with this target (the target IS the edge-keep position, so safe-dist there is 0 and
+    // DriftToward never overshoots it) -- so no neighbour gap arithmetic is needed at this rung; the
+    // multi-vehicle safe clamp arrives with the per-sublane neighbour query (P2.2). Reads only ego's
+    // own frozen state, writes nothing (caller stores the result in ego's MoveIntent) -> parallel-safe.
+    // Runs ONLY when _sublane (lateral-resolution > 0); every phase-1 scenario keeps the lane-centred
+    // ComputeLateralEvasion path and is byte-identical.
+    private double ComputeSublaneLateral(VehicleRuntime v, Lane lane, double dt)
+    {
+        var curLat = v.Kinematics.LatOffset;
+        var halfLaneWidth = lane.Width * 0.5;
+        // MSLCM_SL2015::getWidth() = vType width + NUMERICAL_EPS (keeps the vehicle NUMERICAL_EPS
+        // inside the lane edge -- the source of SUMO's 1.4995 vs the naive 1.5).
+        var halfVehWidth = (v.VType.Width + KraussModel.NumericalEps) * 0.5;
+
+        double target = v.VType.LatAlignment switch
+        {
+            "right" => -halfLaneWidth + halfVehWidth,
+            "left" => halfLaneWidth - halfVehWidth,
+            // "center"/"default" and every not-yet-ported alignment (nice/compact/arbitrary/numeric
+            // offset) hold the centreline for now -- P2.3 ports only the fixed right/left/center
+            // alignments a single-vehicle drift exercises; the rest arrive with their own scenarios.
+            _ => 0.0,
+        };
+
+        var maxStep = v.VType.MaxSpeedLat * dt;
+        return DriftToward(curLat, target, maxStep);
+    }
+
     // B6: given a dodgeable (Width > 0) obstacle ahead on ego's lane that ego CANNOT stop before,
     // return the vehicle's new lateral offset this step -- a bounded drift toward a target that
     // clears the obstacle (within ego's lane if it fits, otherwise spilling into a SAFE adjacent
@@ -5640,6 +5694,10 @@ public sealed partial class Engine : IEngine
             v.Kinematics.Pos += _config!.Ballistic
                 ? 0.5 * (oldSpeed + v.Intent.NewSpeed) * dt
                 : v.Intent.NewSpeed * dt;
+            // Phase 2 (P2.1/P2.3): lateral velocity = this step's lateral displacement / dt (computed
+            // from the OLD offset before it is overwritten). 0 for every lane-centred vehicle (Intent
+            // .LatOffset == current == 0), so inert for phase-1; not hashed/compared, so byte-identical.
+            v.Kinematics.LatSpeed = (v.Intent.LatOffset - v.Kinematics.LatOffset) / dt;
             v.Kinematics.LatOffset = v.Intent.LatOffset;
 
             // C6-ii: feed the actuated-TLS induction loops this vehicle's within-step motion along

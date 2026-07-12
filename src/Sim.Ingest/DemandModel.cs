@@ -57,7 +57,14 @@ public sealed record VType(
     double? ResCoefLinear = null,
     double? ResCoefQuadratic = null,
     double? MassFactor = null,
-    double? Mass = null);
+    double? Mass = null,
+    // Phase 2 (sublane, P2.3): SUMO's sublane vType attributes
+    // (sumo/src/utils/vehicle/SUMOVTypeParameter.cpp:333-335 defaults). MaxSpeedLat is the max
+    // lateral speed (m/s, default 1.0); LatAlignment is the preferred lateral alignment
+    // ("center" default | "right" | "left" | "compact" | "nice" | "arbitrary" | a numeric offset).
+    // Both null (absent) resolve to their SUMO defaults; inert unless lateral-resolution > 0.
+    double? MaxSpeedLat = null,
+    string? LatAlignment = null);
 
 public sealed record Route(
     string Id,
