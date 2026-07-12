@@ -11,7 +11,8 @@ cannot move any scenario out of its committed `tolerance.json`. The parity suite
 correctness anchor throughout (`CLAUDE.md` rule 3).
 
 Status: **design agreed, implementation pending** (developed on a parallel branch). Nothing here
-is shipped yet.
+is shipped yet. **Coordinated with `docs/LANELESS-DIRECTION.md`** (the laneless/RVO branch) — see §15
+for the shared obstacle-store ownership split and the lateral-state API requirements folded in.
 
 ---
 
@@ -174,17 +175,26 @@ ReadOnlySpan<float>  PosZ  { get; }             // present from day one (see §6
 ReadOnlySpan<float>  Angle { get; }             // heading / yaw
 ReadOnlySpan<float>  Speed { get; }             // render-facing
 ReadOnlySpan<int>    LaneHandle { get; }
-// optional: SlopeDeg/Pitch (derived from the z-gradient) for tilting vehicles on ramps
+ReadOnlySpan<double> PosLat { get; }            // lane-relative lateral offset; parity-exact (see note)
+// optional: LatSpeed (double), SlopeDeg/Pitch (from the z-gradient) for tilting vehicles on ramps
 
 bool TryGetVehicle(VehicleHandle h, out VehicleState state);   // random access; readonly struct, no alloc
 ```
+
+- **`PosLat` is first-class (coordinated with the laneless branch).** The sublane/laneless axis makes
+  lateral state load-bearing — that branch already added `VehicleExportSnapshot.PosLat`,
+  `TrajectoryPoint.PosLat`, and `Kinematics.LatSpeed`. Lateral position *is* visible in the derived
+  `PosX/PosY`, but hosts that consume **lane-relative** state (and the sublane goldens) need `posLat`
+  **directly**, so it is an explicit **`double`, parity-exact** column (`LatSpeed` likewise available).
+  See §15.
 
 - **SoA is primary** (matches the host engine; GPU-vertex-buffer / DOTS-friendly). A client that
   wants array-of-structures converts on its side.
 - **`ReadOnlySpan<T>`** ⇒ one API on Unity (netstandard2.1) and net8.
 - **Precision split (agreed):** derived **render** columns (`PosX/Y/Z`, `Angle`) are **`float`**
   (half the bandwidth, wider SIMD, GPU-native). Keep **`double`** accessors for the parity-exact
-  lane-relative values (`pos`, `speed`) for training / digital-twin consumers that re-ingest state.
+  lane-relative values (`pos`, `speed`, **`posLat`, `latSpeed`**) for training / digital-twin consumers
+  and the sublane goldens that re-ingest state.
   *Float for "where to draw it," double available for "what the sim actually computed."*
 - **Validity contract:** spans are valid **until the next `Step()`**. In async mode the runner
   double-buffers these column arrays (§7).
@@ -280,6 +290,8 @@ predefined scenarios). All of this builds on machinery that already exists.
 
 ```csharp
 VTypeHandle DefineVType(in VTypeParams p);                 // immutable once defined (mirrors ResolvedVType)
+                                                           // VTypeParams MUST include the sublane params:
+                                                           //   maxSpeedLat, latAlignment, minGapLat  (see §15)
 
 // Explicit route OR origin→destination (routed via the existing NetworkRouter)
 VehicleHandle SpawnVehicle(VTypeHandle t, ReadOnlySpan<int> routeEdges,
@@ -300,6 +312,10 @@ void Despawn(VehicleHandle v);                             // structural → com
   loads geometry with **zero demand**, so a host starts empty and spawns everything itself. This is
   the "not just predefined scenarios" entry point. (Stream/string overloads also let a game embed
   scenarios from asset bundles rather than loose files.)
+- **Surface the lateral engine modes through the facade/config** (coordinated with the laneless
+  branch, §15): `ScenarioConfig.LateralResolution` (the sublane master switch) and `Engine.LanelessRvo`
+  (the continuous velocity-obstacle avoidance mode). Both are opt-in and byte-identical when off, so
+  they belong on the public config surface without perturbing the default lane-based path.
 
 ### Insertion semantics — SUMO-parity queued insertion (decided)
 
@@ -370,6 +386,8 @@ Each of the three target users falls out of the *same* core + wrapper:
 | D12 | **SUMO-parity queued insertion** (`Pending`→`Departed`/`InsertionFailed`) | Matches SUMO + existing flow/demand behavior; parity-consistent |
 | D13 | **Drained event buffer**, not C# events | Zero-alloc, thread-clean, rides the snapshot double-buffer |
 | D14 | Primary demo = **browser-live WebSocket**, reusing the `Sim.Viz` renderer | Zero-install, multi-platform, interactive obstacle injection |
+| D15 | **This (NuGet) session owns the obstacle-store redesign** (§4.3–4.4); the laneless/RVO layer consumes it via the neutral `RvoNeighbor` value abstraction | Avoid building the store twice; both branches independently converged on the same handle-based SoA |
+| D16 | **Expose lateral state + sublane params** — `PosLat`/`LatSpeed` read columns, `maxSpeedLat`/`latAlignment`/`minGapLat` in `VTypeParams`, `LateralResolution`/`LanelessRvo` on the config/facade | The laneless branch made lateral state first-class; the public API must carry it or runtime-spawned vehicles can't do lateral behavior |
 
 ---
 
@@ -393,7 +411,49 @@ screen→lane projection and the WebSocket host reusing the `Sim.Viz` renderer.
 
 ## 14. Open items (not yet decided)
 
-- Exact `VTypeParams` surface (which SUMO vType attributes are runtime-settable vs net-fixed).
+- Exact `VTypeParams` surface (which SUMO vType attributes are runtime-settable vs net-fixed) —
+  **must include the sublane params `maxSpeedLat`/`latAlignment`/`minGapLat`** (§15, resolved).
 - Whether `SumoSharp.Runtime` (async) is a separate package or folded into Core behind a namespace.
 - Multi-writer command-queue policy if a host genuinely needs concurrent producers (per-tick sort key?).
 - `SumoSharp.Tools` Linux delivery: system-`sumo` detection vs a pinned Docker image (or both).
+
+---
+
+## 15. Coordination with `LANELESS-DIRECTION.md` (the laneless/RVO branch)
+
+Cross-checked against `docs/LANELESS-DIRECTION.md` on branch
+`claude/sumo-phase-2-planning-p3w7kh`. Both branches fork from the same `main` and are design-level,
+so **all overlaps are future** (this doc's Phase 1 vs that branch's staged RVO plan). The headline is
+**strong alignment, not conflict** — and the shared subsystem has a clean owner.
+
+### Shared conclusion (independently reached)
+Both sessions concluded the string-keyed `ExternalObstacle` record-dictionary must be replaced by a
+**handle-based struct-of-arrays store** (this doc §4.2–4.4 / D5). That branch's Stage 3 wants exactly
+this as its "scalable int-indexed footprint-agent store." Its **lateral columns (`latPos`, `width`,
+`latSpeed`)** — already in the §4.4 column list — are **load-bearing for the RVO/ORCA solve; keep them.**
+
+### Ownership split (so the store is built once) — D15
+- **This (NuGet) session owns the obstacle-store redesign** (§4.3–4.4, Phase 1).
+- **The laneless/RVO layer consumes it** through a neutral value-typed neighbour abstraction
+  (`RvoNeighbor`: pos/length/latOffset/halfWidth/speed — no strings, no dictionary), never touching the
+  store directly. Until the SoA store lands, that branch reads the *current* `_obstacles` via a thin
+  transitional adapter in `ComputeRvoLateral`; when the store lands, **only that adapter changes**, not
+  the RVO solve. So neither side blocks the other, and the store is implemented exactly once.
+
+### Incompatibilities this branch must honor (folded into this doc) — D16
+1. **Read API (§5) exposes `PosLat`** (double, parity-exact) — added. `LatSpeed` likewise available.
+   Lateral is visible via derived `PosX/PosY`, but lane-relative consumers and the sublane goldens
+   need `posLat` directly. (That branch already added `VehicleExportSnapshot.PosLat`,
+   `TrajectoryPoint.PosLat`, `Kinematics.LatSpeed`.)
+2. **`VTypeParams`/`DefineVType` (§9) include the sublane params** `maxSpeedLat`, `latAlignment`,
+   `minGapLat` — added. Without them, runtime-spawned vehicles cannot do sublane/laneless lateral behavior.
+3. **Lateral engine modes surfaced on the config/facade (§9):** `ScenarioConfig.LateralResolution`
+   (sublane master switch) and `Engine.LanelessRvo` — added. Opt-in, byte-identical when off.
+
+### Merge coordination
+Both branches make **additive** edits to 8 shared files: `Engine.cs`, `VehicleExportSnapshot.cs`,
+`DemandModel.cs`, `DemandParser.cs`, `VTypeDefaults.cs`, `ScenarioConfig.cs`, `TrajectoryPoint.cs`,
+`ToleranceConfig.cs`. Additions sit in distinct regions; **whoever merges second reconciles the
+additive hunks — coordinate merge order.** Both sides hold the **same parity anchor** (determinism
+hash `909605E965BFFE59`, goldens byte-identical); every change on both branches is additive/gated, so
+the merged result must reproduce that anchor. That invariant is the shared acceptance gate for the merge.
