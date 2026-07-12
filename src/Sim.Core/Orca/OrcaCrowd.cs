@@ -39,6 +39,21 @@ public sealed class OrcaCrowd : ICrowdFootprintSource
     // alone crowd is byte-identical to the pre-Q2 behaviour).
     private bool[] _active;
 
+    // Q3 uniform spatial hash (opt-in via UseSpatialHash; default off -> brute-force, byte-identical).
+    // Rebuilt once per Step from the frozen positions: agents are bucketed by their cell (cell size ==
+    // NeighbourDist, so an agent's whole neighbourhood lies in its own cell + the 8 around it). Each
+    // per-agent query gathers those 3x3 cells' members, SORTS them ascending by index, then runs the
+    // IDENTICAL gather the brute-force path runs -- so the neighbour set AND order (hence every LP, hence
+    // every trajectory) are bit-identical to brute-force; the grid is a pure pre-filter that only skips
+    // out-of-range agents cheaply. Pooled per-bucket arrays are reused across steps (no per-step alloc
+    // once warm). Agent-agent only; the few external discs / obstacles stay brute-force.
+    private readonly Dictionary<long, int> _cellToBucket = new();
+    private int[][] _bucketAgents = Array.Empty<int[]>();
+    private int[] _bucketFill = Array.Empty<int>();
+    private int _bucketCount;
+    private double _cellSize;
+    private int[] _candidateScratch = Array.Empty<int>();
+
     // Static obstacles (walls): a flat array of vertices, each closed polyline appended by
     // AddObstacle. Empty by default, so a stand-alone crowd (no AddObstacle call) is byte-identical
     // to the pre-obstacle behaviour -- obstacles span is empty, numObstLines == 0, nothing changes.
@@ -85,6 +100,12 @@ public sealed class OrcaCrowd : ICrowdFootprintSource
 
     // Distance to goal at which RemoveOnArrival parks an agent. Only consulted when RemoveOnArrival.
     public double ArrivalRadius { get; set; } = 0.1;
+
+    // Q3: use the uniform spatial hash for neighbour queries instead of the O(n^2) brute-force scan.
+    // Default false (brute-force -> byte-identical). When true, results are bit-identical (the grid is a
+    // pure pre-filter, candidates sorted to the same order); the win is O(n + neighbours) per agent
+    // instead of O(n), which matters for large, spatially-spread crowds.
+    public bool UseSpatialHash { get; set; }
 
     // Symmetry-breaking magnitude (m/s) added to each agent's preferred velocity. PURE ORCA
     // deadlocks on measure-zero PERFECTLY-symmetric inputs (e.g. N agents antipodal on a circle:
@@ -220,6 +241,13 @@ public sealed class OrcaCrowd : ICrowdFootprintSource
             }
         }
 
+        // Rebuild the spatial hash from the frozen (post-removal) positions before planning, so every
+        // per-agent query this step reads a consistent index. Inert unless UseSpatialHash.
+        if (UseSpatialHash)
+        {
+            RebuildGrid();
+        }
+
         // PLAN: every new velocity is a pure function of the frozen start-of-step state.
         for (var i = 0; i < _count; i++)
         {
@@ -309,68 +337,20 @@ public sealed class OrcaCrowd : ICrowdFootprintSource
         }
 
         var near = _neighbourScratch.AsSpan(0, cap);
-        var k = 0;
         var rangeSq = NeighbourDist * NeighbourDist;
         var maxN = MaxNeighbours;
-        if (maxN <= 0)
+
+        // Gather agent neighbours -- brute-force over all agents, or (opt-in) only the spatial-hash
+        // candidates from the 3x3 cell neighbourhood, SORTED ascending so the result is bit-identical.
+        int k;
+        if (UseSpatialHash)
         {
-            // Unlimited (default): every in-range, active agent constrains ego, in index order.
-            // Byte-identical to pre-Q2 -- the _active guard is a no-op unless RemoveOnArrival parked
-            // someone, which never happens under the default.
-            for (var j = 0; j < _count; j++)
-            {
-                if (j == i || !_active[j])
-                {
-                    continue;
-                }
-
-                if ((_position[j] - _position[i]).AbsSq > rangeSq)
-                {
-                    continue;
-                }
-
-                near[k++] = new OrcaSolver.Agent(_position[j], _velocity[j], _radius[j]);   // reciprocal 0.5
-            }
+            var candidates = GridCandidates(i);
+            k = GatherAgentNeighbours(i, near, maxN, rangeSq, candidates, useAll: false);
         }
         else
         {
-            // Nearest-k (RVO2's insertAgentNeighbor): keep the maxN closest agents, sorted nearest-
-            // first by squared distance (ties resolved by ascending index via the stable insertion,
-            // which is what deterministically desymmetrises the antipodal jam).
-            for (var j = 0; j < _count; j++)
-            {
-                if (j == i || !_active[j])
-                {
-                    continue;
-                }
-
-                var dsq = (_position[j] - _position[i]).AbsSq;
-                if (dsq > rangeSq)
-                {
-                    continue;
-                }
-
-                if (k == maxN && dsq >= _neighbourDistSq[k - 1])
-                {
-                    continue;   // full and this one is no closer than the current farthest kept
-                }
-
-                // Insertion point: slide entries strictly farther than dsq one slot right.
-                var pos = k < maxN ? k : k - 1;   // when full, overwrite the farthest slot
-                while (pos > 0 && _neighbourDistSq[pos - 1] > dsq)
-                {
-                    near[pos] = near[pos - 1];
-                    _neighbourDistSq[pos] = _neighbourDistSq[pos - 1];
-                    pos--;
-                }
-
-                near[pos] = new OrcaSolver.Agent(_position[j], _velocity[j], _radius[j]);   // reciprocal 0.5
-                _neighbourDistSq[pos] = dsq;
-                if (k < maxN)
-                {
-                    k++;
-                }
-            }
+            k = GatherAgentNeighbours(i, near, maxN, rangeSq, default, useAll: true);
         }
 
         // Cross-regime discs (vehicles): avoided ONE-SIDED (responsibility 1.0) -- the crowd yields
@@ -479,6 +459,147 @@ public sealed class OrcaCrowd : ICrowdFootprintSource
 
         return n;
     }
+
+    // The single agent-neighbour gather used by BOTH the brute-force and spatial-hash paths (so they
+    // are bit-identical by construction). Iterates either every agent (useAll) or the caller's
+    // candidate indices (already sorted ascending), applying the exact same self/active/range filter
+    // and the exact same unlimited-append or nearest-k bounded insertion. Returns the count written.
+    private int GatherAgentNeighbours(
+        int i, Span<OrcaSolver.Agent> near, int maxN, double rangeSq, ReadOnlySpan<int> candidates, bool useAll)
+    {
+        var k = 0;
+        var m = useAll ? _count : candidates.Length;
+        for (var idx = 0; idx < m; idx++)
+        {
+            var j = useAll ? idx : candidates[idx];
+            if (j == i || !_active[j])
+            {
+                continue;
+            }
+
+            var dsq = (_position[j] - _position[i]).AbsSq;
+            if (dsq > rangeSq)
+            {
+                continue;
+            }
+
+            if (maxN <= 0)
+            {
+                near[k++] = new OrcaSolver.Agent(_position[j], _velocity[j], _radius[j]);   // reciprocal 0.5
+                continue;
+            }
+
+            // Nearest-k (RVO2's insertAgentNeighbor): keep the maxN closest, sorted nearest-first.
+            if (k == maxN && dsq >= _neighbourDistSq[k - 1])
+            {
+                continue;   // full and no closer than the current farthest kept
+            }
+
+            var pos = k < maxN ? k : k - 1;   // when full, overwrite the farthest slot
+            while (pos > 0 && _neighbourDistSq[pos - 1] > dsq)
+            {
+                near[pos] = near[pos - 1];
+                _neighbourDistSq[pos] = _neighbourDistSq[pos - 1];
+                pos--;
+            }
+
+            near[pos] = new OrcaSolver.Agent(_position[j], _velocity[j], _radius[j]);   // reciprocal 0.5
+            _neighbourDistSq[pos] = dsq;
+            if (k < maxN)
+            {
+                k++;
+            }
+        }
+
+        return k;
+    }
+
+    // Rebuild the uniform spatial hash from the frozen (post-removal) positions. Cell size ==
+    // NeighbourDist so an agent's whole in-range neighbourhood is within its cell + the 8 around it.
+    // Pooled per-bucket arrays are cleared (fill reset) and reused; only growth allocates.
+    private void RebuildGrid()
+    {
+        _cellSize = NeighbourDist;
+        _cellToBucket.Clear();
+        _bucketCount = 0;
+        for (var i = 0; i < _count; i++)
+        {
+            if (!_active[i])
+            {
+                continue;
+            }
+
+            var key = CellKey(_position[i]);
+            if (!_cellToBucket.TryGetValue(key, out var bi))
+            {
+                bi = _bucketCount++;
+                EnsureBucket(bi);
+                _bucketFill[bi] = 0;
+                _cellToBucket[key] = bi;
+            }
+
+            var arr = _bucketAgents[bi];
+            var f = _bucketFill[bi];
+            if (f == arr.Length)
+            {
+                Array.Resize(ref arr, arr.Length * 2);
+                _bucketAgents[bi] = arr;
+            }
+
+            arr[f] = i;
+            _bucketFill[bi] = f + 1;
+        }
+    }
+
+    // Candidate agent indices for ego `i`: every agent in the 3x3 cell block around ego's cell, SORTED
+    // ascending so the downstream gather matches brute-force order exactly. Reuses _candidateScratch.
+    private ReadOnlySpan<int> GridCandidates(int i)
+    {
+        if (_candidateScratch.Length < _count)
+        {
+            Array.Resize(ref _candidateScratch, _count);
+        }
+
+        var cx = FloorDiv(_position[i].X, _cellSize);
+        var cy = FloorDiv(_position[i].Y, _cellSize);
+        var n = 0;
+        for (var dx = -1; dx <= 1; dx++)
+        {
+            for (var dy = -1; dy <= 1; dy++)
+            {
+                if (_cellToBucket.TryGetValue(PackCell(cx + dx, cy + dy), out var bi))
+                {
+                    var fill = _bucketFill[bi];
+                    var arr = _bucketAgents[bi];
+                    for (var t = 0; t < fill; t++)
+                    {
+                        _candidateScratch[n++] = arr[t];
+                    }
+                }
+            }
+        }
+
+        Array.Sort(_candidateScratch, 0, n);
+        return _candidateScratch.AsSpan(0, n);
+    }
+
+    private void EnsureBucket(int bi)
+    {
+        if (_bucketAgents.Length <= bi)
+        {
+            var newLen = Math.Max(bi + 1, Math.Max(8, _bucketAgents.Length * 2));
+            Array.Resize(ref _bucketAgents, newLen);
+            Array.Resize(ref _bucketFill, newLen);
+        }
+
+        _bucketAgents[bi] ??= new int[8];
+    }
+
+    private int FloorDiv(double v, double cell) => (int)Math.Floor(v / cell);
+
+    private static long PackCell(int cx, int cy) => ((long)cx << 32) | (uint)cy;
+
+    private long CellKey(Vec2 p) => PackCell(FloorDiv(p.X, _cellSize), FloorDiv(p.Y, _cellSize));
 
     private void Grow(int newCapacity)
     {
