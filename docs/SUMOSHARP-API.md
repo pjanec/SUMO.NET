@@ -21,7 +21,10 @@ paths are unused):
 - **runtime demand** (§9): `LoadNetwork`, `DefineVType`/`VTypeParams`/`VTypeHandle`, `SpawnVehicle`
   (edge-list and from→to overloads) with SUMO-parity **queued insertion**, `GetLifecycle`, `Despawn`,
   `SetDestination`, `Reroute` — all over mutable vType/route registries seeded identically from the
-  loaded demand.
+  loaded demand;
+- **geometry-3D** (§6): lane-shape `z` ingestion (`Lane.ShapeZ`) + the `PosZ` read column via
+  `LaneGeometry.ElevationAtOffset` (0 on 2-D nets);
+- the **lifecycle event buffer** (§10): `Engine.Events` (`Departed`/`Arrived`), diffed each `Step()`.
 
 **Coordinated with `docs/LANELESS-DIRECTION.md`** (the laneless/RVO branch) — see §15 for the shared
 obstacle-store ownership split, the lateral-state API requirements folded in, and the merge order.
@@ -379,6 +382,13 @@ ReadOnlySpan<SimEvent> Events { get; }   // { VehicleHandle handle, SimEventKind
 ```
 
 Zero-alloc, thread-clean (rides the same double-buffer as the read columns).
+
+**STATUS: landed** (`src/Sim.Core/SimEvent.cs`; `Engine.Events`). Emitted by diffing each vehicle's
+lifecycle every `Step()` (in `PublishReadState`, so `Run()` never pays for it): **Departed**
+(Pending→Active) and **Arrived** (route completion, and despawn). `InsertionFailed`/`Teleported` are
+defined in `SimEventKind` for API stability but not emitted yet (the engine queues indefinitely and
+teleport is off in phase 1). Despawn surfaces as `Arrived` with a stale-generation handle (the host
+initiated it, so it already holds the correlation).
 
 ---
 

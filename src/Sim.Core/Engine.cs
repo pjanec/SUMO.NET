@@ -971,6 +971,10 @@ public sealed partial class Engine : IEngine
         // W1: a freshly (re)loaded scenario is a fresh timeline -- the next Run/WarmUp resets the
         // state machines and starts the clock at Begin.
         _elapsedSteps = 0;
+        // §10: fresh timeline -> no pending lifecycle events, and the diff baseline is cleared so the new
+        // scenario's vehicles emit their first Departed/Arrived transitions correctly.
+        _eventCount = 0;
+        Array.Clear(_prevLifecycle, 0, _prevLifecycle.Length);
         // Rung ER3: recompute the give-way master switch for this scenario (reset first so a
         // re-LoadScenario on the same Engine never inherits the previous demand's answer).
         _anyBluelight = false;
@@ -1139,6 +1143,12 @@ public sealed partial class Engine : IEngine
     // lands it is bumped per-slot so a handle held across a despawn goes stale (TryGetVehicle rejects it).
     private ushort[] _vehicleGeneration = Array.Empty<ushort>();
 
+    // SUMOSHARP-API.md §10: the per-Step lifecycle event buffer + the previous-frame lifecycle per vehicle
+    // it is diffed against. Populated only in PublishReadState (Step-only), so Run() stays zero-overhead.
+    private SimEvent[] _events = Array.Empty<SimEvent>();
+    private int _eventCount;
+    private byte[] _prevLifecycle = Array.Empty<byte>();
+
     // Advance one simulation step (or `steps`) WITHOUT accumulating a TrajectorySet, then publish the read
     // snapshot -- the host loop primitive: `while (running) { engine.Step(); render(engine); }`. Reuses the
     // exact same per-step driver as Run/WarmUp (Advance), so the simulation is identical; the only addition
@@ -1171,6 +1181,10 @@ public sealed partial class Engine : IEngine
     public ReadOnlySpan<int> LaneHandles => _readBuffer.LaneHandle.AsSpan(0, _readBuffer.Count);
     public ReadOnlySpan<double> Pos => _readBuffer.Pos.AsSpan(0, _readBuffer.Count);
     public ReadOnlySpan<double> PosLat => _readBuffer.PosLat.AsSpan(0, _readBuffer.Count);
+
+    // Lifecycle events (Departed / Arrived / …) that occurred during the most recent Step(), valid until
+    // the next Step(). Drained by the host each frame; empty until the first Step().
+    public ReadOnlySpan<SimEvent> Events => _events.AsSpan(0, _eventCount);
 
     // Random access by handle (array-of-structures view). Inert-when-absent: false on a stale generation
     // or a vehicle not active in the current snapshot.
@@ -1215,6 +1229,59 @@ public sealed partial class Engine : IEngine
             _readBuffer.Add(handle, v.EntityIndex, v.Def.Id, v.Def.TypeId,
                 v.LaneHandle, v.LaneId, v.Kinematics.Pos, v.Kinematics.Speed, v.Kinematics.LatOffset,
                 (float)x, (float)y, (float)z, (float)angle);
+        }
+
+        DetectLifecycleEvents();
+    }
+
+    // §10: diff each vehicle's lifecycle against the previous published frame and record Departed
+    // (Pending -> Active) / Arrived (-> Arrived) events. Iterates ALL vehicles (not just active) so an
+    // arrival -- which drops the vehicle from ActiveVehicles -- is still caught. Called only from
+    // PublishReadState (Step path), so Run() never pays for it.
+    private void DetectLifecycleEvents()
+    {
+        EnsurePrevLifecycleCapacity(_vehicles.Count);
+        _eventCount = 0;
+
+        for (var idx = 0; idx < _vehicles.Count; idx++)
+        {
+            var v = _vehicles[idx];
+            // Encoded as VehicleLifecycle: Pending=1, Active=2, Arrived=3.
+            var cur = (byte)(v.Arrived ? 3 : v.Inserted ? 2 : 1);
+            if (cur == _prevLifecycle[idx])
+            {
+                continue;
+            }
+
+            if (cur == 2)
+            {
+                RecordEvent(idx, SimEventKind.Departed);
+            }
+            else if (cur == 3)
+            {
+                RecordEvent(idx, SimEventKind.Arrived);
+            }
+
+            _prevLifecycle[idx] = cur;
+        }
+    }
+
+    private void RecordEvent(int entityIndex, SimEventKind kind)
+    {
+        if (_eventCount >= _events.Length)
+        {
+            Array.Resize(ref _events, _events.Length == 0 ? 8 : _events.Length * 2);
+        }
+
+        _events[_eventCount++] = new SimEvent(
+            new VehicleHandle((uint)entityIndex, _vehicleGeneration[entityIndex]), kind);
+    }
+
+    private void EnsurePrevLifecycleCapacity(int needed)
+    {
+        if (_prevLifecycle.Length < needed)
+        {
+            Array.Resize(ref _prevLifecycle, Math.Max(needed, _prevLifecycle.Length == 0 ? 16 : _prevLifecycle.Length * 2));
         }
     }
 
