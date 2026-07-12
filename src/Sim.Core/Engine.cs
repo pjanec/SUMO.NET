@@ -2522,6 +2522,11 @@ public sealed partial class Engine : IEngine
         // no-op Min term, leaving every existing (obstacle-free) parity scenario untouched.
         vPos = Math.Min(vPos, ObstacleConstraint(v, time, laneVehicleMaxSpeed));
 
+        // Cross-regime bridge (Direction B longitudinal safety): brake for a crowd agent ego is still
+        // laterally overlapping -- the "stop for a pedestrian you can't swerve clear of" net. +Infinity
+        // (inert) unless a coupling has attached a CrowdSource, so byte-identical for every golden.
+        vPos = Math.Min(vPos, CrowdLongitudinalConstraint(v, time, laneVehicleMaxSpeed));
+
         // MSCFModel.cpp:191 finalizeSpeed: `vStop = MIN2(vPos, veh->processNextStop(vPos))`.
         // ProcessNextStop reads only the front stop's START-OF-STEP snapshot (Reached/
         // RemainingDuration) and returns the transition to apply at Execute -- never mutates.
@@ -5347,6 +5352,85 @@ public sealed partial class Engine : IEngine
             gap: gap,
             predSpeed: nearest.Speed,
             predMaxDecel: nearest.Speed != 0.0 ? nearest.MaxDecel : v.VType.Decel,
+            laneVehicleMaxSpeed: laneVehicleMaxSpeed,
+            dt: _config!.StepLength,
+            time: time,
+            accControlMode: ref v.AccControlMode,
+            accLastUpdateTime: ref v.AccLastUpdateTime,
+            caccControlMode: ref v.CaccControlMode,
+            egoAcceleration: v.Acceleration,
+            hasPred: true,
+            predIsCacc: false,
+            levelOfService: v.LevelOfService,
+            ballistic: _config!.Ballistic);
+    }
+
+    // Cross-regime bridge (Direction B, LONGITUDINAL safety net): brake for a crowd agent directly
+    // ahead in ego's path -- the "car stops for a pedestrian it hasn't swerved clear of" behaviour that
+    // makes the bridge collision-safe even when a lateral swerve alone cannot clear in time (a fast or
+    // still-accelerating vehicle meeting a pedestrian). Exactly mirrors ObstacleConstraint: a crowd
+    // agent is a virtual stopped-ish leader (Krauss car-following) ONLY while ego's lateral footprint
+    // still overlaps it; as ego swerves aside the overlap ends and this releases, so ego proceeds past
+    // (never a permanent block -- the swerve is still the primary manoeuvre, this only covers the gap).
+    // Gated on CrowdSource != null -> +Infinity (inert) for every scenario without a coupling attached,
+    // so byte-identical (no committed golden sets CrowdSource). Uses the neutral world-disc seam +
+    // LaneProjection, NOT the string ExternalObstacle store.
+    private double CrowdLongitudinalConstraint(VehicleRuntime v, double time, double laneVehicleMaxSpeed)
+    {
+        if (CrowdSource is null)
+        {
+            return double.PositiveInfinity;
+        }
+
+        var lane = _network!.LanesByHandle[v.LaneHandle];
+        var egoHalf = v.VType.Width * 0.5;
+        var (egoX, egoY, _) = LaneGeometry.PositionAtOffset(lane.Shape, v.Kinematics.Pos, v.Kinematics.LatOffset);
+        var radius = v.Kinematics.Speed * 3.0 + v.VType.MinGap + 2.0 * v.VType.Length + 5.0;
+
+        Span<Sim.Core.Bridge.WorldDisc> discs = stackalloc Sim.Core.Bridge.WorldDisc[16];
+        var got = CrowdSource.QueryNear(egoX, egoY, radius, discs);
+
+        var nearestBack = double.PositiveInfinity;
+        var nearestSpeed = 0.0;
+        var found = false;
+        for (var d = 0; d < got; d++)
+        {
+            var disc = discs[d];
+            var (offset, latOff, _) = LaneProjection.Project(lane.Shape, disc.X, disc.Y);
+            var back = offset - disc.Radius;                 // near (longitudinal) edge of the agent
+            if (back < v.Kinematics.Pos)
+            {
+                continue;                                    // not ahead of ego
+            }
+
+            // Lateral overlap with ego's CURRENT footprint. Releases as ego swerves clear (|Δlat| grows
+            // past the half-widths), exactly like ObstacleOverlapsLaterally for a dodgeable obstacle.
+            if (Math.Abs(latOff - v.Kinematics.LatOffset) >= egoHalf + disc.Radius)
+            {
+                continue;
+            }
+
+            if (back < nearestBack)
+            {
+                nearestBack = back;
+                var (lon, _) = LaneFrameVelocity(lane, offset, disc.Vx, disc.Vy);
+                nearestSpeed = Math.Max(0.0, lon);           // approaching agent -> treat as stopped (conservative)
+                found = true;
+            }
+        }
+
+        if (!found)
+        {
+            return double.PositiveInfinity;
+        }
+
+        var gap = nearestBack - v.VType.MinGap - v.Kinematics.Pos;
+        return FollowSpeedFor(
+            v.VType,
+            egoSpeed: v.Kinematics.Speed,
+            gap: gap,
+            predSpeed: nearestSpeed,
+            predMaxDecel: v.VType.Decel,
             laneVehicleMaxSpeed: laneVehicleMaxSpeed,
             dt: _config!.StepLength,
             time: time,

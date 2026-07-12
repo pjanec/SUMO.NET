@@ -173,11 +173,28 @@ lane-following regime should emerge as RVO reducing to car-following when latera
      dodges toward where a perpendicular crosser is heading). Proven end-to-end through the real
      Engine: a vehicle swerves ~1.9 m around a person standing in the lane, never overlaps, and drives
      on (the person is simultaneously nudged by the passing car — Direction A live in the same run).
-   - **Both sides yield fully** (a conservative mutual double-yield) — always collision-*safe*, though
-     NOT a continuous cross-regime collision *guarantee*: a fast one-sided obstacle a slow agent cannot
-     out-run can still graze (ORCA's best-effort LP3), and coarse-dt perpendicular crossings lean on
-     the lateral prediction. A hard guarantee would need sub-stepping the crowd within a lane step
-     and/or a shared spatial solve — the documented next refinement.
+   - **Both sides yield fully** (a conservative mutual double-yield) — always collision-*safe* in the
+     common case, though NOT a continuous cross-regime collision *guarantee*.
+   - **Refinement — the longitudinal safety net + crowd sub-stepping (DONE).** Two follow-ons closed
+     most of the residual gap:
+     - **`Engine.CrowdLongitudinalConstraint` — brake for what you can't swerve around.** A crowd agent
+       ego still laterally overlaps also becomes a Krauss car-following leader (mirroring
+       `ObstacleConstraint`), so ego *stops* for a blocker a lateral swerve can't clear, and *proceeds*
+       once it has swerved aside (the overlap releases). Proven: a wide (5 m) stationary blocker on the
+       7.2 m lane brings the vehicle to a full stop 1.6 m short of it, while a person it *can* swerve
+       past (0.35 m) never slows it. Gated on `CrowdSource != null` → byte-identical.
+     - **`CrossRegimeCoupling.SubSteps` — finer crowd time.** The crowd can advance K sub-steps per lane
+       step (dead-reckoning each vehicle disc along its velocity), refining Direction A's temporal
+       resolution toward ORCA's continuous guarantee without changing the total time advanced (so the
+       regimes stay in lockstep). Default 1 = unchanged.
+   - **The honest residual (needs a unified solver).** A close-range *perpendicular* crossing at the
+     lane sim's fixed `dt=1` can still graze: the vehicle re-plans its lateral only once per lane step
+     (the parity core cannot be sub-stepped) and each regime reads the other's *previous*-step state
+     (one-step latency), so a pedestrian standing essentially on the vehicle's path at close range is
+     not robustly collision-free (realistic separations are safe — e.g. a person 14 m+ ahead clears by
+     1–2.3 m). A true hard guarantee needs a **single shared spatial/velocity solve over both
+     populations** (or sub-stepping the lane core, which parity forbids) — the documented next step
+     beyond this bridge.
    - **Gated / byte-identical.** `Engine.CrowdSource` is null unless a coupling attaches it, and the
      crowd loop lives only inside `ComputeRvoLateral` (reachable solely under `LanelessRvo && _sublane`),
      so no committed golden can touch it — verified: `909605E965BFFE59` held, full suite green with the

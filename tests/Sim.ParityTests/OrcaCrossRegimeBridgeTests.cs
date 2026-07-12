@@ -87,6 +87,53 @@ public class OrcaCrossRegimeBridgeTests
     }
 
     [Fact]
+    public void DirectionB_VehicleBrakesForBlockerItCannotSwerveAround_StopsSafely()
+    {
+        // The longitudinal SAFETY NET (CrossRegimeCoupling + Engine.CrowdLongitudinalConstraint): a
+        // lane vehicle SWERVES around a crowd agent when it can, but BRAKES when it cannot clear
+        // laterally in time. A WIDE stationary blocker (radius 2.5 m -> 5 m footprint) on a 7.2 m lane
+        // cannot be swerved around (ego would need ~4 m of lateral room, the lane offers ~2.7), so the
+        // vehicle must stop behind it -- and never overlap it. This is what makes the bridge
+        // collision-safe when a swerve alone is insufficient ("stop for what you can't go around").
+        var engine = new Engine { LanelessRvo = true };
+        engine.LoadScenario(
+            Path.Combine(ScenarioDir, "net.net.xml"),
+            Path.Combine(ScenarioDir, "rou.rou.xml"),
+            Path.Combine(ScenarioDir, "config.sumocfg"));
+
+        const double blockerRadius = 2.5;
+        var crowd = new OrcaCrowd();
+        crowd.Add(new Vec2(30, -3.6), blockerRadius, maxSpeed: 0.0001, goal: new Vec2(30, -3.6));   // stationary wall
+
+        var coupling = new CrossRegimeCoupling(engine, crowd, dt: 1.0, _ => (VehHalfWidth, VehLength));
+
+        double minSpeedApproaching = double.PositiveInfinity, minSurfaceGap = double.PositiveInfinity;
+        for (var step = 0; step < 30; step++)
+        {
+            var blockerBefore = crowd.Position(0);
+            coupling.Step();
+            foreach (var v in coupling.LastFrame)
+            {
+                if (v.X > 10 && v.X < 30)
+                {
+                    minSpeedApproaching = Math.Min(minSpeedApproaching, v.Speed);
+                }
+
+                var gap = CapsuleDiscDistance(v.X, v.Y, v.Angle, VehLength, blockerBefore.X, blockerBefore.Y)
+                          - (VehHalfWidth + blockerRadius);
+                minSurfaceGap = Math.Min(minSurfaceGap, gap);
+            }
+        }
+
+        _out.WriteLine($"Longitudinal yield: minSpeedApproaching={minSpeedApproaching:F2} minSurfaceGap={minSurfaceGap:F3}");
+
+        // It braked essentially to a stop behind the un-swerve-able blocker.
+        Assert.True(minSpeedApproaching < 0.5, $"vehicle did not brake for the blocker (min speed {minSpeedApproaching:F2})");
+        // And stayed safely behind it (never overlapped).
+        Assert.True(minSurfaceGap > 0.0, $"vehicle overlapped the blocker (min surface gap {minSurfaceGap:F3})");
+    }
+
+    [Fact]
     public void DirectionA_PedestrianWalksAroundParkedVehicleDisc_NoOverlap_ReachesGoal()
     {
         // A pedestrian walking straight up (0,-6) -> (0,6) meets a PARKED vehicle disc sitting on its

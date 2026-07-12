@@ -31,6 +31,19 @@ public sealed class CrossRegimeCoupling : ISimExportObserver
     // Captured per-frame vehicle snapshots (filled by the export observer during Run(1)'s emit).
     private readonly List<VehicleExportSnapshot> _frame = new();
     private WorldDisc[] _discBuf = new WorldDisc[32];
+    private WorldDisc[] _subDiscBuf = new WorldDisc[32];
+
+    // Crowd sub-steps per engine step (default 1). The engine's lateral plan is fixed at the lane
+    // sim's dt (it is the parity core -- not sub-stepped), so a fast vehicle jumps up to `speed*dt` per
+    // engine step; at dt=1 the crowd, stepping once, sees it TELEPORT and can graze it. Sub-stepping
+    // advances the crowd K times per engine step at dt/K while DEAD-RECKONING each vehicle disc along
+    // its world velocity, so the crowd sees the vehicle SWEEP continuously and avoids it cleanly --
+    // driving Direction A (crowd avoids vehicles) toward ORCA's continuous guarantee. It does NOT
+    // change the total time advanced per Step() (K * dt/K == dt), so both regimes stay in lockstep; it
+    // only refines the crowd's temporal resolution. Direction B stays bounded by the engine's dt (a
+    // vehicle re-plans its lateral once per lane step) -- fully closing it would require sub-stepping
+    // the parity core, out of scope.
+    public int SubSteps { get; set; } = 1;
 
     // Discs per vehicle covering its footprint spine. Capped so a dense scene cannot explode the
     // crowd's neighbour lists; a car (5 m / 0.9 m half-width) uses ~6.
@@ -66,8 +79,28 @@ public sealed class CrossRegimeCoupling : ISimExportObserver
     {
         _engine.Run(1);
         var n = BuildVehicleDiscs();
-        _crowd.SetExternalObstacles(_discBuf.AsSpan(0, n));
-        _crowd.Step(_dt);
+
+        var k = Math.Max(1, SubSteps);
+        var subDt = _dt / k;
+        if (_subDiscBuf.Length < n)
+        {
+            _subDiscBuf = new WorldDisc[Math.Max(n, _subDiscBuf.Length * 2)];
+        }
+
+        for (var s = 0; s < k; s++)
+        {
+            // Dead-reckon each disc to its position at this sub-step's start (snapshot pos +
+            // velocity * elapsed), so the crowd sees the vehicle sweep smoothly across the lane step.
+            var elapsed = s * subDt;
+            for (var d = 0; d < n; d++)
+            {
+                var b = _discBuf[d];
+                _subDiscBuf[d] = new WorldDisc(b.X + b.Vx * elapsed, b.Y + b.Vy * elapsed, b.Vx, b.Vy, b.Radius);
+            }
+
+            _crowd.SetExternalObstacles(_subDiscBuf.AsSpan(0, n));
+            _crowd.Step(subDt);
+        }
     }
 
     public void Advance(int steps)
