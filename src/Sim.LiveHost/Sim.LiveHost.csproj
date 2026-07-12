@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <!--
+    SUMOSHARP-API.md §11: the browser-live interactive demo. A minimal ASP.NET Core app that runs the
+    engine via SimulationRunner and streams live vehicle state to a browser over a WebSocket; the browser
+    renders it on a canvas and, on click, injects an external obstacle the cars react to. A SAMPLE, not a
+    package (IsPackable is false by default via Directory.Build.props) and not part of `dotnet test`.
+  -->
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AssemblyName>Sim.LiveHost</AssemblyName>
+    <RootNamespace>Sim.LiveHost</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Sim.Core\Sim.Core.csproj" />
+    <ProjectReference Include="..\Sim.Ingest\Sim.Ingest.csproj" />
+  </ItemGroup>
+
+</Project>

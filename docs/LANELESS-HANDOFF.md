@@ -159,9 +159,22 @@ Golden authoring (rare, network + SUMO): `scripts/regen-goldens.sh`, then commit
 laneless goldens use `--lateral-resolution R` + `sigma=0`; the RVO/ORCA behaviour has **no** SUMO
 golden and is validated behaviourally/statistically.
 
-## Coordination note (still relevant)
+## Coordination note (MERGE EXECUTED)
 
 The NuGet packaging branch (`claude/sumo-csharp-nuget-strategy-4vlkki`) owns the SoA obstacle-store
 redesign; this layer consumes it via `RvoNeighbor` / `WorldDisc`. Merge order agreed (their store
 first, this adapter second), `RvoNeighbor` frozen. Full detail + the reserved
 `avoidanceKind`/`Responsibility` per-agent bit in `LANELESS-DIRECTION.md` (coordination section, CLOSED).
+
+**Done (this session):** merged `origin/claude/sumo-csharp-nuget-strategy-4vlkki` into this branch (their
+`ObstacleStore` SoA store + handle API + `AvoidanceClass` byte, `Sim.LiveHost`, stepped read surface,
+runtime demand, lifecycle events, async runner, geometry-3D). The string `AddObstacle(id, …)` creation
+API is **gone** — replaced by `AddObstacle(GetLane(id), …)` (handle-based); the two laneless RVO tests
+that used it were migrated. The Stage-3 RVO adapter in `ComputeRvoLateral` now reads the SoA store
+transparently: `ObstacleStore.Values` materialises each live slot's columns as an `ExternalObstacle`
+value, so the frozen `RvoNeighbor` seam consumes the SoA columns with **no solve change**. `RvoNeighbor`'s
+reciprocity `share` is now sourced from the store's per-agent `AvoidanceClass` (Reciprocal→0.5, else 1.0)
+— but note it is still **inert in the 1D lateral solve** (that solve is inherently one-sided; share is
+consumed only by the open-space 2D ORCA path and reserved for the unified solver). Gates after merge:
+`dotnet test` → **278 passed / 3 skipped / 0 failed**; determinism hash **`909605E965BFFE59`** (single ==
+parallel). The 3 skips are unchanged (P2.4 overtake, keepLatGap, C4-vii multilane junction).

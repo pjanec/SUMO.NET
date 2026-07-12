@@ -103,11 +103,27 @@ public sealed partial class Engine : IEngine
     private readonly Dictionary<int, HashSet<string>> _avoidedByEntity = new();
 
     // B1: external-obstacle store (DESIGN.md "Two futures" -- live-reactivity input surface, not
-    // a SUMO concept). Keyed by id so AddObstacle can add-or-replace. Deliberately NOT cleared by
-    // LoadScenario (tests inject obstacles after loading, before Run) and empty by default, which
-    // is exactly the inert-when-absent guard: with no entries, ObstacleConstraint below is a
-    // trivial +infinity no-op and every parity scenario's constraints list is unaffected.
-    private readonly Dictionary<string, ExternalObstacle> _obstacles = new();
+    // a SUMO concept). SUMOSHARP-API.md §4.3: a handle-keyed struct-of-arrays (ObstacleStore), replacing
+    // the former `Dictionary<string, ExternalObstacle>` so per-step corrections are zero-allocation.
+    // Deliberately NOT cleared by LoadScenario (tests inject obstacles after loading, before Run) and
+    // empty by default, which is exactly the inert-when-absent guard: with no entries, ObstacleConstraint
+    // below is a trivial +infinity no-op and every parity scenario's constraints list is unaffected.
+    private readonly ObstacleStore _obstacles = new();
+
+    // SUMOSHARP-API.md §9: MUTABLE vType/route registries so demand is not fixed to the loaded rou.xml.
+    // Seeded from _demand at each load; runtime DefineVType / SpawnVehicle add to them. Every engine
+    // lookup that used to read the immutable `_demand.VTypesById`/`RoutesById` reads these instead --
+    // seeded identically, so the loaded-scenario path stays byte-identical. `_vTypeIds` gives each vType
+    // a stable VTypeHandle index; the counters name auto-generated runtime routes/vehicles.
+    private readonly Dictionary<string, VType> _vTypesById = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, Route> _routesById = new(StringComparer.Ordinal);
+    private readonly List<string> _vTypeIds = new();
+    private int _runtimeRouteCounter;
+    private int _runtimeVehicleCounter;
+
+    // SUMO's built-in default vehicle type id -- auto-registered at load so SpawnVehicle works without a
+    // prior DefineVType. Harmless for loaded scenarios (no vehicle references it unless spawned).
+    private const string DefaultVTypeId = "DEFAULT_VEHTYPE";
 
     // W1 (warm-start): number of steps advanced so far on the current timeline (via Run or WarmUp),
     // reset to 0 by LoadScenario. Advance resets the timeline state machines and starts the clock at
@@ -717,114 +733,70 @@ public sealed partial class Engine : IEngine
     // needed since observers are not simulated entities).
     public void AddExportObserver(ISimExportObserver observer) => _exportObservers.Add(observer);
 
-    // B6: `latPos`/`width` (default 0/0 == the pre-B6 full-lane-block semantics) give the obstacle a
-    // lateral footprint so a car can SWERVE around it (see ExternalObstacle's header). latPos is the
-    // lane-center-relative lateral centre (positive = LEFT of travel), width its lateral extent.
-    public void AddObstacle(string id, string laneId, double frontPos, double length,
-        double startTime = double.NegativeInfinity, double endTime = double.PositiveInfinity,
-        double latPos = 0.0, double width = 0.0, double latSpeed = 0.0)
-    {
-        _obstacles[id] = new ExternalObstacle(id, laneId, frontPos, length, startTime, endTime, 0.0, 0.0, latPos, width, latSpeed);
-    }
+    // SUMOSHARP-API.md §4.4: resolve a lane's string id to the int lane handle ONCE at setup, so the
+    // per-step obstacle path never touches a string. Requires a loaded scenario.
+    public int GetLane(string laneId) =>
+        (_network ?? throw new InvalidOperationException("LoadScenario must be called before GetLane."))
+            .LaneHandleById[laneId];
 
-    // B5-i: MOVING obstacle add-or-replace, same keyed-by-id contract as AddObstacle. Speed/
-    // MaxDecel are the only difference from AddObstacle's construction -- AdvanceObstacles (Input
-    // phase) dead-reckons FrontPos by Speed*dt every step from here on, and ObstacleConstraint
-    // feeds Speed/MaxDecel into KraussModel.FollowSpeed instead of the static predSpeed=0 case.
-    // B6: latPos/width as in AddObstacle (a walking pedestrian with a lateral footprint).
-    public void AddMovingObstacle(string id, string laneId, double frontPos, double length,
+    // ----- Handle-based obstacle API (SUMOSHARP-API.md §4.4, the primary/shipped surface) -----
+    // Zero-allocation: Add returns a generational ObstacleHandle; Update/Remove write columns by index.
+    // `laneHandle` comes from GetLane(laneId). D17: avoidanceClass is the reserved RVO reciprocity class,
+    // inert for the lane-based engine (default OneSided). B6: latPos/width (default 0/0 == pre-B6
+    // full-lane block) give the obstacle a lateral footprint so a car can SWERVE around it.
+    public ObstacleHandle AddObstacle(int laneHandle, double frontPos, double length,
+        double startTime = double.NegativeInfinity, double endTime = double.PositiveInfinity,
+        double latPos = 0.0, double width = 0.0, double latSpeed = 0.0,
+        AvoidanceClass avoidanceClass = AvoidanceClass.OneSided)
+        => AddCore(laneHandle, frontPos, length, startTime, endTime,
+                   0.0, 0.0, latPos, width, latSpeed, avoidanceClass);
+
+    // B5-i: MOVING obstacle -- AdvanceObstacles (Input phase) dead-reckons FrontPos by Speed*dt every
+    // step, and ObstacleConstraint feeds Speed/MaxDecel into KraussModel.FollowSpeed.
+    public ObstacleHandle AddMovingObstacle(int laneHandle, double frontPos, double length,
         double speed, double maxDecel,
         double startTime = double.NegativeInfinity, double endTime = double.PositiveInfinity,
-        double latPos = 0.0, double width = 0.0, double latSpeed = 0.0)
+        double latPos = 0.0, double width = 0.0, double latSpeed = 0.0,
+        AvoidanceClass avoidanceClass = AvoidanceClass.OneSided)
+        => AddCore(laneHandle, frontPos, length, startTime, endTime,
+                   speed, maxDecel, latPos, width, latSpeed, avoidanceClass);
+
+    // Per-step corrections from the external owner. Inert-when-absent: a stale/removed handle is a no-op.
+    public void UpdateObstacle(ObstacleHandle handle, double frontPos, double speed) =>
+        _obstacles.Update(handle, frontPos, speed);
+
+    public void UpdateObstacle(ObstacleHandle handle, double frontPos, double speed, double latPos) =>
+        _obstacles.Update(handle, frontPos, speed, latPos);
+
+    public void UpdateObstacle(ObstacleHandle handle, double frontPos, double speed, double latPos, double latSpeed) =>
+        _obstacles.Update(handle, frontPos, speed, latPos, latSpeed);
+
+    public void RemoveObstacle(ObstacleHandle handle) => _obstacles.Remove(handle);
+
+    // Resolve the lane handle -> LaneId string (which the lane-filtering consumers -- ObstacleConstraint,
+    // the reroute/junction/follower scans -- still match on) and store. The obstacle's string Id is empty
+    // (it was only ever the string-API key); ComputeLateralEvasion's tie-break among overlapping obstacles
+    // therefore falls to insertion order -- deterministic, and no committed scenario has such an overlap.
+    private ObstacleHandle AddCore(int laneHandle, double frontPos, double length,
+        double startTime, double endTime, double speed, double maxDecel,
+        double latPos, double width, double latSpeed, AvoidanceClass avoidanceClass)
     {
-        _obstacles[id] = new ExternalObstacle(id, laneId, frontPos, length, startTime, endTime, speed, maxDecel, latPos, width, latSpeed);
+        var laneId = (_network ?? throw new InvalidOperationException("LoadScenario/LoadNetwork must be called before AddObstacle."))
+            .LanesByHandle[laneHandle].Id;
+        return _obstacles.Add(string.Empty, laneHandle, laneId, frontPos, length, startTime, endTime,
+                              speed, maxDecel, latPos, width, latSpeed, avoidanceClass);
     }
 
-    // B5-i: per-step position/velocity correction from the external owner of this obstacle.
-    // Inert-when-absent (no-op if `id` was never added/was removed) -- mirrors RemoveObstacle's
-    // TryGetValue-free `Remove` idiom, just for an update instead of a delete. `record with`
-    // preserves LaneId/Length/StartTime/EndTime/MaxDecel unchanged; only FrontPos/Speed move.
-    public void UpdateObstacle(string id, double frontPos, double speed)
-    {
-        if (_obstacles.TryGetValue(id, out var obstacle))
-        {
-            _obstacles[id] = obstacle with { FrontPos = frontPos, Speed = speed };
-        }
-    }
-
-    // B6: per-step correction that ALSO moves the lateral centre -- for a pedestrian walking (or
-    // lunging) laterally across the lane, the owner reports its new latPos each step. Same
-    // inert-when-absent contract; only FrontPos/Speed/LatPos move.
-    public void UpdateObstacle(string id, double frontPos, double speed, double latPos)
-    {
-        if (_obstacles.TryGetValue(id, out var obstacle))
-        {
-            _obstacles[id] = obstacle with { FrontPos = frontPos, Speed = speed, LatPos = latPos };
-        }
-    }
-
-    // B6-lat: full correction including the lateral VELOCITY, so the evasion can predict a lunging
-    // pedestrian's future position between owner corrections.
-    public void UpdateObstacle(string id, double frontPos, double speed, double latPos, double latSpeed)
-    {
-        if (_obstacles.TryGetValue(id, out var obstacle))
-        {
-            _obstacles[id] = obstacle with { FrontPos = frontPos, Speed = speed, LatPos = latPos, LatSpeed = latSpeed };
-        }
-    }
-
-    public void RemoveObstacle(string id) => _obstacles.Remove(id);
-
+    // Remove every obstacle at once.
     public void ClearObstacles() => _obstacles.Clear();
 
-    // B5-i: dead-reckon every MOVING obstacle (Speed != 0) forward by Speed*dt, once per step, in
-    // the Input phase BEFORE PlanMovements/the neighbor-query Refill -- so the Plan phase reads a
-    // FROZEN obstacle position for this step, exactly like every other piece of start-of-step
-    // state (CLAUDE.md rule 2: plan reads start-of-step state only). This is linear extrapolation
-    // of an externally-supplied velocity (navmesh/RVO agent, live detection), NOT a SUMO
-    // car-following/motion model -- the external owner is expected to call UpdateObstacle with a
-    // fresh reading whenever it has one; dead-reckoning just fills the gap between updates.
-    // Speed==0 obstacles are skipped entirely (no record replacement), which is exactly why a
-    // static (B1) obstacle's FrontPos never changes here and the rest of the step tree sees a
-    // byte-identical world to before this rung.
-    private readonly List<string> _obstacleIdScratch = new();
-
-    private void AdvanceObstacles(double time, double dt)
-    {
-        if (_obstacles.Count == 0)
-        {
-            return;
-        }
-
-        // Snapshot the ids first, into a reused scratch list (no per-step allocation): replacing
-        // an existing key's VALUE via the indexer below is fine mid-loop, but Dictionary still
-        // disallows enumerating _obstacles.Values/Keys directly while any entry's value changes,
-        // so we iterate a stable id copy instead.
-        _obstacleIdScratch.Clear();
-        _obstacleIdScratch.AddRange(_obstacles.Keys);
-
-        foreach (var id in _obstacleIdScratch)
-        {
-            var obstacle = _obstacles[id];
-            if ((obstacle.Speed == 0.0 && obstacle.LatSpeed == 0.0)
-                || obstacle.StartTime >= time || time >= obstacle.EndTime)
-            {
-                // Only dead-reckon while the agent is ACTIVE and PAST its appearance step: at/before its
-                // StartTime it must stay at its added position (it just appeared there this step), and
-                // after EndTime it is gone. For a -inf..+inf window (every pre-B6 moving obstacle,
-                // StartTime == -inf) `StartTime >= time` is always false, so this is byte-identical there.
-                continue;
-            }
-
-            // B6-lat: dead-reckon the lateral centre too (a lunging pedestrian), same contract as the
-            // longitudinal FrontPos dead-reckoning. LatSpeed == 0 leaves LatPos unchanged.
-            _obstacles[id] = obstacle with
-            {
-                FrontPos = obstacle.FrontPos + obstacle.Speed * dt,
-                LatPos = obstacle.LatPos + obstacle.LatSpeed * dt,
-            };
-        }
-    }
+    // B5-i: dead-reckon every MOVING obstacle forward by Speed*dt (and B6-lat LatPos by LatSpeed*dt),
+    // once per step, in the Input phase BEFORE PlanMovements/the neighbor-query Refill -- so the Plan
+    // phase reads a FROZEN obstacle position for this step, exactly like every other piece of
+    // start-of-step state (CLAUDE.md rule 2). The dead-reckoning logic now lives in ObstacleStore.Advance
+    // (iterating the dense active list, writing columns in place -- no id-scratch snapshot needed since
+    // an array has no enumerate-during-mutation hazard). Byte-identical to the pre-store version.
+    private void AdvanceObstacles(double time, double dt) => _obstacles.Advance(time, dt);
 
     public void LoadScenario(string netXmlPath, string rouXmlPath, string sumocfgPath)
     {
@@ -832,6 +804,75 @@ public sealed partial class Engine : IEngine
         _lanesByHandle = _network.LanesByHandle as Lane[] ?? System.Linq.Enumerable.ToArray(_network.LanesByHandle);
         _demand = DemandParser.Parse(rouXmlPath);
         _config = ScenarioConfigParser.Parse(sumocfgPath);
+        InitializeLoaded();
+    }
+
+    // SUMOSHARP-API.md §9: load a network WITHOUT any demand -- the "start empty and spawn everything at
+    // runtime" entry point (games, digital-twins). Optional sumocfg supplies the timeline/flags; absent,
+    // a deterministic default is synthesized (Euler, teleport off, step 1s, sigma-neutral). The host then
+    // DefineVType()s and SpawnVehicle()s. Equivalent to LoadScenario with an empty rou.xml.
+    public void LoadNetwork(string netXmlPath, string? sumocfgPath = null)
+    {
+        _network = NetworkParser.Parse(netXmlPath);
+        _lanesByHandle = _network.LanesByHandle as Lane[] ?? System.Linq.Enumerable.ToArray(_network.LanesByHandle);
+        _demand = EmptyDemand();
+        _config = sumocfgPath is null ? DefaultNetworkConfig() : ScenarioConfigParser.Parse(sumocfgPath);
+        InitializeLoaded();
+    }
+
+    private static DemandModel EmptyDemand() => new(
+        Array.Empty<VType>(),
+        new Dictionary<string, VType>(StringComparer.Ordinal),
+        Array.Empty<Route>(),
+        new Dictionary<string, Route>(StringComparer.Ordinal),
+        Array.Empty<VehicleDef>());
+
+    // Deterministic default for a demand-less network load: Begin 0, effectively-open End, 1s Euler steps,
+    // teleport off, actionStepLength == stepLength (fusion-eligible), speeddev 0, seed matching Engine.Seed.
+    private static ScenarioConfig DefaultNetworkConfig() =>
+        new(Begin: 0.0, End: 1e9, StepLength: 1.0, Ballistic: false, TimeToTeleport: -1.0,
+            ActionStepLength: 0.0, SpeedDev: 0.0, Seed: 42, LaneChangeDuration: 0.0);
+
+    // (Re)seed the mutable vType/route registries from the just-loaded demand, plus SUMO's built-in
+    // default vType. Cleared first so a re-load on the same Engine never inherits the prior scenario.
+    private void SeedRegistries()
+    {
+        _vTypesById.Clear();
+        _routesById.Clear();
+        _vTypeIds.Clear();
+        _runtimeRouteCounter = 0;
+        _runtimeVehicleCounter = 0;
+
+        foreach (var vt in _demand!.VTypes)
+        {
+            _vTypesById[vt.Id] = vt;
+            _vTypeIds.Add(vt.Id);
+        }
+
+        // A default passenger vType so SpawnVehicle works without an explicit DefineVType. Only added if
+        // the scenario did not already define one under that id.
+        if (!_vTypesById.ContainsKey(DefaultVTypeId))
+        {
+            _vTypesById[DefaultVTypeId] = new VType(DefaultVTypeId, VClass: "passenger", Sigma: null);
+            _vTypeIds.Add(DefaultVTypeId);
+        }
+
+        foreach (var rt in _demand.Routes)
+        {
+            _routesById[rt.Id] = rt;
+        }
+    }
+
+    // Shared load initialization for LoadScenario / LoadNetwork. Everything from here down was formerly
+    // inline in LoadScenario; _network/_demand/_config are already assigned by the caller.
+    private void InitializeLoaded()
+    {
+        // Caller (LoadScenario / LoadNetwork) has assigned all three; assert it so the rest of this method
+        // sees them as non-null (and to fail loudly if a future caller forgets).
+        if (_network is null || _demand is null || _config is null)
+        {
+            throw new InvalidOperationException("InitializeLoaded requires _network, _demand, and _config to be set.");
+        }
 
         // B3: the cached router is built from the network being replaced above -- invalidate it
         // here so UpdateReroutes lazily rebuilds against the NEW network the next time it is
@@ -893,6 +934,10 @@ public sealed partial class Engine : IEngine
         // W1: a freshly (re)loaded scenario is a fresh timeline -- the next Run/WarmUp resets the
         // state machines and starts the clock at Begin.
         _elapsedSteps = 0;
+        // §10: fresh timeline -> no pending lifecycle events, and the diff baseline is cleared so the new
+        // scenario's vehicles emit their first Departed/Arrived transitions correctly.
+        _eventCount = 0;
+        Array.Clear(_prevLifecycle, 0, _prevLifecycle.Length);
         // Rung ER3: recompute the give-way master switch for this scenario (reset first so a
         // re-LoadScenario on the same Engine never inherits the previous demand's answer).
         _anyBluelight = false;
@@ -905,6 +950,12 @@ public sealed partial class Engine : IEngine
         _anyIdmm = false;
         _actionStepFusionOk = _config.ActionStepLength <= 0.0
             || Math.Abs(_config.ActionStepLength - _config.StepLength) < 1e-12;
+
+        // Seed the mutable vType/route registries from this scenario's demand (+ a default vType) BEFORE
+        // CreateRuntime, which resolves each vehicle's vType/route through them. Identical contents to the
+        // former direct _demand reads, so the loaded-scenario path is byte-identical.
+        SeedRegistries();
+
         foreach (var def in _demand.Vehicles)
         {
             CreateRuntime(def);
@@ -939,7 +990,7 @@ public sealed partial class Engine : IEngine
     // speedFactor seeding off its EntityIndex, same stop side-table, same master-switch updates).
     private void CreateRuntime(VehicleDef def)
     {
-        var rawVType = _demand!.VTypesById[def.TypeId];
+        var rawVType = _vTypesById[def.TypeId];
         // vType defaults resolver (CLAUDE.md rule 6: match vType/init first): only vClass
         // and any explicit overrides (e.g. rou.xml's sigma="0") come from the raw parse;
         // everything else is a resolved SUMO vClass default (VTypeDefaults.Resolve).
@@ -1043,6 +1094,392 @@ public sealed partial class Engine : IEngine
     // populated network (use a <flow> demand to fill it). Zero added allocation vs Run (same loop
     // body, Export phase skipped).
     public void WarmUp(int steps) => Advance(null, steps);
+
+    // ----- Host-facing stepped read surface (SUMOSHARP-API.md §5, D6) -----
+    // Per-step published projection of the live vehicles: a struct-of-arrays a host (game render loop,
+    // training obs read, digital-twin) polls between steps. Empty until the first Step(); the spans are
+    // valid until the NEXT Step() (they alias reused buffers). Populating them is a NEW path that Run()
+    // deliberately does NOT take, so the parity/determinism suite is byte-identical and pays zero overhead.
+
+    private readonly VehicleReadBuffer _readBuffer = new();
+
+    // Per-vehicle generation for VehicleHandle staleness, indexed by EntityIndex. Presently a constant 1
+    // (no vehicle slot is recycled yet); grown lazily off the hot creation path. When runtime despawn
+    // lands it is bumped per-slot so a handle held across a despawn goes stale (TryGetVehicle rejects it).
+    private ushort[] _vehicleGeneration = Array.Empty<ushort>();
+
+    // SUMOSHARP-API.md §10: the per-Step lifecycle event buffer + the previous-frame lifecycle per vehicle
+    // it is diffed against. Populated only in PublishReadState (Step-only), so Run() stays zero-overhead.
+    private SimEvent[] _events = Array.Empty<SimEvent>();
+    private int _eventCount;
+    private byte[] _prevLifecycle = Array.Empty<byte>();
+
+    // Advance one simulation step (or `steps`) WITHOUT accumulating a TrajectorySet, then publish the read
+    // snapshot -- the host loop primitive: `while (running) { engine.Step(); render(engine); }`. Reuses the
+    // exact same per-step driver as Run/WarmUp (Advance), so the simulation is identical; the only addition
+    // is the post-step read projection. For a game wanting a fresh snapshot every frame, call Step() singly.
+    public void Step() => Step(1);
+
+    public void Step(int steps)
+    {
+        Advance(null, steps);
+        PublishReadState();
+    }
+
+    // Number of active vehicles in the current published snapshot (the span length).
+    public int VehicleCount => _readBuffer.Count;
+
+    // Steps advanced on the current timeline, and the current simulation clock (seconds).
+    public int StepCount => _elapsedSteps;
+
+    public double CurrentTime => _config is null ? 0.0 : _config.Begin + _elapsedSteps * _config.StepLength;
+
+    // Columnar read spans -- structure-of-arrays, valid until the next Step(). Render-facing geometry is
+    // float; parity-exact lane-relative values are double (D7). PosZ is present from day one (0 on 2-D
+    // nets, real when geometry-3D lands, SUMOSHARP-API.md §6). Same index across every span == same vehicle.
+    public ReadOnlySpan<VehicleHandle> VehicleHandles => _readBuffer.Handles.AsSpan(0, _readBuffer.Count);
+    public ReadOnlySpan<float> PosX => _readBuffer.PosX.AsSpan(0, _readBuffer.Count);
+    public ReadOnlySpan<float> PosY => _readBuffer.PosY.AsSpan(0, _readBuffer.Count);
+    public ReadOnlySpan<float> PosZ => _readBuffer.PosZ.AsSpan(0, _readBuffer.Count);
+    public ReadOnlySpan<float> Angle => _readBuffer.Angle.AsSpan(0, _readBuffer.Count);
+    public ReadOnlySpan<float> Speed => _readBuffer.SpeedF.AsSpan(0, _readBuffer.Count);
+    public ReadOnlySpan<int> LaneHandles => _readBuffer.LaneHandle.AsSpan(0, _readBuffer.Count);
+    public ReadOnlySpan<double> Pos => _readBuffer.Pos.AsSpan(0, _readBuffer.Count);
+    public ReadOnlySpan<double> PosLat => _readBuffer.PosLat.AsSpan(0, _readBuffer.Count);
+    public ReadOnlySpan<string> VehicleIds => _readBuffer.VehicleId.AsSpan(0, _readBuffer.Count);
+    public ReadOnlySpan<string> VehicleTypes => _readBuffer.VehicleType.AsSpan(0, _readBuffer.Count);
+    public ReadOnlySpan<string> LaneIds => _readBuffer.LaneId.AsSpan(0, _readBuffer.Count);
+
+    // Parity-exact double speed backing TryGetVehicle's VehicleState.Speed (the public columnar `Speed` is
+    // render-float). Internal: SimulationSnapshot copies it so the async snapshot's double speed matches.
+    internal ReadOnlySpan<double> SpeedExactColumn => _readBuffer.SpeedD.AsSpan(0, _readBuffer.Count);
+
+    // Lifecycle events (Departed / Arrived / …) that occurred during the most recent Step(), valid until
+    // the next Step(). Drained by the host each frame; empty until the first Step().
+    public ReadOnlySpan<SimEvent> Events => _events.AsSpan(0, _eventCount);
+
+    // Random access by handle (array-of-structures view). Inert-when-absent: false on a stale generation
+    // or a vehicle not active in the current snapshot.
+    public bool TryGetVehicle(VehicleHandle handle, out VehicleState state)
+    {
+        var idx = (int)handle.Index;
+        if (idx >= 0 && idx < _vehicleGeneration.Length && _vehicleGeneration[idx] == handle.Generation
+            && _readBuffer.TryGetSlot(idx, out var slot))
+        {
+            state = new VehicleState(
+                handle, _readBuffer.EntityIndex[slot], _readBuffer.VehicleId[slot], _readBuffer.VehicleType[slot],
+                _readBuffer.LaneHandle[slot], _readBuffer.LaneId[slot],
+                _readBuffer.Pos[slot], _readBuffer.SpeedD[slot], _readBuffer.PosLat[slot],
+                _readBuffer.PosX[slot], _readBuffer.PosY[slot], _readBuffer.PosZ[slot], _readBuffer.Angle[slot]);
+            return true;
+        }
+
+        state = default;
+        return false;
+    }
+
+    // Fill the read buffer from the current active vehicles, projecting each to (x, y, angle) with the SAME
+    // LaneGeometry.PositionAtOffset call EmitTrajectory uses -- so the read columns match the FCD geometry
+    // exactly. Reads only committed post-step state; mutates nothing in the simulation.
+    private void PublishReadState()
+    {
+        EnsureVehicleGenerationCapacity(_vehicles.Count);
+        _readBuffer.BeginFrame(_vehicles.Count);
+
+        foreach (var v in ActiveVehicles())
+        {
+            var lane = _lanesByHandle[v.LaneHandle];
+            var (x, y, angle) = LaneGeometry.PositionAtOffset(lane.Shape, v.Kinematics.Pos, v.Kinematics.LatOffset);
+            var handle = new VehicleHandle((uint)v.EntityIndex, _vehicleGeneration[v.EntityIndex]);
+
+            // Geometry-3D (§6): interpolated lane elevation when the lane shape is 3-D; 0 on a 2-D net
+            // (ShapeZ == null), byte-identical to before.
+            var z = lane.ShapeZ is { } shapeZ
+                ? LaneGeometry.ElevationAtOffset(lane.Shape, shapeZ, v.Kinematics.Pos)
+                : 0.0;
+
+            _readBuffer.Add(handle, v.EntityIndex, v.Def.Id, v.Def.TypeId,
+                v.LaneHandle, v.LaneId, v.Kinematics.Pos, v.Kinematics.Speed, v.Kinematics.LatOffset,
+                (float)x, (float)y, (float)z, (float)angle);
+        }
+
+        DetectLifecycleEvents();
+    }
+
+    // §10: diff each vehicle's lifecycle against the previous published frame and record Departed
+    // (Pending -> Active) / Arrived (-> Arrived) events. Iterates ALL vehicles (not just active) so an
+    // arrival -- which drops the vehicle from ActiveVehicles -- is still caught. Called only from
+    // PublishReadState (Step path), so Run() never pays for it.
+    private void DetectLifecycleEvents()
+    {
+        EnsurePrevLifecycleCapacity(_vehicles.Count);
+        _eventCount = 0;
+
+        for (var idx = 0; idx < _vehicles.Count; idx++)
+        {
+            var v = _vehicles[idx];
+            // Encoded as VehicleLifecycle: Pending=1, Active=2, Arrived=3.
+            var cur = (byte)(v.Arrived ? 3 : v.Inserted ? 2 : 1);
+            if (cur == _prevLifecycle[idx])
+            {
+                continue;
+            }
+
+            if (cur == 2)
+            {
+                RecordEvent(idx, SimEventKind.Departed);
+            }
+            else if (cur == 3)
+            {
+                RecordEvent(idx, SimEventKind.Arrived);
+            }
+
+            _prevLifecycle[idx] = cur;
+        }
+    }
+
+    private void RecordEvent(int entityIndex, SimEventKind kind)
+    {
+        if (_eventCount >= _events.Length)
+        {
+            Array.Resize(ref _events, _events.Length == 0 ? 8 : _events.Length * 2);
+        }
+
+        _events[_eventCount++] = new SimEvent(
+            new VehicleHandle((uint)entityIndex, _vehicleGeneration[entityIndex]), kind);
+    }
+
+    private void EnsurePrevLifecycleCapacity(int needed)
+    {
+        if (_prevLifecycle.Length < needed)
+        {
+            Array.Resize(ref _prevLifecycle, Math.Max(needed, _prevLifecycle.Length == 0 ? 16 : _prevLifecycle.Length * 2));
+        }
+    }
+
+    private void EnsureVehicleGenerationCapacity(int needed)
+    {
+        if (_vehicleGeneration.Length >= needed)
+        {
+            return;
+        }
+
+        var old = _vehicleGeneration.Length;
+        var newCap = Math.Max(needed, old == 0 ? 16 : old * 2);
+        Array.Resize(ref _vehicleGeneration, newCap);
+        for (var i = old; i < newCap; i++)
+        {
+            _vehicleGeneration[i] = 1;  // live generation starts at 1 so a default VehicleHandle never resolves
+        }
+    }
+
+    // ----- Runtime demand: vType definition, spawn, reroute, despawn (SUMOSHARP-API.md §9) -----
+
+    // Register (or replace) a vehicle type at runtime. Resolves through the SAME VTypeDefaults pipeline as
+    // loaded vTypes. `id` is optional (auto-generated when omitted). Requires a loaded network.
+    public VTypeHandle DefineVType(VTypeParams p, string? id = null)
+    {
+        if (_network is null)
+        {
+            throw new InvalidOperationException("LoadScenario/LoadNetwork must be called before DefineVType.");
+        }
+
+        var typeId = id ?? $"__vtype{_vTypeIds.Count}";
+        var raw = new VType(
+            typeId, VClass: p.VClass, Sigma: p.Sigma, MaxSpeed: p.MaxSpeed, Accel: p.Accel, Decel: p.Decel,
+            Tau: p.Tau, MinGap: p.MinGap, Length: p.Length, EmergencyDecel: p.EmergencyDecel,
+            SpeedFactor: p.SpeedFactor, HasBluelight: p.HasBluelight, LcOpposite: p.LcOpposite,
+            CarFollowModel: p.CarFollowModel);
+
+        var existing = _vTypeIds.IndexOf(typeId);
+        _vTypesById[typeId] = raw;
+        if (existing >= 0)
+        {
+            return new VTypeHandle(existing);
+        }
+
+        _vTypeIds.Add(typeId);
+        return new VTypeHandle(_vTypeIds.Count - 1);
+    }
+
+    // The auto-registered SUMO default passenger type (available after any load).
+    public VTypeHandle DefaultVType => new(_vTypeIds.IndexOf(DefaultVTypeId));
+
+    public bool TryGetVType(string id, out VTypeHandle handle)
+    {
+        var idx = _vTypeIds.IndexOf(id);
+        handle = new VTypeHandle(idx);
+        return idx >= 0;
+    }
+
+    // Spawn a vehicle at runtime on an explicit edge-id route. Returns a VehicleHandle immediately in the
+    // Pending state; SUMO-parity queued insertion (InsertDepartingVehicles) places it on the road at the
+    // next Step() when a safe gap exists at `departPos`. Poll GetLifecycle for Pending -> Active.
+    public VehicleHandle SpawnVehicle(VTypeHandle type, IReadOnlyList<string> routeEdges,
+        double departPos = 0.0, double departSpeed = 0.0, int departLane = 0)
+    {
+        if (_network is null || _config is null)
+        {
+            throw new InvalidOperationException("LoadScenario/LoadNetwork must be called before SpawnVehicle.");
+        }
+
+        if (!type.IsValid || type.Index >= _vTypeIds.Count)
+        {
+            throw new ArgumentException("invalid VTypeHandle (call DefineVType or use DefaultVType).", nameof(type));
+        }
+
+        if (routeEdges is null || routeEdges.Count == 0)
+        {
+            throw new ArgumentException("route must contain at least one edge.", nameof(routeEdges));
+        }
+
+        var routeId = $"__route{_runtimeRouteCounter++}";
+        _routesById[routeId] = new Route(routeId, new List<string>(routeEdges));
+
+        var def = new VehicleDef(
+            Id: $"__veh{_runtimeVehicleCounter++}",
+            TypeId: _vTypeIds[type.Index],
+            RouteId: routeId,
+            Depart: CurrentTime,
+            DepartPos: departPos,
+            DepartSpeed: departSpeed,
+            DepartLaneIndex: departLane);
+
+        var entityIndex = _vehicles.Count;
+        CreateRuntime(def);
+        EnsureVehicleGenerationCapacity(_vehicles.Count);
+        return new VehicleHandle((uint)entityIndex, _vehicleGeneration[entityIndex]);
+    }
+
+    // Spawn a vehicle routed from `fromEdge` to `toEdge` via the engine's shortest-path router. Throws if
+    // no route exists (mirrors SUMO refusing an unroutable vehicle).
+    public VehicleHandle SpawnVehicle(VTypeHandle type, string fromEdge, string toEdge,
+        double departPos = 0.0, double departSpeed = 0.0, int departLane = 0)
+    {
+        var edges = Router().Route(fromEdge, toEdge)
+            ?? throw new InvalidOperationException($"no route from edge '{fromEdge}' to '{toEdge}'.");
+        return SpawnVehicle(type, edges, departPos, departSpeed, departLane);
+    }
+
+    // Lifecycle of a spawned/loaded vehicle (Pending/Active/Arrived), or Unknown for a stale handle.
+    public VehicleLifecycle GetLifecycle(VehicleHandle handle)
+    {
+        var idx = (int)handle.Index;
+        if (idx < 0 || idx >= _vehicles.Count || idx >= _vehicleGeneration.Length
+            || _vehicleGeneration[idx] != handle.Generation)
+        {
+            return VehicleLifecycle.Unknown;
+        }
+
+        var v = _vehicles[idx];
+        if (v.Arrived)
+        {
+            return VehicleLifecycle.Arrived;
+        }
+
+        return v.Inserted ? VehicleLifecycle.Active : VehicleLifecycle.Pending;
+    }
+
+    // Remove a vehicle from the simulation (Active or still-Pending). Marks it arrived so it drops out of
+    // every active scan, and bumps its generation so the handle goes stale. No-op (false) on a stale handle
+    // or an already-arrived vehicle. The slot is not recycled (EntityIndex stays stable).
+    public bool Despawn(VehicleHandle handle)
+    {
+        var idx = (int)handle.Index;
+        if (idx < 0 || idx >= _vehicles.Count || idx >= _vehicleGeneration.Length
+            || _vehicleGeneration[idx] != handle.Generation)
+        {
+            return false;
+        }
+
+        var v = _vehicles[idx];
+        if (v.Arrived)
+        {
+            return false;
+        }
+
+        v.Inserted = true;   // so InsertDepartingVehicles never (re)considers a despawned-while-Pending vehicle
+        v.Arrived = true;    // drops it from ActiveVehicles / the read snapshot
+        _vehicleGeneration[idx] = unchecked((ushort)(_vehicleGeneration[idx] + 1));
+        return true;
+    }
+
+    // Re-route an ACTIVE vehicle to a new destination edge, keeping it physically where it is. Returns false
+    // if the handle is stale/not active, or no route exists from the vehicle's current edge (e.g. it is
+    // mid-junction on an internal lane -- retry next step).
+    public bool SetDestination(VehicleHandle handle, string toEdge)
+    {
+        if (!TryResolveActive(handle, out var v))
+        {
+            return false;
+        }
+
+        var currentEdge = _network!.LanesByHandle[v.LaneHandle].EdgeId;
+        var edges = Router().Route(currentEdge, toEdge);
+        if (edges is null)
+        {
+            return false;
+        }
+
+        RerouteActive(v, edges);
+        return true;
+    }
+
+    // Re-route an ACTIVE vehicle to its EXISTING destination while avoiding `avoidEdges`. Returns false as
+    // for SetDestination, or if no alternate route exists.
+    public bool Reroute(VehicleHandle handle, IReadOnlyList<string> avoidEdges)
+    {
+        if (!TryResolveActive(handle, out var v))
+        {
+            return false;
+        }
+
+        var currentEdge = _network!.LanesByHandle[v.LaneHandle].EdgeId;
+        var destEdge = _network.LanesByHandle[_laneSeqPool[v.LaneSeqStart + v.LaneSeqLen - 1]].EdgeId;
+        var avoid = new HashSet<string>(avoidEdges, StringComparer.Ordinal);
+        var edges = Router().Route(currentEdge, destEdge, avoid);
+        if (edges is null)
+        {
+            return false;
+        }
+
+        RerouteActive(v, edges);
+        return true;
+    }
+
+    private NetworkRouter Router() => _router ??= new NetworkRouter(_network!);
+
+    private bool TryResolveActive(VehicleHandle handle, out VehicleRuntime v)
+    {
+        var idx = (int)handle.Index;
+        if (idx >= 0 && idx < _vehicles.Count && idx < _vehicleGeneration.Length
+            && _vehicleGeneration[idx] == handle.Generation)
+        {
+            v = _vehicles[idx];
+            if (v.Inserted && !v.Arrived)
+            {
+                return true;
+            }
+        }
+
+        v = null!;
+        return false;
+    }
+
+    // Apply a new remaining route to an active vehicle -- mirrors UpdateReroutes' reassignment exactly:
+    // newEdges[0] is the vehicle's current edge, so it stays physically where it is (Kinematics untouched),
+    // re-pointed at the freshly resolved lane sequence from here on. Applied immediately via the command
+    // buffer (this runs between steps, so the buffer is empty and Flush takes effect at once).
+    private void RerouteActive(VehicleRuntime v, IReadOnlyList<string> newEdges)
+    {
+        var laneIndex = _network!.LanesByHandle[v.LaneHandle].Index;
+        var (newPoolSeq, newArrivalSeq) = _network.ResolveLaneSequenceHandlesWithArrival(newEdges, laneIndex);
+        var newLaneSeqStart = _laneSeqPool.Count;
+        _laneSeqPool.AddRange(newPoolSeq);
+        _laneSeqArrival.AddRange(newArrivalSeq);
+        _commandBuffer.ReplaceRoute(v, newLaneSeqStart, newPoolSeq.Length);
+        _commandBuffer.Flush();
+    }
 
     // Shared driver for Run/WarmUp. `trajectory==null` => warm-up (the per-step Export is skipped).
     // Resets the timeline state machines only on a fresh start so a warm-up + run is one continuous
@@ -1353,7 +1790,7 @@ public sealed partial class Engine : IEngine
         var results = new (int[] Pool, int[] Arrival)[keyList.Count];
         System.Threading.Tasks.Parallel.For(0, keyList.Count, i =>
         {
-            var edges = _demand!.RoutesById[keyList[i].RouteId].Edges;
+            var edges = _routesById[keyList[i].RouteId].Edges;
             results[i] = _network!.ResolveLaneSequenceHandlesWithArrival(edges, keyList[i].DepartLane);
         });
 
@@ -1403,7 +1840,7 @@ public sealed partial class Engine : IEngine
         blockedLanes.Clear();
         foreach (var v in candidates)
         {
-            var route = _demand!.RoutesById[v.Def.RouteId];
+            var route = _routesById[v.Def.RouteId];
             var edge = _network!.EdgesById[route.Edges[0]];
 
             // L0d: manual lane-by-index scan instead of `edge.Lanes.First(l => l.Index == ...)`, whose
@@ -1488,7 +1925,7 @@ public sealed partial class Engine : IEngine
             }
         }
 
-        var route = _demand!.RoutesById[v.Def.RouteId];
+        var route = _routesById[v.Def.RouteId];
         // The departure lane is `laneHandle` (resolved by the caller as the edge's lane whose Index
         // == DepartLaneIndex). LanesByHandle[laneHandle] is that exact lane (dense array index, no
         // per-candidate `edge.Lanes.First(...)` predicate-closure alloc), byte-identical to the old
@@ -1585,7 +2022,7 @@ public sealed partial class Engine : IEngine
             return false;
         }
 
-        var route = _demand!.RoutesById[v.Def.RouteId];
+        var route = _routesById[v.Def.RouteId];
         var (poolSeq, _) = _network!.ResolveLaneSequenceHandlesWithArrival(route.Edges, v.Def.DepartLaneIndex);
         foreach (var handle in poolSeq)
         {
@@ -5340,6 +5777,8 @@ public sealed partial class Engine : IEngine
             return double.PositiveInfinity;
         }
 
+        // ExternalObstacle is now a value type; capture the resolved leader once (stack copy).
+        var near = nearest.Value;
         var gap = nearestBack - v.VType.MinGap - v.Kinematics.Pos;
 
         // C11-iii: an ExternalObstacle has no CarFollowModel of its own (it is not a SUMO
@@ -5350,8 +5789,8 @@ public sealed partial class Engine : IEngine
             v.VType,
             egoSpeed: v.Kinematics.Speed,
             gap: gap,
-            predSpeed: nearest.Speed,
-            predMaxDecel: nearest.Speed != 0.0 ? nearest.MaxDecel : v.VType.Decel,
+            predSpeed: near.Speed,
+            predMaxDecel: near.Speed != 0.0 ? near.MaxDecel : v.VType.Decel,
             laneVehicleMaxSpeed: laneVehicleMaxSpeed,
             dt: _config!.StepLength,
             time: time,
@@ -5540,8 +5979,9 @@ public sealed partial class Engine : IEngine
         public readonly double HalfWidth;
         public readonly double Speed;
         // reciprocity share: 0.5 for a SUMO vehicle (it runs the same solve, takes the other half),
-        // 1.0 one-sided for an external agent (we don't control it -> ego avoids fully). This is the
-        // per-neighbour "avoidance-class" the SUMOSHARP-API SoA store will carry per-agent (coord B1).
+        // 1.0 one-sided for an external agent (we don't control it -> ego avoids fully). Populated from
+        // the SoA store's per-agent AvoidanceClass byte for external agents (coord B1): Reciprocal -> 0.5,
+        // OneSided/StaticBlocker -> 1.0.
         public readonly double Share;
 
         public RvoNeighbor(double pos, double length, double latOffset, double halfWidth, double speed, double share)
@@ -5590,13 +6030,20 @@ public sealed partial class Engine : IEngine
             near[count++] = RvoNeighbor.FromVehicle(o);
         }
 
-        // External agents on ego's lane within radius, treated as the SAME RvoNeighbor (share 1.0,
-        // one-sided). A Width<=0 agent is a full-lane block ego cannot go around -> excluded here so
-        // ObstacleConstraint brakes ego to a stop (the B6 behaviour). TRANSITIONAL adapter over the
-        // current string-keyed _obstacles store: per docs/SUMOSHARP-API.md §4 / coord D15 this store is
-        // being replaced by a scalable int-indexed SoA agent store -- when it lands ONLY this loop
-        // changes (build RvoNeighbor from the SoA columns), never the solve. RvoNeighbor is the frozen
-        // seam.
+        // External agents on ego's lane within radius, folded into the SAME RvoNeighbor list. A Width<=0
+        // agent is a full-lane block ego cannot go around -> excluded here so ObstacleConstraint brakes
+        // ego to a stop (the B6 behaviour). This is the Stage-3 adapter now retargeted onto the landed
+        // SoA store (ObstacleStore, docs/SUMOSHARP-API.md §4.3-4.4): `_obstacles.Values` materialises each
+        // live slot's columns by value, so the frozen `RvoNeighbor` seam reads the SoA columns directly --
+        // the solve below never changed. The reciprocity `share` is now SOURCED from the store's
+        // per-agent AvoidanceClass byte (coord B1): a Reciprocal agent (a cooperative navmesh/RVO mover
+        // running its own solve) -> 0.5; a OneSided/StaticBlocker agent -> 1.0. NB `RvoNeighbor.Share` is
+        // currently INERT in this 1D lateral feasible-interval solve -- that solve is inherently one-sided
+        // (ego fully clears; reciprocity is emergent from both vehicles running it), so it forbids the full
+        // band regardless of share. Share is consumed by the open-space 2D ORCA path (Agent.Responsibility)
+        // and reserved for the future unified two-population solver. Wiring it from the class here keeps the
+        // seam honest (the field reflects the store's class) with no behavioural change: every committed
+        // scenario's obstacles are the default OneSided, and the field is unread here regardless.
         if (_obstacles.Count > 0)
         {
             foreach (var obstacle in _obstacles.Values)
@@ -5611,8 +6058,9 @@ public sealed partial class Engine : IEngine
                 {
                     continue;
                 }
+                var share = obstacle.AvoidanceClass == AvoidanceClass.Reciprocal ? 0.5 : 1.0;
                 near[count++] = new RvoNeighbor(
-                    obstacle.FrontPos, obstacle.Length, obstacle.LatPos, obstacle.Width * 0.5, obstacle.Speed, 1.0);
+                    obstacle.FrontPos, obstacle.Length, obstacle.LatPos, obstacle.Width * 0.5, obstacle.Speed, share);
             }
         }
 
@@ -5948,7 +6396,7 @@ public sealed partial class Engine : IEngine
             // Nearest by back-position; ties broken by Id (ordinal) so the selection is fully
             // order-independent even with multiple overlapping obstacles (never a committed scenario,
             // but keeps the external-agent path deterministic regardless of _obstacles enumeration).
-            if (back < threatBack || (back == threatBack && (threat is null || string.CompareOrdinal(o.Id, threat.Id) < 0)))
+            if (back < threatBack || (back == threatBack && (threat is null || string.CompareOrdinal(o.Id, threat.Value.Id) < 0)))
             {
                 threatBack = back;
                 threat = o;
@@ -5960,6 +6408,9 @@ public sealed partial class Engine : IEngine
         {
             return DriftToward(curLat, 0.0, maxStep); // no threat -> recentre toward the lane centre
         }
+
+        // ExternalObstacle is now a value type; capture the resolved threat once (stack copy).
+        var th = threat.Value;
 
         // Swerve ONLY when braking alone cannot stop before the obstacle (the "jumped out, can't stop
         // in time" case). While the obstacle is still strictly AHEAD and ego is still lane-centred and
@@ -5979,8 +6430,8 @@ public sealed partial class Engine : IEngine
         // edge, on the left (higher LatOffset) or right (lower). Using the predicted centre means the
         // car dodges to the side the agent is VACATING: a ped lunging left pushes both targets left, so
         // the right-side target becomes the smaller (and within-lane / safe) steer.
-        var targetLeft = (threatPredLat + threat.Width / 2.0) + SwerveLateralGap + halfEgo;
-        var targetRight = (threatPredLat - threat.Width / 2.0) - SwerveLateralGap - halfEgo;
+        var targetLeft = (threatPredLat + th.Width / 2.0) + SwerveLateralGap + halfEgo;
+        var targetRight = (threatPredLat - th.Width / 2.0) - SwerveLateralGap - halfEgo;
 
         const double eps = 1e-9;
         // Each side is feasible if it clears the agent WITHIN the ego lane, OR by spilling into an
@@ -5996,8 +6447,8 @@ public sealed partial class Engine : IEngine
             // Both sides work: dodge to the side the agent is VACATING -- opposite its lateral velocity
             // -- so the car steers behind the agent's motion rather than into its path. A laterally
             // static agent (LatSpeed == 0) has no vacating side, so take the smaller steer from centre.
-            chosen = threat.LatSpeed > 0.0 ? targetRight       // agent moving LEFT  -> pass on its right
-                : threat.LatSpeed < 0.0 ? targetLeft           // agent moving RIGHT -> pass on its left
+            chosen = th.LatSpeed > 0.0 ? targetRight       // agent moving LEFT  -> pass on its right
+                : th.LatSpeed < 0.0 ? targetLeft           // agent moving RIGHT -> pass on its left
                 : Math.Abs(targetLeft - curLat) <= Math.Abs(targetRight - curLat) ? targetLeft : targetRight;
         }
         else if (leftFeasible)
@@ -6875,7 +7326,7 @@ public sealed partial class Engine : IEngine
 
     private bool KeepRightStrategicStay(VehicleRuntime v, Lane fromLane, int rightLaneIndex)
     {
-        var route = _demand!.RoutesById[v.Def.RouteId];
+        var route = _routesById[v.Def.RouteId];
         if (route.Edges.Count <= 1)
         {
             return false;
@@ -7033,7 +7484,7 @@ public sealed partial class Engine : IEngine
             return false;
         }
 
-        var route = _demand!.RoutesById[v.Def.RouteId];
+        var route = _routesById[v.Def.RouteId];
         var bestLanes = BestLanesCached(v.Def.RouteId, route.Edges, lane.EdgeId);
 
         LaneContinuation? curr = null;

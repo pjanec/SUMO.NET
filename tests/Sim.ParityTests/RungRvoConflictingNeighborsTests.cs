@@ -31,8 +31,8 @@ public class RungRvoConflictingNeighborsTests
             Path.Combine(ScenarioDir, "config.sumocfg"));
 
         // A blocks the centre; B blocks the right (negative posLat). The only feasible clearance is LEFT.
-        engine.AddObstacle("A", Lane, frontPos: 60.0, length: 1.0, latPos: 0.0, width: 2 * AgentHalfWidth);
-        engine.AddObstacle("B", Lane, frontPos: 60.0, length: 1.0, latPos: -1.8, width: 2 * AgentHalfWidth);
+        engine.AddObstacle(engine.GetLane(Lane), frontPos: 60.0, length: 1.0, latPos: 0.0, width: 2 * AgentHalfWidth);
+        engine.AddObstacle(engine.GetLane(Lane), frontPos: 60.0, length: 1.0, latPos: -1.8, width: 2 * AgentHalfWidth);
 
         var traj = engine.Run(40);
 

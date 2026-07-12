@@ -39,7 +39,7 @@ public class RungRvoAgentUnificationTests
 
         // Drop a finite-width external agent ahead in the lane (Stage-3: a footprint agent, not a
         // full-lane block -- width > 0 so the vehicle can go around it rather than stop dead).
-        engine.AddObstacle("agent", Lane, frontPos: AgentFront, length: AgentLength,
+        engine.AddObstacle(engine.GetLane(Lane), frontPos: AgentFront, length: AgentLength,
             latPos: AgentLatPos, width: 2 * AgentHalfWidth);
 
         var traj = engine.Run(40);
