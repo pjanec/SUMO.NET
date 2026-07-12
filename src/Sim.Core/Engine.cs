@@ -2622,7 +2622,7 @@ public sealed partial class Engine : IEngine
             // (ComputeSublaneLateral) replaces the external-agent evasion path -- gated on _sublane,
             // so every phase-1 scenario keeps exactly the ComputeLateralEvasion path below.
             LatOffset = prePass ? 0.0
-                : _sublane ? (LanelessRvo ? ComputeRvoLateral(v, lane, neighbors, dt)
+                : _sublane ? (LanelessRvo ? ComputeRvoLateral(v, lane, neighbors, time, dt)
                                           : ComputeSublaneLateral(v, lane, dt))
                 : ComputeLateralEvasion(v, lane, neighbors, time, dt),
             StopUpdate = stopUpdate,
@@ -5454,7 +5454,7 @@ public sealed partial class Engine : IEngine
             n.Kinematics.Pos, n.VType.Length, n.Kinematics.LatOffset, n.VType.Width * 0.5, n.Kinematics.Speed);
     }
 
-    private double ComputeRvoLateral(VehicleRuntime v, Lane lane, LaneNeighborQuery neighbors, double dt)
+    private double ComputeRvoLateral(VehicleRuntime v, Lane lane, LaneNeighborQuery neighbors, double time, double dt)
     {
         var curLat = v.Kinematics.LatOffset;
         var eps = KraussModel.NumericalEps;
@@ -5486,7 +5486,7 @@ public sealed partial class Engine : IEngine
             if (gapAhead < v.Kinematics.Speed * 3.0 + v.VType.MinGap)
             {
                 coupled = true;
-                push += SeparationPush(curLat, n, egoHalf, minGapLat, maxOffset, eps);
+                push += SeparationPush(curLat, n, egoHalf, minGapLat, maxOffset, eps, 0.5);
             }
         }
 
@@ -5501,7 +5501,38 @@ public sealed partial class Engine : IEngine
             if (gapBehind < egoLen)
             {
                 coupled = true;
-                push += SeparationPush(curLat, n, egoHalf, minGapLat, maxOffset, eps);
+                push += SeparationPush(curLat, n, egoHalf, minGapLat, maxOffset, eps, 0.5);
+            }
+        }
+
+        // Stage 3 (external-agent unification): fold active external agents on ego's lane into the
+        // SAME solve as footprint neighbours -- this is the "SUMO traffic respects non-SUMO agents"
+        // property, for free, because vehicles and agents are the same RvoNeighbor. share = 1.0
+        // (one-sided): we do not control the external agent, so ego takes full responsibility (the
+        // agent avoids reciprocally in its own navmesh/RVO layer). A Width<=0 agent is a full-lane
+        // block ego cannot go around -> no lateral push (ObstacleConstraint brakes ego to a stop).
+        // TRANSITIONAL adapter: reads the current string-keyed _obstacles store only to BUILD
+        // RvoNeighbors; per docs/SUMOSHARP-API.md §4 this store is being replaced by a scalable
+        // int-indexed SoA agent store -- when it lands, only this adapter loop changes, not the solve.
+        if (_obstacles.Count > 0)
+        {
+            foreach (var obstacle in _obstacles.Values)
+            {
+                if (obstacle.Width <= 0.0 || obstacle.LaneId != lane.Id
+                    || obstacle.StartTime > time || time >= obstacle.EndTime)
+                {
+                    continue;
+                }
+
+                var n = new RvoNeighbor(obstacle.FrontPos, obstacle.Length, obstacle.LatPos, obstacle.Width * 0.5, obstacle.Speed);
+                var gap = n.Pos - n.Length - egoPos;               // bumper-to-bumper (ahead)
+                var behind = egoPos - egoLen - n.Pos;              // ego back to agent front
+                // coupled while the agent is ahead within the reaction horizon OR alongside/just behind.
+                if (gap < v.Kinematics.Speed * 3.0 + v.VType.MinGap && behind < egoLen)
+                {
+                    coupled = true;
+                    push += SeparationPush(curLat, n, egoHalf, minGapLat, maxOffset, eps, 1.0);
+                }
             }
         }
 
@@ -5516,11 +5547,13 @@ public sealed partial class Engine : IEngine
         return Math.Max(-maxOffset, Math.Min(maxOffset, curLat + step));
     }
 
-    // Reciprocal 1D lateral separation from one neighbour. Returns the signed lateral push (toward
-    // ego's side, away from the neighbour) needed this step: HALF the deficit to reach minGapLat
-    // clearance (the neighbour, running the same solve, takes the other half). 0 when already clear.
+    // 1D lateral separation from one neighbour. Returns the signed lateral push (toward ego's side,
+    // away from the neighbour) needed this step: `share` of the deficit to reach minGapLat clearance.
+    // share = 0.5 for another SUMO vehicle (RECIPROCAL: it runs the same solve and takes the other
+    // half); share = 1.0 for an EXTERNAL agent (we do not control it, so ego takes full responsibility
+    // -- the agent avoids reciprocally in its own navmesh/RVO layer). 0 when already clear.
     private static double SeparationPush(
-        double curLat, RvoNeighbor n, double egoHalf, double minGapLat, double maxOffset, double eps)
+        double curLat, RvoNeighbor n, double egoHalf, double minGapLat, double maxOffset, double eps, double share)
     {
         var sep = egoHalf + n.HalfWidth + minGapLat;    // desired centre-to-centre lateral separation
         var d = curLat - n.LatOffset;                   // signed: ego relative to neighbour
@@ -5542,7 +5575,7 @@ public sealed partial class Engine : IEngine
             var roomLeft = maxOffset - curLat;
             dir = roomRight >= roomLeft ? -1 : 1;
         }
-        return dir * (sep - ad) * 0.5;                  // reciprocal half-share
+        return dir * (sep - ad) * share;
     }
 
     // Phase 2 (sublane, P2.2): SUMO's departPosLat initial lateral placement. Returns the vehicle's

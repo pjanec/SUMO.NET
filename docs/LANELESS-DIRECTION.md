@@ -103,6 +103,46 @@ lane-following regime should emerge as RVO reducing to car-following when latera
    lateral distribution to a SUMO sublane run within `parityMode="statistical"` tolerance — the
    SUMO-grounding without byte-chasing.
 
+## Coordination with SUMOSHARP-API (the NuGet packaging branch)
+
+Reviewed `docs/SUMOSHARP-API.md` (branch `claude/sumo-csharp-nuget-strategy-4vlkki`; currently the
+design doc only, no implementation, forked from the same `main` as this branch — so all overlaps are
+*future*, at their Phase-1 implementation). Findings:
+
+**STRONG ALIGNMENT (no conflict).** Both sessions independently concluded the string-keyed
+`ExternalObstacle` record-dictionary must be **replaced by a handle-based struct-of-arrays store**
+(SUMOSHARP-API §4.2–4.4 / D5: `ObstacleHandle` = 32-bit index + 16-bit generation, direct-mapped
+columns `laneHandle/frontPos/length/startTime/endTime/speed/maxDecel/latPos/width/latSpeed`, zero-alloc
+`UpdateObstacle`, dense active list, batch span API). This is exactly the "scalable int-indexed
+footprint-agent store" this doc's Stage 3 calls for. The lateral columns (`latPos/width/latSpeed`)
+they already list are load-bearing for the RVO solve — keep them.
+
+**OWNERSHIP SPLIT (to avoid building the store twice).** The obstacle-store redesign is ONE
+subsystem both directions want. Decision: the **NuGet session owns the store redesign** (SUMOSHARP-API
+§4.3–4.4, Phase 1); the **laneless/RVO layer consumes it** via the neutral `RvoNeighbor` value
+abstraction (already built for exactly this decoupling — the RVO solve reads `RvoNeighbor`s, never the
+store directly). Today Stage 3 folds obstacles in through a **thin transitional adapter** over the
+current `_obstacles` store (one loop in `ComputeRvoLateral`); when the SoA store lands, only that
+adapter changes, not the solve.
+
+**INCOMPATIBILITIES needing attention in the NuGet session:**
+1. **Read API (§5) must expose lateral state.** The column list is `PosX/Y/Z/Angle/Speed/LaneHandle`
+   but the sublane/laneless axis makes `posLat` (and `latSpeed`) first-class — this branch already
+   added `VehicleExportSnapshot.PosLat`, `TrajectoryPoint.PosLat`, `Kinematics.LatSpeed`. Add a
+   `PosLat` (double, parity-exact) column (lateral IS visible via derived `PosX/Y`, but hosts that
+   consume lane-relative state and the sublane goldens need `posLat` directly).
+2. **`VTypeParams` / `DefineVType` (§9, open item §14.1) must include the sublane vType params:**
+   `maxSpeedLat`, `latAlignment`, `minGapLat` (added here to `VType`/`ResolvedVType`). Without them,
+   runtime-spawned vehicles cannot do sublane/laneless lateral behaviour.
+3. **Surface the new engine modes** through the facade/config: `ScenarioConfig.LateralResolution`
+   (the `_sublane` master switch) and `Engine.LanelessRvo`.
+4. **Merge-conflict surface (additive, resolvable):** both branches edit `Engine.cs`,
+   `VehicleExportSnapshot.cs`, `DemandModel.cs`, `DemandParser.cs`, `VTypeDefaults.cs`,
+   `ScenarioConfig.cs`, `TrajectoryPoint.cs`, `ToleranceConfig.cs`. All additions are in distinct
+   regions; whoever merges second reconciles the additive hunks. Coordinate merge order. Both sides
+   hold the same parity anchor (hash `909605E965BFFE59`, goldens byte-identical), so the merged result
+   must too — both are additive/gated, so it should hold.
+
 ## What we explicitly do NOT do
 
 Port SUMO's persistent lateral state machine (`mySafeLatDist*` / `updateExpectedSublaneSpeeds` /
