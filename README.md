@@ -156,12 +156,10 @@ behavioral deviations permitted are those ECS parallelism structurally forces �
   fell **−69 % (city-mixed-1k: 3.78 → 1.16 GiB over a 700-step run)**, all byte-identical.
 - **Parallel by default at scale & deterministic** — the plan, export *and* post-move phases read only
   frozen start-of-step state and write only their own vehicle's intent/frame (structural changes go
-  through the deferred command buffer), so they are race-free by construction; they **auto-parallelize
-  above 256 concurrent vehicles** (tiny parity scenarios stay serial), and an opt-in **spatial
-  domain-decomposition path** (`--region`, disjoint per-region lanes) pushes the hot-path tick to
-  **3.57× single-threaded SUMO at 8 cores / 3.07× at 4 cores** on `city-3000` (see *Scale* below).
-  Single-threaded and parallel runs produce a **byte-identical** determinism hash (`909605E965BFFE59`)
-  — a faster *identical* answer, not an approximation.
+  through the deferred command buffer), so they are **race-free by construction** and
+  **auto-parallelize above 256 concurrent vehicles** (tiny parity scenarios stay serial); single-threaded
+  and parallel runs are byte-identical. The measured scaling curve and the specific optimizations that
+  produced it live in one place — *Scale*, below.
 - **FastDataPlane-shaped** — int-handle identity, value-type components, immutable network blueprints,
   phased systems and an `IWorld`/`ICommandBuffer` seam make the engine droppable into an external ECS
   later *without* adding a dependency now. "The gap is representation, not architecture."
@@ -262,18 +260,34 @@ hyper-threading oversubscription regresses. Every point is **byte-identical** to
 approximation. The single-thread **1.24×** is the data-oriented engine being leaner than SUMO per tick;
 the rest is the region-parallel scaling on top.
 
-**How it got here.** The perf work first closed a ~39× gap (it was ~28 min before the O(N²) junction/
-keepClear scans were profiled and indexed away, and a cont-turn U-turn distance bug that seeded a
-gridlock cascade was fixed — see below). Plan-pass fusion then brought the **true single-threaded**
-path (`--serial`) to ~parity with single-threaded SUMO. On top of that, a spatial **domain
-decomposition** (`--region`: the network is partitioned into a grid of regions owning disjoint lanes,
-one task per region, free vehicle handoff between regions) plus a series of byte-identical hot-path
-wins — parallel export, insert route pre-resolution, handle-array emit, and region-parallel
-plan / willPass / execute / neighbour-refill / speed-gain — built the curve above. Each is gated so any
-special-feature scenario falls back to the exact serial path, and all keep the committed goldens and the
-`Sim.Bench` determinism hash unchanged (single == parallel). The full optimization ledger — including
-the memory-bandwidth wall that caps byte-identical scaling near ~3× on the dominant phases, and the
-blind alleys — is in **`PERF-HANDOVER.md`** and **`SPATIAL-OPT.md`**.
+**Optimizations that built the curve.** Every one is **byte-identical** (holds that same hash) — gated
+so any special-feature scenario falls back to the exact serial path, and each keeps the committed
+goldens unchanged. In roughly the order they landed:
+
+- **O(N²) → indexed junction scans** — closed the early ~39× gap (~28 min → minutes). The per-step
+  right-of-way and keepClear space-accounting used to scan every vehicle per lane; per-lane indices made
+  them O(vehicles-on-that-lane). (The same investigation fixed a cont-turn **U-turn distance bug** that
+  froze fringe vehicles and seeded a gridlock cascade — see the aggregate-parity note below.)
+- **Plan-pass fusion** — the engine used to run *two* full plan passes over every near-junction vehicle
+  (a `willPass` pre-pass, then the real plan); the pre-pass intent is now cached and reused inline,
+  bringing the **true single-threaded** path (`--serial`) to ~parity with single-threaded SUMO.
+- **Parallel export** — each vehicle's frame geometry is computed concurrently into a reusable
+  index-keyed buffer; the comparator/hash are (vehicle, time)-keyed, so emission order is irrelevant.
+- **Insert route pre-resolution** — a vehicle's lane sequence is a pure function of its route + the
+  immutable network, so it is resolved for *every* vehicle **in parallel at load** instead of in the hot
+  insertion loop (−72 % of the insert phase).
+- **Handle-array emit** — the emit path indexes lanes by their dense integer handle instead of hashing
+  the `LaneId` string per vehicle per frame (−28 % emit).
+- **Spatial domain decomposition** (`--region`) — the network is partitioned into a grid of regions that
+  each **own a disjoint set of lanes**, so one task per region needs no locks and vehicle handoff between
+  regions is free (a vehicle is simply regrouped by its current lane the next step). This
+  region-parallelizes the plan, junction `willPass`, movement execute, neighbour refill and post-move
+  speed-gain phases.
+
+The dominant plan/junction phases are **memory-bandwidth-bound on random neighbour access**, which caps
+byte-identical parallel scaling near ~3× (hence the 4→8-core tail-off above). The full ledger — the
+ceiling analysis, and the blind alleys that were tried and reverted (per-field SoA, a flat spatial
+reorder, locked parallel foe-index) — is in **`PERF-HANDOVER.md`** and **`SPATIAL-OPT.md`**.
 
 **Engine vs real SUMO on the same scenario.** `Sim.BenchCity` compares an engine run against a
 committed SUMO 1.20.0 reference (`--sumo-summary`/`--sumo-tripinfo`/`--aggregate-tolerance`) on
