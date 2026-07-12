@@ -1,3 +1,5 @@
+using Sim.Core.Bridge;
+
 namespace Sim.Core.Orca;
 
 // Open-space holonomic crowd driver for the ORCA layer (docs/LANELESS-DIRECTION.md, second regime).
@@ -13,8 +15,10 @@ namespace Sim.Core.Orca;
 // high agent counts). Agents are addressed by int index; a future entity-handle/SoA store (the
 // SUMOSHARP-API redesign) can back these arrays without changing the solve. Bridging open-space
 // agents and lane vehicles into one another's neighbourhoods (so SUMO traffic and crowd agents
-// mutually avoid) is the cross-regime step and is intentionally NOT wired here yet.
-public sealed class OrcaCrowd
+// mutually avoid) is the cross-regime bridge: this driver participates in it from BOTH sides --
+// it exposes its agents as world discs (ICrowdFootprintSource, so the lane engine can avoid them)
+// and it consumes external world discs (SetExternalObstacles, so its agents avoid vehicles).
+public sealed class OrcaCrowd : ICrowdFootprintSource
 {
     private Vec2[] _position;
     private Vec2[] _velocity;
@@ -27,6 +31,14 @@ public sealed class OrcaCrowd
     private Vec2[] _newVelocity;
     private OrcaSolver.Agent[] _neighbourScratch;
     private OrcaLine[] _lineScratch;
+
+    // Cross-regime bridge (Direction A -- crowd avoids vehicles): external world-space discs from the
+    // OTHER regime (lane vehicles, projected to discs) that every agent also avoids, ONE-SIDED
+    // (responsibility 1.0: the crowd yields fully; the vehicle avoids the crowd through its own lane
+    // solve -- a conservative mutual double-yield that is always collision-safe). Empty by default,
+    // so a stand-alone crowd is unaffected. Updated each step by the coupling before Step().
+    private WorldDisc[] _externalDiscs = System.Array.Empty<WorldDisc>();
+    private int _externalDiscCount;
 
     // Planning horizon (s): how far ahead ORCA guarantees collision-freedom. Larger -> earlier,
     // smoother avoidance; the RVO2 default is 10 s for agents.
@@ -156,8 +168,16 @@ public sealed class OrcaCrowd
             }
         }
 
-        // Gather near neighbours (frozen state), excluding self and anything out of range.
-        var near = _neighbourScratch.AsSpan(0, _count);
+        // Gather near neighbours (frozen state), excluding self and anything out of range. Room for
+        // every other agent PLUS every external (cross-regime) disc.
+        var cap = _count + _externalDiscCount;
+        if (_neighbourScratch.Length < cap)
+        {
+            Array.Resize(ref _neighbourScratch, cap);
+            Array.Resize(ref _lineScratch, cap);
+        }
+
+        var near = _neighbourScratch.AsSpan(0, cap);
         var k = 0;
         var rangeSq = NeighbourDist * NeighbourDist;
         for (var j = 0; j < _count; j++)
@@ -172,11 +192,63 @@ public sealed class OrcaCrowd
                 continue;
             }
 
-            near[k++] = new OrcaSolver.Agent(_position[j], _velocity[j], _radius[j]);
+            near[k++] = new OrcaSolver.Agent(_position[j], _velocity[j], _radius[j]);   // reciprocal 0.5
+        }
+
+        // Cross-regime discs (vehicles): avoided ONE-SIDED (responsibility 1.0) -- the crowd yields
+        // fully, the vehicle avoids the crowd via its own lane solve. Same range cutoff.
+        for (var d = 0; d < _externalDiscCount; d++)
+        {
+            var disc = _externalDiscs[d];
+            var ex = disc.X - _position[i].X;
+            var ey = disc.Y - _position[i].Y;
+            if (ex * ex + ey * ey > rangeSq)
+            {
+                continue;
+            }
+
+            near[k++] = new OrcaSolver.Agent(
+                new Vec2(disc.X, disc.Y), new Vec2(disc.Vx, disc.Vy), disc.Radius, responsibility: 1.0);
         }
 
         return OrcaSolver.ComputeNewVelocity(
             self, near[..k], pref, maxSpeed, TimeHorizon, dt, _lineScratch.AsSpan(0, k));
+    }
+
+    // Cross-regime bridge (Direction A): replace the external world-disc list every agent avoids this
+    // step (the lane vehicles, projected to discs by the coupling). Copied into an internal buffer so
+    // the caller's span need not outlive the call; cleared by passing an empty span.
+    public void SetExternalObstacles(ReadOnlySpan<WorldDisc> discs)
+    {
+        if (_externalDiscs.Length < discs.Length)
+        {
+            _externalDiscs = new WorldDisc[Math.Max(discs.Length, 8)];
+        }
+
+        discs.CopyTo(_externalDiscs);
+        _externalDiscCount = discs.Length;
+    }
+
+    // Cross-regime bridge (Direction B): expose this crowd's agents as world discs so the OTHER regime
+    // (the lane engine) can discover and avoid them. Brute-force radius scan (the spatial hash is the
+    // shared perf axis, not built here); fills `into` up to its length and returns the count written.
+    public int QueryNear(double x, double y, double radius, Span<WorldDisc> into)
+    {
+        var rSq = radius * radius;
+        var n = 0;
+        for (var i = 0; i < _count && n < into.Length; i++)
+        {
+            var dx = _position[i].X - x;
+            var dy = _position[i].Y - y;
+            if (dx * dx + dy * dy > rSq)
+            {
+                continue;
+            }
+
+            into[n++] = new WorldDisc(_position[i].X, _position[i].Y, _velocity[i].X, _velocity[i].Y, _radius[i]);
+        }
+
+        return n;
     }
 
     private void Grow(int newCapacity)

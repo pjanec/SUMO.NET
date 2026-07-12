@@ -41,12 +41,19 @@ public static class OrcaSolver
         public readonly Vec2 Position;
         public readonly Vec2 Velocity;
         public readonly double Radius;
+        // The fraction of the avoidance correction SELF takes when avoiding THIS neighbour. 0.5 is
+        // reciprocal ORCA (the neighbour, running the same solve, takes the other half -> mutual
+        // avoidance). 1.0 is one-sided: the neighbour does NOT reciprocate (a static blocker, or a
+        // mover from the OTHER regime that avoids self through its own separate solve -- the
+        // cross-regime bridge case), so self takes the whole correction. Default 0.5.
+        public readonly double Responsibility;
 
-        public Agent(Vec2 position, Vec2 velocity, double radius)
+        public Agent(Vec2 position, Vec2 velocity, double radius, double responsibility = 0.5)
         {
             Position = position;
             Velocity = velocity;
             Radius = radius;
+            Responsibility = responsibility;
         }
     }
 
@@ -130,9 +137,10 @@ public static class OrcaSolver
                 u = (combinedRadius * invTimeStep - wLength) * unitW;
             }
 
-            // Reciprocity: each agent takes HALF the correction; the neighbour (running the same
-            // solve) takes the other half -> guaranteed mutual collision avoidance, no oscillation.
-            lineScratch[lineCount++] = new OrcaLine(self.Velocity + 0.5 * u, direction);
+            // Reciprocity: self takes its `Responsibility` fraction of the correction (0.5 = mutual,
+            // the neighbour taking the other half; 1.0 = one-sided, self avoids fully -- e.g. a
+            // cross-regime mover that avoids self through its own separate solve).
+            lineScratch[lineCount++] = new OrcaLine(self.Velocity + other.Responsibility * u, direction);
         }
 
         var lines = lineScratch[..lineCount];

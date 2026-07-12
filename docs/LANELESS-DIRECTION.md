@@ -152,10 +152,37 @@ lane-following regime should emerge as RVO reducing to car-following when latera
      **deterministic** per-`(agent, step)` symmetry-break jitter on the preferred velocity
      (`OrcaCrowd.SymmetryBreak`, default 0.0 = pure): a hash-derived nudge that mimics RVO2's per-step
      random perturbation but is reproducible, resolving symmetric crossings in ~45 steps.
-   - **Not yet wired (the cross-regime bridge, next step):** letting open-space agents and lane
-     vehicles enter one another's neighbourhoods so SUMO traffic and crowd agents *mutually* avoid.
-     That is the genuine unification and is intentionally deferred — this stage delivers and validates
-     the open-space solver itself.
+   - **The cross-regime bridge (see stage 6).**
+6. **The cross-regime bridge (DONE) — mutual avoidance across the two regimes.** Lane-derived vehicles
+   and open-space crowd agents enter one another's neighbourhoods so SUMO traffic and non-SUMO agents
+   *mutually* avoid — the genuine unification the whole laneless direction was aiming at ("SUMO traffic
+   respects non-SUMO agents AND vice versa"). Built as `src/Sim.Core/Bridge/`: a neutral world-space
+   footprint seam (`WorldDisc` + `ICrowdFootprintSource`), the world↔lane inverse projection
+   (`LaneProjection`, the inverse of `PositionAtOffset`), and a lockstep coordinator
+   (`CrossRegimeCoupling`) that steps an `Engine` (via `Run(1)`, whose timeline carries across calls)
+   and an `OrcaCrowd` together, exchanging only frozen world-space snapshots each step.
+   - **Direction A — a person walks around a car.** Each step the coupling turns every vehicle into a
+     short chain of world discs (covering its footprint, dead-reckoned with its world velocity) and
+     hands them to the crowd (`OrcaCrowd.SetExternalObstacles`); the crowd avoids them ONE-SIDED
+     (a new `OrcaSolver.Agent.Responsibility` = 1.0: the crowd yields fully). Proven: a pedestrian
+     routes around a parked vehicle disc (deflects >1 m, no overlap, reaches its goal).
+   - **Direction B — a car swerves for a person.** The engine's new gated `Engine.CrowdSource` makes
+     each laneless-RVO vehicle query nearby crowd agents at its WORLD position and project each onto
+     its lane as a one-sided `RvoNeighbour` (with **lateral prediction** of a crosser's position at
+     time-to-encounter, exactly as B6's `ComputeLateralEvasion` does — without it the myopic solve
+     dodges toward where a perpendicular crosser is heading). Proven end-to-end through the real
+     Engine: a vehicle swerves ~1.9 m around a person standing in the lane, never overlaps, and drives
+     on (the person is simultaneously nudged by the passing car — Direction A live in the same run).
+   - **Both sides yield fully** (a conservative mutual double-yield) — always collision-*safe*, though
+     NOT a continuous cross-regime collision *guarantee*: a fast one-sided obstacle a slow agent cannot
+     out-run can still graze (ORCA's best-effort LP3), and coarse-dt perpendicular crossings lean on
+     the lateral prediction. A hard guarantee would need sub-stepping the crowd within a lane step
+     and/or a shared spatial solve — the documented next refinement.
+   - **Gated / byte-identical.** `Engine.CrowdSource` is null unless a coupling attaches it, and the
+     crowd loop lives only inside `ComputeRvoLateral` (reachable solely under `LanelessRvo && _sublane`),
+     so no committed golden can touch it — verified: `909605E965BFFE59` held, full suite green with the
+     2 new bridge tests. Deliberately NOT built on the string `ExternalObstacle` API: the seam is the
+     neutral value-typed `WorldDisc`, so the future SoA agent store feeds it unchanged.
 
 ## Coordination with SUMOSHARP-API (the NuGet packaging branch)
 

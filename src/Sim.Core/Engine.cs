@@ -509,6 +509,17 @@ public sealed partial class Engine : IEngine
     // 60/61/62) stays on the SUMO-faithful path and is byte-identical; no committed test sets it.
     public bool LanelessRvo;
 
+    // Cross-regime bridge (docs/LANELESS-DIRECTION.md, "the cross-regime bridge"): an optional
+    // OPEN-SPACE crowd whose agents this engine's laneless-RVO vehicles avoid. When set (by the
+    // CrossRegimeCoupling), ComputeRvoLateral queries it for crowd agents near ego's WORLD position
+    // and projects each onto ego's lane as a one-sided RvoNeighbour -- so a lane vehicle swerves for a
+    // pedestrian the same way it swerves for another vehicle, closing the "SUMO traffic respects
+    // non-SUMO agents" loop. Null by default => the crowd loop in ComputeRvoLateral is skipped
+    // entirely => byte-identical (and it is reachable ONLY under LanelessRvo && _sublane anyway, so no
+    // committed golden can touch it). Deliberately a neutral world-disc source (Bridge.
+    // ICrowdFootprintSource), NOT the string-keyed ExternalObstacle API the owner is replacing.
+    public Sim.Core.Bridge.ICrowdFootprintSource? CrowdSource { get; set; }
+
     // Perf diagnostics: opt-in per-phase wall-time accounting for the Run loop. OFF by default and
     // effectively free then (one bool test per phase per step -- GetTimestamp is not even called, no
     // allocation, no Stopwatch object). Sim.BenchCity --profile turns it on and prints the breakdown,
@@ -5521,6 +5532,45 @@ public sealed partial class Engine : IEngine
             }
         }
 
+        // Cross-regime bridge (Direction B -- vehicle avoids crowd): query the open-space CrowdSource
+        // for crowd agents near ego's WORLD position and project each onto ego's lane as a one-sided
+        // RvoNeighbour, so the feasible-interval solve below forbids their lateral band exactly like a
+        // vehicle's or obstacle's. This is how a lane vehicle swerves for a pedestrian. Gated: skipped
+        // entirely when no crowd is attached (CrowdSource == null), so byte-identical when unused; and
+        // reachable only here, under LanelessRvo && _sublane, so no committed golden is affected. Uses
+        // the neutral world-disc seam + LaneProjection (the inverse of PositionAtOffset), NOT the
+        // string ExternalObstacle store.
+        if (CrowdSource is not null && count < MaxRvoNeighbors)
+        {
+            var (egoWorldX, egoWorldY, _) = LaneGeometry.PositionAtOffset(lane.Shape, egoPos, curLat);
+            Span<Sim.Core.Bridge.WorldDisc> discs = stackalloc Sim.Core.Bridge.WorldDisc[MaxRvoNeighbors];
+            var got = CrowdSource.QueryNear(egoWorldX, egoWorldY, radius, discs);
+            for (var d = 0; d < got && count < MaxRvoNeighbors; d++)
+            {
+                var disc = discs[d];
+                var (offset, latOff, dist) = LaneProjection.Project(lane.Shape, disc.X, disc.Y);
+                // Ignore a crowd agent too far off THIS lane laterally to interact (it belongs to a
+                // different corridor); the disc's own radius + ego half-width + minGapLat is the reach.
+                if (dist > egoHalf + disc.Radius + minGapLat + maxOffset)
+                {
+                    continue;
+                }
+
+                // Decompose the agent's world velocity into ego's lane frame: longitudinal (for the
+                // ahead/behind coupling test) and lateral (to PREDICT where a CROSSING agent will be by
+                // the time ego reaches it). Without the lateral prediction the myopic solve dodges to
+                // the currently-nearer gap -- which a perpendicular crosser then walks into; predicting
+                // its lateral position at time-to-encounter (as B6's ComputeLateralEvasion does for
+                // obstacles) makes ego commit to the side the crosser is leaving. Mirrors the swerve's
+                // "predicted lateral position" logic exactly.
+                var (laneSpeed, latVel) = LaneFrameVelocity(lane, offset, disc.Vx, disc.Vy);
+                var gapAhead = offset - disc.Radius - egoPos;
+                var tte = gapAhead > 0.0 ? gapAhead / Math.Max(v.Kinematics.Speed, KraussModel.NumericalEps) : 0.0;
+                var predictedLat = latOff + latVel * Math.Min(tte, 4.0);   // cap the horizon at 4 s
+                near[count++] = new RvoNeighbor(offset, 2.0 * disc.Radius, predictedLat, disc.Radius, laneSpeed, 1.0);
+            }
+        }
+
         // Stage 2b-ii: reduce over the gathered neighbours by a 1D lateral FEASIBLE-INTERVAL solve --
         // the half-plane intersection reduced to the lateral axis, which correctly resolves CONFLICTING
         // neighbours (a plain push-sum could strand ego between two that push opposite ways). Each
@@ -5586,6 +5636,45 @@ public sealed partial class Engine : IEngine
         }
 
         return DriftToward(curLat, target, maxStep);
+    }
+
+    // Cross-regime bridge helper: decompose a world velocity (vx, vy) into ego's lane frame at
+    // arc-length `offset` -- LONGITUDINAL (along the tangent, for the ahead/behind coupling test) and
+    // LATERAL (along the +left normal, for predicting a crossing agent's lateral drift). Finds the
+    // segment containing `offset` and projects onto its unit tangent / left-normal. A pedestrian
+    // crossing perpendicular -> ~0 longitudinal (couples as a slow foe) and a large lateral component.
+    private static (double Longitudinal, double Lateral) LaneFrameVelocity(Lane lane, double offset, double vx, double vy)
+    {
+        var shape = lane.Shape;
+        if (shape.Count < 2)
+        {
+            return (0.0, 0.0);
+        }
+
+        var remaining = offset;
+        for (var i = 0; i < shape.Count - 1; i++)
+        {
+            var (x1, y1) = shape[i];
+            var (x2, y2) = shape[i + 1];
+            var dx = x2 - x1;
+            var dy = y2 - y1;
+            var segLen = Math.Sqrt(dx * dx + dy * dy);
+            if (remaining <= segLen || i == shape.Count - 2)
+            {
+                if (segLen <= 0.0)
+                {
+                    return (0.0, 0.0);
+                }
+
+                var lon = (vx * dx + vy * dy) / segLen;
+                var lat = (vx * (-dy) + vy * dx) / segLen;   // +left normal, matching LatOffset's sign
+                return (lon, lat);
+            }
+
+            remaining -= segLen;
+        }
+
+        return (0.0, 0.0);
     }
 
     // The lateral feasible-interval solve: return the point in [lo, hi] MINUS the union of the
