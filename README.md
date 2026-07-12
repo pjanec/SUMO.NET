@@ -155,7 +155,7 @@ schedules) · mesoscopic model · **TraCI** runtime control · GUI internals.
 cooperative lane changes · the full **sublane / lateral model** (`MSLCM_SL2015`, continuous lateral
 position, hexagonal footprints, spatial hash, SIMD — this is "phase 2") · U-turns · station dwell /
 train reversal · advanced actuated-TLS features (switching rules, TraCI overrides, jam logic). See
-`TASKS.md` and `DESIGN.md` for the full ledger and the phase-1/phase-2 seam analysis.
+`docs/TASKS.md` and `docs/DESIGN.md` for the full ledger and the phase-1/phase-2 seam analysis.
 
 The probabilistic-`<flow>` arrival stream and the warm-start snapshot also carry **SUMO cross-checks**:
 an ensemble statistical parity of the insertion-count distribution vs a 50-seed SUMO golden
@@ -234,7 +234,7 @@ every other scenario is byte-identical.
 - **Cooperative oncoming shift:** an oncoming driver that sees a spilled overtaker closing head-on
   **pulls to its own outer edge** to widen the corridor, then recenters — the mirror of the give-way
   drift.
-- Deferred (diagnosed in `OV-REMAINING.md`): a cross-lane hard-brake backstop, return-gap enforcement,
+- Deferred (diagnosed in `docs/OV-REMAINING.md`): a cross-lane hard-brake backstop, return-gap enforcement,
   and a coupled OV2/OV4 decision enabling a true reduced-clearance side-by-side pass.
 
 ### Demand insertion & warm-start snapshots
@@ -316,7 +316,7 @@ goldens unchanged. In roughly the order they landed:
 The dominant plan/junction phases are **memory-bandwidth-bound on random neighbour access**, which caps
 byte-identical parallel scaling near ~3× (hence the 4→8-core tail-off above). The full ledger — the
 ceiling analysis, and the blind alleys that were tried and reverted (per-field SoA, a flat spatial
-reorder, locked parallel foe-index) — is in **`PERF-HANDOVER.md`** and **`SPATIAL-OPT.md`**.
+reorder, locked parallel foe-index) — is in **`docs/PERF-HANDOVER.md`** and **`docs/SPATIAL-OPT.md`**.
 
 **Engine vs real SUMO on the same scenario.** `Sim.BenchCity` compares an engine run against a
 committed SUMO 1.20.0 reference (`--sumo-summary`/`--sumo-tripinfo`/`--aggregate-tolerance`) on
@@ -427,11 +427,13 @@ src/
 scenarios/        committed parity scenarios (inputs + goldens + tolerance + provenance) and _bench/ demos
 sumo/             vendored SUMO 1.20.0 source (read-only algorithm reference; never edited)
 scripts/          golden regeneration & benchmark generation (network side; needs SUMO)
+docs/             design, specs, the perf/optimization ledger, and open-issue notes
+LICENSE           EPL-2.0 OR GPL-2.0-or-later (dual); version.json — project version (SemVer)
 ```
 
-Key docs: **`DESIGN.md`** (architecture of record — read this for the "why"), **`TASKS.md`** (the work
-queue / feature ledger), **`CLAUDE.md`** (contributor rules), **`RAIL-SUPPORT.md`**,
-**`EXTERNAL-AGENTS-VIZ.md`**, **`BENCHMARK_SPEC.md`**, **`C4-VII-REMAINING.md`** (open junction work).
+Key docs: **`docs/DESIGN.md`** (architecture of record — read this for the "why"), **`docs/TASKS.md`** (the work
+queue / feature ledger), **`CLAUDE.md`** (contributor rules), **`docs/RAIL-SUPPORT.md`**,
+**`docs/EXTERNAL-AGENTS-VIZ.md`**, **`docs/BENCHMARK_SPEC.md`**, **`docs/C4-VII-REMAINING.md`** (open junction work).
 
 ---
 
@@ -443,5 +445,24 @@ open item: box-blocking on *pathological* tight unmarked single-lane rings under
 deferred — normal roundabouts flow fine). Phase 2 (the laneless/sublane heterogeneous model) is
 designed-for but not built.
 
-*This project ports algorithms from Eclipse SUMO (EPL-2.0). The vendored `sumo/` tree is the upstream
-source, used as a read-only reference.*
+---
+
+## Versioning
+
+[Semantic Versioning 2.0.0](https://semver.org). The current version lives in **`version.json`** (and
+is stamped into every built assembly via `Directory.Build.props`). Pre-1.0, so behavior and public API
+may still change between minor versions. The SUMO version this engine targets for parity is tracked
+separately in **`SUMO_VERSION`** (currently `1.20.0`).
+
+## License
+
+**`EPL-2.0 OR GPL-2.0-or-later`** (dual) — you may use this project under *either* license, at your
+option; see **`LICENSE`**. This project ports algorithms from, and vendors the source of,
+[Eclipse SUMO](https://eclipse.dev/sumo/), which is itself licensed `EPL-2.0 OR GPL-2.0-or-later`; the
+port is a derivative work, so it carries the same dual license. **Commercial use is fine** — under the
+EPL-2.0 arm (weak, file-level copyleft) you can build proprietary software around this engine and need
+only share modifications to the EPL-covered files themselves.
+
+The vendored **`sumo/`** directory is Eclipse SUMO's own upstream source, used read-only as an algorithm
+reference; it keeps SUMO's own copyright and license (`sumo/LICENSE`, `sumo/NOTICE.md`) and is not
+modified.

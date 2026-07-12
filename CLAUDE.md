@@ -3,7 +3,7 @@
 This repo reimplements SUMO's microscopic traffic-simulation algorithms in C# / .NET 8
 (ECS, data-oriented, parallel-ready) with **behavioral parity to SUMO** as the
 non-negotiable correctness bar. Performance matters, but a faster wrong answer is still
-wrong. Read `DESIGN.md` for the architecture of record; read `TASKS.md` for the current
+wrong. Read `docs/DESIGN.md` for the architecture of record; read `docs/TASKS.md` for the current
 work queue. This file is the rules of the road.
 
 ## Prime directives
@@ -54,7 +54,7 @@ investigation, never a `dotnet test` dependency.
 - golden *outputs*: `golden.fcd.xml`, `golden.state.xml`, `provenance.txt`
 - per-scenario `tolerance.json`
 - vendored SUMO source at `/sumo/` (read-only reference)
-- `SUMO_VERSION`, the `scripts/`, this file, `DESIGN.md`, `TASKS.md`, `.claude/`
+- `SUMO_VERSION`, the `scripts/`, this file, `docs/DESIGN.md`, `docs/TASKS.md`, `.claude/`
 
 **Ephemeral (regenerated, never trusted by tests):**
 - the pip-installed SUMO binary

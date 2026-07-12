@@ -1,0 +1,11 @@
+<Project>
+  <!-- Repo-wide build defaults. MSBuild auto-imports this file from the solution root into every
+       project, so the version is stamped into every assembly from one place. Keep <Version> in sync
+       with version.json (the human-facing manifest). Simulation output does not depend on this
+       metadata, so bumping the version stays byte-identical to the committed goldens. -->
+  <PropertyGroup>
+    <Version>0.1.0</Version>
+    <Product>Traffic — SUMO microsim reimplementation</Product>
+    <PackageLicenseExpression>EPL-2.0 OR GPL-2.0-or-later</PackageLicenseExpression>
+  </PropertyGroup>
+</Project>

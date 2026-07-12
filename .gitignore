@@ -47,3 +47,8 @@ scenarios/_bench/rail-crossing-demo/engine.fcd.xml
 scenarios/_bench/rail-crossing-demo/replay.html
 scenarios/_bench/emergency-corridor-demo/engine.fcd.xml
 scenarios/_bench/emergency-corridor-demo/replay.html
+
+# Benchmark / scaling script outputs (regenerated, never committed)
+scaling-results.csv
+# Accidental FCD dump from a mis-redirected --fcd-out (was a 504 MB file named "--serial")
+/--serial
