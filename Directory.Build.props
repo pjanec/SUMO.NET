@@ -5,7 +5,39 @@
        metadata, so bumping the version stays byte-identical to the committed goldens. -->
   <PropertyGroup>
     <Version>0.1.0</Version>
-    <Product>Traffic — SUMO microsim reimplementation</Product>
+    <Product>SumoSharp — SUMO microsim reimplementation for .NET</Product>
     <PackageLicenseExpression>EPL-2.0 OR GPL-2.0-or-later</PackageLicenseExpression>
   </PropertyGroup>
+
+  <!-- NuGet package metadata (SUMOSHARP-API.md §1). Only the two library projects (Sim.Core,
+       Sim.Ingest) set IsPackable=true + a PackageId; every CLI/tool/test/bench sets IsPackable=false,
+       so these shared values are inert for them. "SUMO" is an Eclipse trademark: the package is an
+       UNOFFICIAL, independent reimplementation — see each package README's disclaimer. -->
+  <PropertyGroup>
+    <!-- Default: nothing packs. The two library projects (Sim.Core / Sim.Ingest) override to true. -->
+    <IsPackable>false</IsPackable>
+    <Authors>pjanec</Authors>
+    <Company>pjanec</Company>
+    <PackageProjectUrl>https://github.com/pjanec/SUMO.NET</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/pjanec/SUMO.NET</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageTags>sumo;traffic;microsimulation;traffic-simulation;simulation;ecs;games;digital-twin</PackageTags>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageRequireLicenseAcceptance>false</PackageRequireLicenseAcceptance>
+  </PropertyGroup>
+
+  <!-- Reproducible builds + step-into debugging for consumers: deterministic output, SourceLink, an
+       embedded/published repo URL, and a symbol (.snupkg) package. -->
+  <PropertyGroup>
+    <Deterministic>true</Deterministic>
+    <PublishRepositoryUrl>true</PublishRepositoryUrl>
+    <EmbedUntrackedSources>true</EmbedUntrackedSources>
+    <IncludeSymbols>true</IncludeSymbols>
+    <SymbolPackageFormat>snupkg</SymbolPackageFormat>
+    <ContinuousIntegrationBuild Condition="'$(GITHUB_ACTIONS)' == 'true'">true</ContinuousIntegrationBuild>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.SourceLink.GitHub" Version="8.0.0" PrivateAssets="All" />
+  </ItemGroup>
 </Project>
