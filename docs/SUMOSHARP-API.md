@@ -333,9 +333,19 @@ FIFO at the start of each `Tick()` (boundary contract); `Tick()` then `Step`s an
 `SimulationSnapshot` (SoA columns + `SpeedExact` double + events + time/step, self-contained so the host
 reads it from any thread). `Start(hz)` runs `Tick()` on a background thread with `Pause`/`Resume` and a
 `SpeedMultiplier` (fixed-rate pacing, resync-not-spiral when behind); `Tick()` is also callable manually
-for deterministic stepping. Notes: snapshots are **allocated per Tick** for now (a snapshot pool is the
-documented perf refinement); the two-frame **interpolation hook** above is not wired yet; `Invoke` runs
-inline in manual mode and blocks for the result in threaded mode (avoid calling it while `Paused`).
+for deterministic stepping. `Invoke` runs inline in manual mode and blocks for the result in threaded mode
+(avoid calling it while `Paused`).
+
+**Interpolation hook: landed.** The runner retains the prior frame as `PreviousSnapshot` alongside
+`Snapshot`; `InterpolationAlpha(renderTime)` maps a host render clock (sim-time seconds) to a clamped
+`[0,1]` blend factor across the two frames' `.Time` stamps, and `TryInterpolateVehicle(handle, renderTime,
+out InterpolatedVehicle)` blends one vehicle's render state (X/Y/Z, angle along the shortest arc, speed)
+between them. Safe before two frames exist (alpha 1.0 → latest) and when stamps coincide; angle wraps
+correctly at 0/360. `InterpolatedVehicle` is a `readonly struct` (no host-render-path allocation). Tested
+by `RungB14InterpolationTests`.
+
+**Snapshot pool:** snapshots are still **allocated per Tick** by default; an opt-in pool is the next
+refinement (see below), left off by default so the immutable-forever `Snapshot` contract is unchanged.
 
 ---
 

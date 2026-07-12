@@ -25,6 +25,7 @@ public sealed class SimulationRunner : IDisposable
     private List<Action<Engine>> _draining = new();
 
     private volatile SimulationSnapshot _published = SimulationSnapshot.Empty;
+    private volatile SimulationSnapshot _previous = SimulationSnapshot.Empty;
 
     private Thread? _thread;
     private volatile bool _running;
@@ -41,6 +42,11 @@ public sealed class SimulationRunner : IDisposable
     // The most recently published frame. Read it fresh each host frame; it is immutable, so a retained
     // reference stays valid (a newer frame is published as a new object).
     public SimulationSnapshot Snapshot => _published;
+
+    // The frame published BEFORE `Snapshot` (SUMOSHARP-API.md §7 interpolation hook). A host rendering
+    // faster than the sim ticks lerps between `PreviousSnapshot` and `Snapshot` using their `.Time`
+    // stamps, so motion is smooth instead of stepping. `Empty` until at least two frames have published.
+    public SimulationSnapshot PreviousSnapshot => _previous;
 
     public bool IsRunning => _running;
     public bool IsPaused => _paused;
@@ -88,11 +94,79 @@ public sealed class SimulationRunner : IDisposable
     }
 
     // One unit of work: drain queued commands (boundary), Step the engine, publish an immutable snapshot.
+    // The prior published frame is retained as `PreviousSnapshot` for the interpolation hook.
     public void Tick()
     {
         DrainCommands();
         _engine.Step();
-        _published = SimulationSnapshot.Capture(_engine);
+        var snap = SimulationSnapshot.Capture(_engine);
+        _previous = _published;
+        _published = snap;
+    }
+
+    // Render-time blend factor in [0,1] between PreviousSnapshot (0) and Snapshot (1) for a host clock at
+    // `renderTime` (same units as SimulationSnapshot.Time -- seconds of sim time). Clamped, and safe before
+    // two frames exist (returns 1 -> "just use the latest") and when the two stamps coincide.
+    public double InterpolationAlpha(double renderTime)
+    {
+        var prev = _previous;
+        var cur = _published;
+        var span = cur.Time - prev.Time;
+        if (prev.StepCount == cur.StepCount || span <= 0.0)
+        {
+            return 1.0; // no distinct earlier frame to blend from
+        }
+
+        var a = (renderTime - prev.Time) / span;
+        return a < 0.0 ? 0.0 : (a > 1.0 ? 1.0 : a);
+    }
+
+    // Interpolate one vehicle's RENDER state between the two published frames at `renderTime`. Returns false
+    // if the vehicle is not in the latest frame (it arrived/despawned). If it is only in the latest frame
+    // (just departed), its current state is returned unblended. Angle is blended along the shortest arc.
+    // Reads the two volatile frames once; a rare torn pair only widens the blend for a single host frame
+    // (harmless for rendering) and is guarded by the alpha checks above.
+    public bool TryInterpolateVehicle(VehicleHandle handle, double renderTime, out InterpolatedVehicle result)
+    {
+        var prev = _previous;
+        var cur = _published;
+
+        if (!cur.TryGetVehicle(handle, out var now))
+        {
+            result = default;
+            return false;
+        }
+
+        var a = (float)InterpolationAlpha(renderTime);
+        if (a >= 1.0f || !prev.TryGetVehicle(handle, out var before))
+        {
+            result = new InterpolatedVehicle(
+                handle, now.X, now.Y, now.Z, now.Angle, (float)now.Speed);
+            return true;
+        }
+
+        result = new InterpolatedVehicle(
+            handle,
+            Lerp(before.X, now.X, a),
+            Lerp(before.Y, now.Y, a),
+            Lerp(before.Z, now.Z, a),
+            LerpAngleDeg(before.Angle, now.Angle, a),
+            Lerp((float)before.Speed, (float)now.Speed, a));
+        return true;
+    }
+
+    private static float Lerp(float from, float to, float t) => from + (to - from) * t;
+
+    // Interpolate degrees along the shortest arc (so 350deg -> 10deg crosses 0, not the long way round).
+    private static float LerpAngleDeg(float from, float to, float t)
+    {
+        var delta = (to - from) % 360f;
+        if (delta > 180f) delta -= 360f;
+        else if (delta < -180f) delta += 360f;
+
+        var r = from + delta * t;
+        r %= 360f;
+        return r < 0f ? r + 360f : r;
     }
 
     private void DrainCommands()
