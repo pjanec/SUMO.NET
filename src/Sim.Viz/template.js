@@ -81,6 +81,17 @@
     return "rgb(" + r + "," + g + "," + b + ")";
   }
 
+  // Fear ramp (panic-evac): calm blue -> panic red, drives the default vehicle-box fill whenever a
+  // frame entry carries a 4th (fear) element -- see interpolatedVehicles / drawVehicle.
+  function fearColor(f) {
+    var t = Math.max(0, Math.min(1, f));
+    // calm blue (#4f8ef7 = 79,142,247) -> panic red (#ef4444 = 239,68,68)
+    var r = Math.round(79 + t * (239 - 79));
+    var g = Math.round(142 + t * (68 - 142));
+    var b = Math.round(247 + t * (68 - 247));
+    return "rgb(" + r + "," + g + "," + b + ")";
+  }
+
   // ---------------------------------------------------------------------
   // Camera (VIZ_SPEC.md "Coordinate & camera model")
   // screenX = worldX * scale + offsetX
@@ -379,7 +390,8 @@
       if (!a) { out.push(null); continue; }
       if (!b) {
         // Present now, gone next step: hold only at/after the last step, else drop.
-        out.push(k === k2 ? { x: a[0], y: a[1], angle: a[2], speed: 0 } : null);
+        var heldFear = a.length >= 4 ? a[3] : undefined;
+        out.push(k === k2 ? { x: a[0], y: a[1], angle: a[2], speed: 0, fear: heldFear } : null);
         continue;
       }
       var p1 = [a[0], a[1]], p2 = [b[0], b[1]];
@@ -399,7 +411,11 @@
       var segDx = p2[0] - p1[0], segDy = p2[1] - p1[1];
       var speed = span > 1e-9 ? Math.sqrt(segDx * segDx + segDy * segDy) / span : 0;
 
-      out.push({ x: pos[0], y: pos[1], angle: angle, speed: speed });
+      // Fear (panic-evac only): 4th element on both endpoints -> linear-interpolate it the same way
+      // as position. Other scenes' entries stay 3-long, so fear is left undefined for them.
+      var fear = (a.length >= 4 && b.length >= 4) ? a[3] + (b[3] - a[3]) * frac : undefined;
+
+      out.push({ x: pos[0], y: pos[1], angle: angle, speed: speed, fear: fear });
     }
     return out;
   }
@@ -562,7 +578,9 @@
     ctx.rotate((v.angle * Math.PI) / 180 - Math.PI / 2);
     var lengthPx = Math.max(length * camera.scale, 5);
     var widthPx = Math.max(width * camera.scale, 3);
-    ctx.fillStyle = speedColorToggle.checked ? colorForSpeed(v.speed) : VEHICLE_COLOR;
+    ctx.fillStyle = speedColorToggle.checked
+      ? colorForSpeed(v.speed)
+      : (v.fear !== undefined ? fearColor(v.fear) : VEHICLE_COLOR);
     ctx.strokeStyle = "rgba(0,0,0,0.55)";
     ctx.lineWidth = 1;
     ctx.beginPath();

@@ -38,8 +38,15 @@ the task's success conditions first-hand.
 - [x] **T4.7** inertness + suite + hash — *accepted (B2): no-incident → 0 panicked & all fear 0; 406 pass / 3 skip; hash unmoved*
 
 ## S5 — Viz: the panic front
-- [ ] **T5.1** per-vehicle fear tint in the payload
-- [ ] **T5.2** `template.js` fear ramp (front visibly spreads)
+- [x] **T5.1** per-vehicle fear tint in the payload — *accepted (B3): vehicle entries carry a 4th `fear`
+      element; viz-only incident radius 60 so contagion is legible; other scenes unaffected*
+- [x] **T5.2** `template.js` fear ramp — *accepted (B3, Opus rendered t=10/14/20/28): calm-blue→panic-red
+      ramp; front visibly spreads outward (red core → periphery → all red), calm cars persist at the edges;
+      speed-toggle path preserved. Suite 406 pass; hash unmoved*
+
+**Phase-2 COMPLETE — all of S1–S5 accepted.** Panic is now local-information: LoS-gated direct perception
++ contagion + jam-unease, seeded only by the incident; an expanding front, distant traffic oblivious.
+Next per PANIC-EVAC.md §6.3 = Phase 3 (vehicle Orca-mode / off-road push) — its own design-first docs first.
 
 ---
 

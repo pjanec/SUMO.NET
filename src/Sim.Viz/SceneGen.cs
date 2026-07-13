@@ -609,7 +609,12 @@ internal static class SceneGen
     internal static ScenePayload BuildEvacGrid(string repoRoot)
     {
         var netPath = Path.Combine(repoRoot, "scenarios", "evac-grid", "net.net.xml");
-        var (engine, director, _) = Sim.Evac.EvacGridScenario.Build(netPath);
+        // VIZ-ONLY incident: smaller than EvacGridScenario.DefaultIncident (radius 140, which
+        // saturates direct line-of-sight across the whole grid) so the panic front visibly spreads
+        // outward from the incident instead of the whole grid panicking at once. Local override --
+        // does not touch EvacGridScenario.DefaultIncident / DefaultConfig.
+        var vizIncident = new Sim.Evac.Incident(X: 180.0, Y: 180.0, StartTime: 8.0, Radius: 60.0);
+        var (engine, director, _) = Sim.Evac.EvacGridScenario.Build(netPath, vizIncident);
         var network = BuildNetwork(NetworkParser.Parse(netPath));
 
         var slotByHandle = new Dictionary<uint, int>();
@@ -636,7 +641,7 @@ internal static class SceneGen
             for (var i = 0; i < handles.Length; i++)
             {
                 var slot = slotByHandle[handles[i].Index];
-                v[slot] = new[] { R(px[i]), R(py[i]), R(pa[i]) };
+                v[slot] = new[] { R(px[i]), R(py[i]), R(pa[i]), R(director.Fear(handles[i])) };
             }
 
             var discs = new List<double[]>();
@@ -664,9 +669,11 @@ internal static class SceneGen
             R(nm.MinX), R(nm.MinY), R(nm.MinX), R(nm.MaxY), R(nm.MaxX), R(nm.MaxY), R(nm.MaxX), R(nm.MinY),
         };
 
-        var inc = director.Incident;
         var cfg = Sim.Evac.EvacGridScenario.DefaultConfig();
-        var incident = new[] { R(inc.X), R(inc.Y), R(inc.Radius), R(inc.StartTime), R(cfg.SafeRadius) };
+        var incident = new[]
+        {
+            R(vizIncident.X), R(vizIncident.Y), R(vizIncident.Radius), R(vizIncident.StartTime), R(cfg.SafeRadius),
+        };
 
         var labels = new string[7];
         labels[4] = "fleeing pedestrian";
