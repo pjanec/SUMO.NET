@@ -101,7 +101,12 @@ internal static class Program
 
         var scenes = new List<ScenePayload>();
 
-        // Scene 0 -- the dense uncontrolled junction (opens first): many mixed movers negotiating a
+        // Scene 0 -- the Indian junction (opens first): SHAPED mixed traffic (long buses, compact
+        // motorcycles) negotiating an uncontrolled crossroads by anisotropic avoidance with SOFT
+        // priority (assertive main road vs yielding cross road), from the Sim.Core.Mixed layer.
+        scenes.Add(SceneGen.BuildIndianJunction());
+
+        // Scene 1 -- the earlier dense uncontrolled junction (disc agents): many mixed movers on a
         // shared crossroads with no lanes/signals (Egypt/India-style congestion), from the ORCA layer.
         scenes.Add(SceneGen.BuildDenseJunction());
 

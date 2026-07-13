@@ -105,7 +105,10 @@ public sealed class MixedTrafficCrowd
     public void SetGoal(int i, Vec2 goal) => _goal[i] = goal;
 
     // Add a vehicle; returns its stable index. Initial heading defaults to face the goal.
-    public int Add(VehicleClass cls, Vec2 position, Vec2 goal, double? headingRad = null, Vec2 velocity = default)
+    // maxSpeedOverride lets a scene run a congested crawl below the class free-flow speed.
+    public int Add(
+        VehicleClass cls, Vec2 position, Vec2 goal,
+        double? headingRad = null, Vec2 velocity = default, double? maxSpeedOverride = null)
     {
         if (_count == _position.Length)
         {
@@ -118,7 +121,7 @@ public sealed class MixedTrafficCrowd
         _goal[i] = goal;
         var toGoal = goal - position;
         _heading[i] = headingRad ?? (toGoal.AbsSq > 1e-9 ? Math.Atan2(toGoal.Y, toGoal.X) : 0.0);
-        _maxSpeed[i] = cls.MaxSpeed;
+        _maxSpeed[i] = maxSpeedOverride ?? cls.MaxSpeed;
         _assert[i] = cls.Assertiveness;
         _class[i] = cls;
         _shapeProto[i] = cls.Shape();
@@ -210,6 +213,15 @@ public sealed class MixedTrafficCrowd
         }
 
         _stepIndex++;
+    }
+
+    // Deactivate a vehicle explicitly (it parks and stops constraining others). Used by a scene to
+    // despawn a mover that has left the field -- including the rare straggler that a dense jam pushes
+    // backward out of the domain (the holonomic dense-packing limit noted in INDIA-TRAFFIC.md).
+    public void Deactivate(int i)
+    {
+        _active[i] = false;
+        _velocity[i] = Vec2.Zero;
     }
 
     public bool AllArrived(double epsilon)

@@ -1,4 +1,5 @@
 using Sim.Core;
+using Sim.Core.Mixed;
 using Sim.Core.Orca;
 using Sim.Ingest;
 using static Sim.Viz.PayloadBuilder;
@@ -319,6 +320,222 @@ internal static class SceneGen
             new double[] { 0, 0 },
             0.25 * 2,
             frames.ToArray());
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // Scene -- "Indian junction (shaped, soft priority)": the believable mixed-traffic module
+    // (docs/INDIA-TRAFFIC.md). Unlike the dense-junction disc scene, vehicles here are ANISOTROPIC
+    // oriented footprints (buses long, motorcycles compact) avoided by the shaped velocity obstacle
+    // (ShapedVoSolver), and priority is SOFT: the east-west "main road" runs an assertive fleet
+    // (buses/cars) while the north-south cross road runs a yielding one (motorcycles/auto-rickshaws),
+    // so a dominant stream emerges with no signals. Driven by MixedTrafficCrowd at export time.
+    // ---------------------------------------------------------------------------------------
+    internal static ScenePayload BuildIndianJunction()
+    {
+        const double half = 32.0;    // drawn field half-extent
+        const double roadHalf = 9.0; // half-width of each 18 m carriageway
+
+        var crowd = new MixedTrafficCrowd(400)
+        {
+            SymmetryBreak = 0.06,
+            MaxNeighbours = 10,      // RVO2-ish; fewer simultaneous constraints -> rarer infeasibility
+            RemoveOnArrival = true,
+            ArrivalRadius = 3.0,
+            NeighbourDist = 16.0,
+            TimeHorizon = 1.8,       // react on ~2 s; long horizons freeze big footprints
+        };
+
+        // Four corner buildings confine the movers to the cross-shaped carriageway (their road-facing
+        // faces sit at +/-roadHalf). Tiled into local wall segments by AddBlock -> robust confinement.
+        const double b = roadHalf, outer = 80.0, thick = 1.5;
+        crowd.AddBlock(-outer, b, -b, outer, thick);       // NW
+        crowd.AddBlock(b, b, outer, outer, thick);         // NE
+        crowd.AddBlock(-outer, -outer, -b, -b, thick);     // SW
+        crowd.AddBlock(b, -outer, outer, -b, thick);       // SE
+
+        // Assertive main-road fleet (E<->W) vs yielding cross-road fleet (N<->S). The class carries
+        // the shape + assertiveness; the mix is what makes the E<->W stream dominate.
+        static VehicleClass MainClass(int i) => (i % 6) switch
+        {
+            0 => VehicleClass.Bus,          // one bus per six -- present but not so dense it jams
+            1 => VehicleClass.Car,
+            2 => VehicleClass.Car,
+            3 => VehicleClass.AutoRickshaw,
+            4 => VehicleClass.Car,
+            _ => VehicleClass.Car,
+        };
+
+        static VehicleClass CrossClass(int i) => (i % 6) switch
+        {
+            0 => VehicleClass.Motorcycle,
+            1 => VehicleClass.AutoRickshaw,
+            2 => VehicleClass.Motorcycle,
+            3 => VehicleClass.Car,
+            4 => VehicleClass.Motorcycle,
+            _ => VehicleClass.AutoRickshaw,
+        };
+
+        var headings = new List<double>();
+        var mainRows = new[] { -5.0, -1.8 };   // W->E keeps to y<0 ; E->W to y>0 (loose, Indian-style)
+        var mainRows2 = new[] { 1.8, 5.0 };
+        var crossRows = new[] { 1.8, 5.0 };    // S->N keeps to x>0 ; N->S to x<0
+        var crossRows2 = new[] { -5.0, -1.8 };
+        var spawn = 0;
+        var vtMain = 0;
+        var vtCross = 0;
+
+        // Cap the number of SIMULTANEOUSLY-active movers (not the lifetime count) so the shared box
+        // stays busy but not so packed that big footprints drive the LP infeasible (which, in a
+        // holonomic gridlock, would shove a bus backward out of the box -- see INDIA-TRAFFIC.md).
+        const int liveCap = 75;
+        int Live()
+        {
+            var n = 0;
+            for (var i = 0; i < crowd.Count; i++)
+            {
+                if (crowd.IsActive(i))
+                {
+                    n++;
+                }
+            }
+
+            return n;
+        }
+
+        void TryAddMain(Vec2 start, Vec2 goal)
+        {
+            if (crowd.Count >= 380 || Live() >= liveCap)
+            {
+                return;
+            }
+
+            var cls = MainClass(vtMain++);
+            var dir = goal - start;
+            crowd.Add(cls, start, goal, maxSpeedOverride: cls.MaxSpeed * 0.4);
+            headings.Add(Math.Atan2(dir.Y, dir.X) * 180.0 / Math.PI);
+        }
+
+        void TryAddCross(Vec2 start, Vec2 goal)
+        {
+            if (crowd.Count >= 380 || Live() >= liveCap)
+            {
+                return;
+            }
+
+            var cls = CrossClass(vtCross++);
+            var dir = goal - start;
+            crowd.Add(cls, start, goal, maxSpeedOverride: cls.MaxSpeed * 0.4);
+            headings.Add(Math.Atan2(dir.Y, dir.X) * 180.0 / Math.PI);
+        }
+
+        void SpawnWave()
+        {
+            var m1 = mainRows[(spawn / 2) % mainRows.Length];
+            var m2 = mainRows2[(spawn / 2) % mainRows2.Length];
+            var c1 = crossRows[(spawn / 2) % crossRows.Length];
+            var c2 = crossRows2[(spawn / 2) % crossRows2.Length];
+            TryAddMain(new Vec2(-half, m1), new Vec2(half + 16, m1));    // W->E
+            TryAddMain(new Vec2(half, m2), new Vec2(-half - 16, m2));    // E->W
+            TryAddCross(new Vec2(c1, -half), new Vec2(c1, half + 16));   // S->N
+            TryAddCross(new Vec2(c2, half), new Vec2(c2, -half - 16));   // N->S
+            spawn++;
+        }
+
+        var snapshots = new List<double[][]>();
+        void Snapshot()
+        {
+            var d = new double[crowd.Count][];
+            for (var i = 0; i < crowd.Count; i++)
+            {
+                var p = crowd.Position(i);
+                headings[i] = crowd.Heading(i) * 180.0 / Math.PI;   // crowd tracks heading (held when slow)
+                var cls = crowd.Class(i);
+                d[i] = new[]
+                {
+                    R(p.X), R(p.Y), R(cls.Shape().CircumRadius()), (double)cls.VizColorKind,
+                    R(headings[i]), (double)cls.VizShape, R(cls.Length * 0.5), R(cls.Width * 0.5),
+                };
+            }
+
+            snapshots.Add(d);
+        }
+
+        const int steps = 360;
+        const int stopSpawnAt = 315;
+        for (var step = 0; step < steps; step++)
+        {
+            if (step < stopSpawnAt && step % 5 == 0)
+            {
+                SpawnWave();
+            }
+
+            crowd.Step(0.2);
+
+            // Despawn any mover that has left the field -- normal exits past the arm goals, and the
+            // rare bus a dense jam shoves backward out of the domain (holonomic limit). Keeps the clip
+            // clean and frees the space (a departed vehicle should not keep constraining the box).
+            const double bound = half + 12.0;
+            for (var i = 0; i < crowd.Count; i++)
+            {
+                if (crowd.IsActive(i))
+                {
+                    var p = crowd.Position(i);
+                    if (Math.Abs(p.X) > bound || Math.Abs(p.Y) > bound)
+                    {
+                        crowd.Deactivate(i);
+                    }
+                }
+            }
+
+            Snapshot();
+        }
+
+        int OnScreen(double[][] d)
+        {
+            var n = 0;
+            foreach (var a in d)
+            {
+                if (Math.Abs(a[0]) <= half && Math.Abs(a[1]) <= half)
+                {
+                    n++;
+                }
+            }
+
+            return n;
+        }
+
+        var lastBusy = snapshots.Count - 1;
+        while (lastBusy > 0 && OnScreen(snapshots[lastBusy]) < 8)
+        {
+            lastBusy--;
+        }
+
+        var frames = new List<FramePayload>();
+        var noVehicles = Array.Empty<double[]?>();
+        for (var i = 0; i <= lastBusy; i += 2)
+        {
+            frames.Add(new FramePayload(noVehicles, snapshots[i]));
+        }
+
+        var hRoad = new LanePayload("EW", "EW", 0, 2 * roadHalf, new double[] { -half - 6, 0, half + 6, 0 });
+        var vRoad = new LanePayload("NS", "NS", 0, 2 * roadHalf, new double[] { 0, -half - 6, 0, half + 6 });
+        var network = new NetworkPayload(
+            new[] { hRoad, vRoad }, Array.Empty<JunctionPayload>(),
+            Array.Empty<TlLogicPayload>(), Array.Empty<SignalHeadPayload>());
+
+        return new ScenePayload(
+            "Indian junction (shaped, soft priority)",
+            "Believable mixed traffic: SHAPED vehicles (long buses, compact motorcycles) negotiate an "
+            + "uncontrolled crossroads by anisotropic reciprocal avoidance. Priority is SOFT -- the "
+            + "east-west main road runs assertive buses/cars and largely holds its line, while the "
+            + "north-south motorcycles/auto-rickshaws weave and yield through the gaps. No lanes, no "
+            + "signals. Blue=car, pink=motorcycle, purple=auto-rickshaw, amber=bus.",
+            new double[] { -half, -half, half, half },
+            network,
+            new double[] { 0, 0 },
+            0.2 * 2,
+            frames.ToArray(),
+            new[] { "car", "motorcycle", "auto-rickshaw", "bus" });
     }
 
     // Run a pure crowd to convergence, snapshotting disc positions each step and keeping every

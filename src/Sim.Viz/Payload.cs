@@ -47,7 +47,10 @@ internal sealed record ScenePayload(
     NetworkPayload? Network, // null for pure open-space crowd scenes
     double[] Vdim,           // [length, width] shared vehicle box dims (0,0 if no vehicles)
     double Dt,               // seconds between successive frames
-    FramePayload[] Frames);
+    FramePayload[] Frames,
+    string[]? Labels = null);// optional per-scene legend labels indexed by disc kind (overrides the
+                             // global DISC_LABELS -- e.g. the mixed-traffic scene labels kinds by
+                             // vehicle class rather than stream/pedestrian)
 
 internal sealed record ReplayData(ScenePayload[] Scenes);
 

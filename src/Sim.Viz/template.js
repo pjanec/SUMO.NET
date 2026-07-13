@@ -54,7 +54,7 @@
   // (the classic passenger blue). Speed colouring (derived from motion) is available via the HUD.
   var VEHICLE_COLOR = "#4f8ef7";
   // Discs (crowd/pedestrian agents) coloured by kind.
-  var DISC_COLORS = { 0: "#38bdf8", 1: "#fb7185", 2: "#c084fc" };
+  var DISC_COLORS = { 0: "#38bdf8", 1: "#fb7185", 2: "#c084fc", 3: "#f59e0b" };
   var DISC_LABELS = { 0: "stream / agent A", 1: "stream / agent B", 2: "pedestrian" };
 
   // Speed heatmap: cold (slow) -> hot (fast), 0..cap m/s.
@@ -417,6 +417,7 @@
       // Interpolate position; hold radius/kind, and (for shaped vehicles) heading + shape as-is.
       var e = [a[0] + (b[0] - a[0]) * frac, a[1] + (b[1] - a[1]) * frac, a[2], a[3]];
       if (a.length >= 6) { e.push(a[4], a[5]); }
+      if (a.length >= 8) { e.push(a[6], a[7]); }   // true half-length / half-width for shaped rects
       out.push(e);
     }
     // Any discs only present in one endpoint (shouldn't happen for the stable crowds) held as-is.
@@ -520,7 +521,7 @@
   // is handled uniformly, same as the lane/vehicle-box draws).
   function drawDisc(d) {
     var color = DISC_COLORS[d[3]] || "#9ca3af";
-    if (d.length >= 6) { drawShaped(d[0], d[1], d[2], color, d[4], d[5]); return; }
+    if (d.length >= 6) { drawShaped(d[0], d[1], d[2], color, d[4], d[5], d[6], d[7]); return; }
     var p = worldToScreen(d[0], d[1]);
     var r = Math.max(d[2] * camera.scale, 3);
     ctx.beginPath();
@@ -532,19 +533,24 @@
     ctx.stroke();
   }
 
-  function drawShaped(x, y, radius, color, headingDeg, shape) {
+  function drawShaped(x, y, radius, color, headingDeg, shape, halfLen, halfWid) {
     var r = Math.max(radius, 5.5 / camera.scale);   // floor the on-screen size when zoomed out
     var hr = (headingDeg * Math.PI) / 180;
     var hx = Math.cos(hr), hy = Math.sin(hr);        // world heading unit
+    // When true footprint half-dimensions are supplied (mixed-traffic scenes) use them directly so a
+    // bus renders long and a car short (true aspect); otherwise fall back to a radius-derived box.
+    var floor = 3.0 / camera.scale;
+    var hasDims = typeof halfLen === "number" && typeof halfWid === "number";
+    var hl = hasDims ? Math.max(halfLen, floor) : 0.95 * r;
+    var hw = hasDims ? Math.max(halfWid, floor) : 0.5 * r;
     var pts;
     if (shape === 1) {
       // motorcycle: slim pointed-front hexagon, elongated along heading
-      var hl = 0.95 * r, hw = 0.42 * r;
-      pts = [[hl, 0], [0.4 * hl, hw], [-0.6 * hl, hw], [-hl, 0], [-0.6 * hl, -hw], [0.4 * hl, -hw]];
+      var mh = hasDims ? hl : 0.95 * r, mw = hasDims ? hw : 0.42 * r;
+      pts = [[mh, 0], [0.4 * mh, mw], [-0.6 * mh, mw], [-mh, 0], [-0.6 * mh, -mw], [0.4 * mh, -mw]];
     } else {
-      // car / tuk-tuk: rectangle
-      var cl = 0.95 * r, cw = 0.5 * r;
-      pts = [[cl, cw], [cl, -cw], [-cl, -cw], [-cl, cw]];
+      // car / tuk-tuk / bus: rectangle at true aspect
+      pts = [[hl, hw], [hl, -hw], [-hl, -hw], [-hl, hw]];
     }
     ctx.beginPath();
     for (var i = 0; i < pts.length; i++) {
@@ -622,8 +628,10 @@
     frames.forEach(function (f) {
       (f.d || []).forEach(function (d) { kinds[d[3]] = true; });
     });
+    var labels = (scene && scene.labels) || null;   // per-scene override (e.g. vehicle classes)
     Object.keys(kinds).sort().forEach(function (k) {
-      addRow(DISC_COLORS[k] || "#9ca3af", DISC_LABELS[k] || ("kind " + k), true);
+      var label = (labels && labels[k]) || DISC_LABELS[k] || ("kind " + k);
+      addRow(DISC_COLORS[k] || "#9ca3af", label, true);
     });
   }
 
