@@ -42,8 +42,16 @@ verified its success conditions first-hand.
 > solver-level fix (constrain the final steered motion against walls) is a future `Sim.Core.Mixed` improvement.
 
 ## S5 — Viz: cars mounting the shoulder
-- [ ] **T5.1** emit pushing cars as oriented shaped boxes
-- [ ] **T5.2** render + Opus confirms the shoulder-push reads
+- [x] **T5.1** emit pushing cars as oriented shaped boxes — *accepted (B3): `ActivePushers()` → kind-8
+      shaped disc entries `[x,y,2.5,8,headingDeg,0,2.5,0.9]`; labels[8]="abandoning car (shoulder)"*
+- [x] **T5.2** render + confirm — *accepted (B3, Opus rendered t=13/16/19/22): orange oriented shaped
+      boxes appear post-incident at the ring edge, distinct from red/blue lane cars and cyan pedestrians;
+      suite 417 pass; hash unmoved*
+
+**Phase-3 COMPLETE — all of S1–S5 accepted.** A blocked, panicked car now mounts the shoulder (shaped
+non-holonomic free-space push in the vicinity band) before its occupants abandon it on foot. Option A
+(external shaped-mover via `MixedTrafficCrowd`) kept the parity core untouched. Next per PANIC-EVAC.md
+§6.4 = Phase 4 (optional sublane filter-to-front) — its own design-first docs first.
 
 ---
 

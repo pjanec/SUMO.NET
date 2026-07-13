@@ -59,6 +59,7 @@
     4: "#38bdf8", // fleeing pedestrian (panic evac)
     5: "#34d399", // escaped pedestrian (panic evac)
     6: "#b91c1c", // abandoned car (panic evac)
+    8: "#fb923c", // car pushing onto the shoulder / abandoning the lane (panic evac, phase 3)
   };
   var DISC_LABELS = { 0: "stream / agent A", 1: "stream / agent B", 2: "pedestrian" };
 

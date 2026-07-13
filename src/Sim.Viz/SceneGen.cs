@@ -605,6 +605,7 @@ internal static class SceneGen
     private const int KindFleeing = 4;    // #38bdf8 -- fleeing pedestrian
     private const int KindEscaped = 5;    // #34d399 -- escaped pedestrian
     private const int KindAbandoned = 6;  // #b91c1c -- abandoned car
+    private const int KindPushingCar = 8; // #fb923c -- car pushing onto the shoulder (Phase 3)
 
     internal static ScenePayload BuildEvacGrid(string repoRoot)
     {
@@ -658,6 +659,13 @@ internal static class SceneGen
                 discs.Add(new[] { R(c.X), R(c.Y), R(c.Radius), (double)KindAbandoned });
             }
 
+            foreach (var (px_, py_, headingRad) in director.ActivePushers())
+            {
+                var headingDeg = headingRad * 180.0 / Math.PI;   // math radians (0=+x, CCW) -> degrees CCW from +x, exactly what drawShaped wants
+                discs.Add(new[] { R(px_), R(py_), 2.5, (double)KindPushingCar, R(headingDeg), 0.0, 2.5, 0.9 });
+                //                x       y       radius kind                head          shape halfLen halfWid   (rectangle 5.0x1.8)
+            }
+
             frames.Add(new FramePayload(v, discs.ToArray()));
         }
 
@@ -675,10 +683,11 @@ internal static class SceneGen
             R(vizIncident.X), R(vizIncident.Y), R(vizIncident.Radius), R(vizIncident.StartTime), R(cfg.SafeRadius),
         };
 
-        var labels = new string[7];
+        var labels = new string[9];
         labels[4] = "fleeing pedestrian";
         labels[5] = "escaped pedestrian";
         labels[6] = "abandoned car";
+        labels[8] = "abandoning car (shoulder)";
 
         return new ScenePayload(
             "Panic evacuation",
