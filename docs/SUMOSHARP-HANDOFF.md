@@ -9,7 +9,7 @@ Continuation notes for the **SumoSharp** library/packaging effort. Pairs with
 - **Branch:** `claude/sumo-csharp-nuget-strategy-4vlkki` (all work pushed).
 - **Gates (must stay true after every change):**
   - `dotnet test` → **0 failed, 1 skipped**; the pass count grows as new-surface tests are added
-    (**250** at the start of the packaging work → **276** after this session's B13–B19 tests).
+    (**250** at the start of the packaging work → **288** after this session's B13–B22 tests).
   - `Sim.Bench` determinism hash → **`909605E965BFFE59`** (single **and** parallel).
 - **What exists now:** the whole Phase-1 public API + NuGet packaging + a working browser-live demo.
   Every addition is *additive / inert-when-absent*, so it is byte-identical where the new paths are
@@ -41,6 +41,7 @@ so `apt-get update` first). SUMO is not needed for `dotnet test`.
 
 | Commit | What |
 |---|---|
+| *(this session)* | **Dead-reckoning layer** (`SUMOSHARP-DEADRECKONING.md`): shared `DrModel` seam; `PoseResolver` (chord + swept-path off-tracking, `RungB20`); opt-in `Engine.RenderMode` (`RungB21`); `SumoSharp.Replication` (blob codec + records + `IPublishPolicy`, `RungB22`); `SumoSharp.Replication.Dds` (CycloneDDS topics, out of `Traffic.sln`); `Sim.LiveHost` `chord`/`corner` arg. Coordinated with laneless via issue #3 (DR1–DR4). |
 | *(this session)* | **Dead-reckoning inputs** (§5.1): `Acceleration` read column (getAcceleration analog) + `GetUpcomingLanes` (lane-handle path ahead); `RungB19`. Foundation for the networked DR layer (below). |
 | *(this session)* | **Vehicle-slot recycling** (§9): `Despawn` frees the `EntityIndex`; next runtime `SpawnVehicle` reuses it (rebuild-in-place + reset idx-keyed side state + bumped generation). `CreateRuntime` split into `BuildRuntime`/append + `AllocateRuntime`. Inert for goldens; `RungB18`. |
 | *(this session)* | **Sim.LiveHost**: verified builds/runs after the core changes (Playwright smoke); enabled the snapshot pool server-side + client-side entity interpolation for smooth 60 fps playback. |
