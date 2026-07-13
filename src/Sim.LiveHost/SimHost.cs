@@ -44,13 +44,20 @@ public sealed class SimHost : IDisposable
         // then allocation-free in steady state. The published snapshot stays valid well beyond the brief
         // window BuildFrameJson holds it (capacity-1 ticks at 30 Hz), so the cross-thread read is safe.
         _runner.EnableSnapshotPool(capacity: 3);
-        _runner.Start(targetHz: 30.0);
+        // Deliberately a LOW sim/publish rate (2 Hz) so the browser's lane-relative dead reckoning is the
+        // thing producing smooth 60 fps motion between the sparse updates -- the whole point of the demo.
+        _runner.Start(targetHz: 2.0);
 
         // Keep traffic flowing by spawning routable trips at runtime (demonstrates SpawnVehicle).
         _spawnTimer = new Timer(_ => SpawnOne(), null, dueTime: 500, period: 900);
     }
 
-    // Current frame: live vehicle state (from the immutable published snapshot) + injected obstacles.
+    // Current frame: LANE-RELATIVE dead-reckoning state per vehicle (SUMOSHARP-DEADRECKONING.md §5.1) --
+    // NOT world x/y. The browser reconstructs and extrapolates world pose by walking the once-sent lane
+    // geometry (see HtmlPage), so it renders smoothly at 60 fps from these sparse updates and follows the
+    // real lane curves (no corner-cutting). This is the demo of the dead-reckoning design end to end.
+    //   ln = current lane handle, nx = next lane handle (-1 if none), p = arc pos, pl = lat offset,
+    //   s = speed (m/s), a = longitudinal accel (m/s^2).
     public string BuildFrameJson()
     {
         var snap = _runner.Snapshot;
@@ -60,10 +67,12 @@ public sealed class SimHost : IDisposable
             vehicles.Add(new
             {
                 id = snap.VehicleId[i],
-                x = Math.Round(snap.PosX[i], 2),
-                y = Math.Round(snap.PosY[i], 2),
-                a = Math.Round(snap.Angle[i], 1),
-                s = Math.Round(snap.Speed[i], 2),
+                ln = snap.LaneHandle[i],
+                nx = snap.NextLaneHandle[i],
+                p = Math.Round(snap.Pos[i], 3),
+                pl = Math.Round(snap.PosLat[i], 3),
+                s = Math.Round(snap.SpeedExact[i], 3),
+                a = Math.Round(snap.Accel[i], 3),
             });
         }
 
@@ -73,7 +82,9 @@ public sealed class SimHost : IDisposable
             obstacles = _obstacles.Select(o => (object)new { x = Math.Round(o.X, 2), y = Math.Round(o.Y, 2) }).ToArray();
         }
 
-        return JsonSerializer.Serialize(new { type = "frame", time = Math.Round(snap.Time, 1), vehicles, obstacles });
+        // `time` is the sim clock (seconds); the client measures the sim rate from consecutive frames and
+        // extrapolates each vehicle by (renderSimTime - time).
+        return JsonSerializer.Serialize(new { type = "frame", time = Math.Round(snap.Time, 3), step = snap.StepCount, vehicles, obstacles });
     }
 
     // A canvas click (already converted to WORLD coordinates by the browser) -> project to the nearest
@@ -199,7 +210,9 @@ public sealed class SimHost : IDisposable
                 maxY = Math.Max(maxY, y);
             }
 
-            lanes.Add(new { pts, w = lane.Width, internalLane = lane.Id.StartsWith(':') });
+            // The array index == lane handle (LanesByHandle is dense, index==Handle), and `len` is the
+            // lane's arc length -- both needed by the client's lane-relative dead-reckoning walk.
+            lanes.Add(new { pts, len = Math.Round(lane.Length, 3), w = lane.Width, internalLane = lane.Id.StartsWith(':') });
         }
 
         return JsonSerializer.Serialize(new

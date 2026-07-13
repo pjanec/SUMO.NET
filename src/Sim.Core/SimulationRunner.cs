@@ -329,7 +329,9 @@ public sealed class SimulationRunner : IDisposable
         private float[] _angle = Array.Empty<float>();
         private float[] _speed = Array.Empty<float>();
         private double[] _speedExact = Array.Empty<double>();
+        private double[] _accel = Array.Empty<double>();
         private int[] _laneHandle = Array.Empty<int>();
+        private int[] _nextLane = Array.Empty<int>();
         private double[] _pos = Array.Empty<double>();
         private double[] _posLat = Array.Empty<double>();
         private string[] _vehicleId = Array.Empty<string>();
@@ -347,7 +349,9 @@ public sealed class SimulationRunner : IDisposable
             Copy(engine.Angle, ref _angle, n);
             Copy(engine.Speed, ref _speed, n);
             Copy(engine.SpeedExactColumn, ref _speedExact, n);
+            Copy(engine.Acceleration, ref _accel, n);
             Copy(engine.LaneHandles, ref _laneHandle, n);
+            Copy(engine.NextLaneHandles, ref _nextLane, n);
             Copy(engine.Pos, ref _pos, n);
             Copy(engine.PosLat, ref _posLat, n);
             Copy(engine.VehicleIds, ref _vehicleId, n);
@@ -369,7 +373,9 @@ public sealed class SimulationRunner : IDisposable
                 Angle = _angle,
                 Speed = _speed,
                 SpeedExact = _speedExact,
+                Accel = _accel,
                 LaneHandle = _laneHandle,
+                NextLaneHandle = _nextLane,
                 Pos = _pos,
                 PosLat = _posLat,
                 VehicleId = _vehicleId,

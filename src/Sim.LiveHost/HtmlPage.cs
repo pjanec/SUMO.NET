@@ -38,50 +38,64 @@ internal static class HtmlPage
   let net = null;
   const cam = { scale: 1, ox: 0, oy: 0 };
 
-  // Client-side entity interpolation (the browser analog of SimulationRunner's two-frame interpolation
-  // hook, SUMOSHARP-API.md §7). Frames arrive at ~20 fps; requestAnimationFrame draws at ~60 fps. We
-  // buffer recent frames and, each rAF, render at a fixed delay in the past (RENDER_DELAY_MS), lerping
-  // each vehicle by id between the two buffered frames that bracket that render time -> smooth motion
-  // instead of stepping at the arrival rate. The delay is the standard latency-for-smoothness trade.
-  const RENDER_DELAY_MS = 110;
-  const buf = [];        // recent frames, oldest..newest, each stamped with _recv = arrival time
-  const BUF_MAX = 16;
+  // Lane-relative DEAD RECKONING (SUMOSHARP-DEADRECKONING.md §5.1/§6). The server sends only sparse
+  // (~2 Hz) lane-relative state per vehicle {ln,nx,p,pl,s,a}; this client reconstructs world pose by
+  // walking the once-sent lane geometry and EXTRAPOLATES forward at 60 fps: pos' = p + s·dt + ½·a·dt².
+  // Because it follows the actual lane polyline, prediction tracks real curves (no corner-cutting) --
+  // unlike naive world-space (x,y) extrapolation. dt is in SIM seconds; the sim rate is measured from
+  // consecutive frames so this works at any server rate.
+  let frameVehicles = [];   // latest frame's [{id,ln,nx,p,pl,s,a}]
+  let frameObstacles = [];
+  let frameTime = 0;        // sim time (s) of the latest frame's sample
+  let frameRecvWall = 0;    // performance.now()/1000 when it arrived
+  let simRate = 1;          // measured sim-seconds per wall-second (smoothed)
+  let lastStep = -1;        // dedupe: the server re-sends the latest snapshot faster than the sim ticks
 
-  function pushFrame(m){
-    m._recv = performance.now();
-    buf.push(m);
-    if(buf.length > BUF_MAX) buf.shift();
+  function ingestFrame(m){
+    if(m.step === lastStep) return; // same sim step re-sent -> ignore (keep extrapolating)
+    lastStep = m.step;
+    const nowWall = performance.now() / 1000;
+    if(frameRecvWall > 0){
+      const dW = nowWall - frameRecvWall, dT = m.time - frameTime;
+      if(dW > 1e-3 && dT > 0){ simRate = simRate * 0.7 + (dT / dW) * 0.3; }
+    }
+    frameVehicles = m.vehicles || [];
+    frameObstacles = m.obstacles || [];
+    frameTime = m.time;
+    frameRecvWall = nowWall;
   }
 
-  function lerp(a, b, t){ return a + (b - a) * t; }
-
-  // The vehicle set to draw at wall-time `renderT`: interpolated between the two bracketing frames, matched
-  // by id. Vehicles present in only one side are drawn at their known position (just appeared / leaving).
-  function sampleVehicles(renderT){
-    if(buf.length === 0) return { vehicles: [], obstacles: [], time: 0 };
-    const newest = buf[buf.length - 1];
-    if(buf.length === 1 || renderT >= newest._recv){
-      return { vehicles: newest.vehicles, obstacles: newest.obstacles, time: newest.time };
+  // Port of Sim.Ingest.LaneGeometry.PositionAtOffset: point + navi-degree tangent at arc `offset` along a
+  // flat [x0,y0,x1,y1,...] polyline, shifted by `latOffset` (+ = left of travel).
+  function positionAtOffset(pts, offset, latOffset){
+    const n = pts.length / 2;
+    if(n < 2) return { x: pts[0]||0, y: pts[1]||0, deg: 0 };
+    let remaining = offset < 0 ? 0 : offset;
+    for(let i = 0; i < n - 1; i++){
+      const x1 = pts[2*i], y1 = pts[2*i+1], x2 = pts[2*i+2], y2 = pts[2*i+3];
+      const dx = x2 - x1, dy = y2 - y1, segLen = Math.hypot(dx, dy), last = i === n - 2;
+      if(remaining <= segLen || last){
+        const t = segLen > 0 ? Math.max(0, Math.min(1, remaining / segLen)) : 0;
+        let x = x1 + dx*t, y = y1 + dy*t;
+        if(latOffset && segLen > 0){ x += latOffset * (-dy/segLen); y += latOffset * (dx/segLen); }
+        let deg = 90 - Math.atan2(dy, dx) * 180 / Math.PI; deg %= 360; if(deg < 0) deg += 360;
+        return { x, y, deg };
+      }
+      remaining -= segLen;
     }
+    return { x: pts[pts.length-2], y: pts[pts.length-1], deg: 0 };
+  }
 
-    // find the pair (lo, hi) with lo._recv <= renderT <= hi._recv (else clamp to the oldest pair)
-    let lo = buf[0], hi = buf[1];
-    for(let i = 0; i < buf.length - 1; i++){
-      if(buf[i]._recv <= renderT && renderT <= buf[i+1]._recv){ lo = buf[i]; hi = buf[i+1]; break; }
-    }
-    const span = hi._recv - lo._recv;
-    const a = span > 0 ? Math.max(0, Math.min(1, (renderT - lo._recv) / span)) : 1;
-
-    const prevById = new Map();
-    for(const v of lo.vehicles) prevById.set(v.id, v);
-
-    const out = [];
-    for(const v of hi.vehicles){
-      const p = prevById.get(v.id);
-      if(p){ out.push({ x: lerp(p.x, v.x, a), y: lerp(p.y, v.y, a), s: lerp(p.s, v.s, a) }); }
-      else { out.push({ x: v.x, y: v.y, s: v.s }); }
-    }
-    return { vehicles: out, obstacles: hi.obstacles, time: hi.time };
+  // Dead-reckon one vehicle `dt` sim-seconds past its sampled lane-relative state, walking into the next
+  // lane if it runs off the end (one boundary, matching the server's single-lookahead `nx`).
+  function resolvePose(v, dt){
+    let arc = v.p + v.s * dt + 0.5 * v.a * dt * dt;
+    if(arc < v.p) arc = v.p;                       // never predict backwards (matches PoseResolver)
+    let lane = net.lanes[v.ln];
+    if(!lane) return null;
+    if(arc > lane.len && v.nx >= 0 && net.lanes[v.nx]){ arc -= lane.len; lane = net.lanes[v.nx]; }
+    const a = Math.max(0, Math.min(arc, lane.len));
+    return positionAtOffset(lane.pts, a, v.pl);
   }
 
   function resize(){ cv.width = innerWidth; cv.height = innerHeight; if(net) draw(); }
@@ -107,8 +121,6 @@ internal static class HtmlPage
     ctx.fillStyle = '#0e1116'; ctx.fillRect(0,0,cv.width,cv.height);
     if(!net){ return; }
 
-    const frame = sampleVehicles(performance.now() - RENDER_DELAY_MS);
-
     // roads
     for(const lane of net.lanes){
       const p = lane.pts; if(p.length < 4) continue;
@@ -120,23 +132,32 @@ internal static class HtmlPage
       ctx.lineCap = 'round'; ctx.lineJoin = 'round'; ctx.stroke();
     }
 
-    // vehicles
+    // vehicles: dead-reckoned from the latest sparse frame to *now* (clamp dt so a server stall can't run
+    // the extrapolation away).
+    let dt = simRate * (performance.now()/1000 - frameRecvWall);
+    if(!(dt >= 0)) dt = 0;
+    if(dt > 2.0) dt = 2.0;
     const r = Math.max(2.2, 2.4*cam.scale);
-    for(const v of frame.vehicles){
-      const s = w2s(v.x, v.y);
+    let drawn = 0;
+    for(const v of frameVehicles){
+      const pose = resolvePose(v, dt);
+      if(!pose) continue;
+      const s = w2s(pose.x, pose.y);
       ctx.beginPath(); ctx.arc(s[0], s[1], r, 0, 6.2832);
       ctx.fillStyle = speedColor(v.s); ctx.fill();
+      drawn++;
     }
 
     // obstacles
-    for(const o of frame.obstacles){
+    for(const o of frameObstacles){
       const s = w2s(o.x, o.y), k = Math.max(4, 3*cam.scale);
       ctx.strokeStyle = '#ff5c5c'; ctx.lineWidth = 2.5;
       ctx.beginPath(); ctx.moveTo(s[0]-k,s[1]-k); ctx.lineTo(s[0]+k,s[1]+k);
       ctx.moveTo(s[0]+k,s[1]-k); ctx.lineTo(s[0]-k,s[1]+k); ctx.stroke();
     }
 
-    stat.textContent = frame.vehicles.length + ' vehicles · t=' + frame.time + 's · interpolated';
+    stat.textContent = drawn + ' vehicles · t=' + (frameTime + dt).toFixed(1) + 's · dead-reckoned ' +
+      simRate.toFixed(1) + '× (updates ' + simRate.toFixed(1) + '/s)';
   }
 
   // --- interaction ---
@@ -172,7 +193,7 @@ internal static class HtmlPage
     ws.onmessage = ev => {
       const m = JSON.parse(ev.data);
       if(m.type === 'network'){ net = m; fit(m.bounds); resize(); }
-      else if(m.type === 'frame'){ pushFrame(m); }
+      else if(m.type === 'frame'){ ingestFrame(m); }
     };
     ws.onclose = () => { stat.textContent = 'disconnected — retrying…'; setTimeout(connect, 1000); };
   }

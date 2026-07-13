@@ -1254,6 +1254,9 @@ public sealed partial class Engine : IEngine
     public ReadOnlySpan<float> Angle => _readBuffer.Angle.AsSpan(0, _readBuffer.Count);
     public ReadOnlySpan<float> Speed => _readBuffer.SpeedF.AsSpan(0, _readBuffer.Count);
     public ReadOnlySpan<int> LaneHandles => _readBuffer.LaneHandle.AsSpan(0, _readBuffer.Count);
+    // DR lookahead: the next lane handle on each vehicle's route (-1 if none). Lets a dead-reckoning
+    // client walk past the current lane's end during extrapolation (SUMOSHARP-DEADRECKONING.md §5.1/§6).
+    public ReadOnlySpan<int> NextLaneHandles => _readBuffer.NextLane.AsSpan(0, _readBuffer.Count);
     public ReadOnlySpan<double> Pos => _readBuffer.Pos.AsSpan(0, _readBuffer.Count);
     // Longitudinal acceleration (m/s^2), parity-exact double -- the getAcceleration() analog. The key
     // ingredient for renderer-side dead reckoning (SUMOSHARP-API.md §5.1): pos' = pos + v*dt + 0.5*a*dt^2.
@@ -1319,8 +1322,14 @@ public sealed partial class Engine : IEngine
                 x = pose.X; y = pose.Y; z = pose.Z; angle = pose.HeadingDeg;
             }
 
+            // DR lookahead: the next lane on the route (-1 if this is the last), so a dead-reckoning client
+            // can walk past the current lane's end. One handle covers the common single-boundary crossing.
+            var nextLane = v.LaneSeqIndex + 1 < v.LaneSeqLen
+                ? _laneSeqPool[v.LaneSeqStart + v.LaneSeqIndex + 1]
+                : -1;
+
             _readBuffer.Add(handle, v.EntityIndex, v.Def.Id, v.Def.TypeId,
-                v.LaneHandle, v.LaneId, v.Kinematics.Pos, v.Kinematics.Speed, v.Acceleration, v.Kinematics.LatOffset,
+                v.LaneHandle, nextLane, v.LaneId, v.Kinematics.Pos, v.Kinematics.Speed, v.Acceleration, v.Kinematics.LatOffset,
                 (float)x, (float)y, (float)z, (float)angle);
         }
 

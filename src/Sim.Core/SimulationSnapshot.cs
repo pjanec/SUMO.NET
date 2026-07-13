@@ -21,7 +21,9 @@ public sealed class SimulationSnapshot
     public float[] Angle { get; init; } = Array.Empty<float>();
     public float[] Speed { get; init; } = Array.Empty<float>();          // render-facing float
     public double[] SpeedExact { get; init; } = Array.Empty<double>();   // parity-exact double
+    public double[] Accel { get; init; } = Array.Empty<double>();        // longitudinal accel (DR extrapolation)
     public int[] LaneHandle { get; init; } = Array.Empty<int>();
+    public int[] NextLaneHandle { get; init; } = Array.Empty<int>();     // next lane on route, -1 if none (DR lookahead)
     public double[] Pos { get; init; } = Array.Empty<double>();
     public double[] PosLat { get; init; } = Array.Empty<double>();
     public string[] VehicleId { get; init; } = Array.Empty<string>();
@@ -50,7 +52,9 @@ public sealed class SimulationSnapshot
             Angle = engine.Angle.ToArray(),
             Speed = engine.Speed.ToArray(),
             SpeedExact = engine.SpeedExactColumn.ToArray(),
+            Accel = engine.Acceleration.ToArray(),
             LaneHandle = engine.LaneHandles.ToArray(),
+            NextLaneHandle = engine.NextLaneHandles.ToArray(),
             Pos = engine.Pos.ToArray(),
             PosLat = engine.PosLat.ToArray(),
             VehicleId = engine.VehicleIds.ToArray(),

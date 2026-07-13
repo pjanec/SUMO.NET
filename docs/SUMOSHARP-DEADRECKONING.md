@@ -360,13 +360,18 @@ explicitly (`dotnet build src/Sim.Replication.Dds`), **compile-verified here** (
 runtime is win-x64, so it can't *run* on this Linux VM — publish/read usage is in the package README).
 net8.0 only.
 
-**STATUS: `Sim.LiveHost` wired to the production `RenderMode`.** An optional `chord` / `corner` CLI arg
-turns on `Engine.RenderMode` so the streamed world poses carry the chord heading / swept-path off-tracking
-(verified end-to-end with a headless-Chromium smoke: page serves, live frames stream, no JS errors, with
-`CornerCutCorrected` active). **Deferred (documented future demo, not built):** streaming the raw
-`FrameCodec` packet + a **JS port of `PoseResolver`** so the browser dead-reckons client-side over the
-network — a sizeable, hard-to-unit-test JS effort; the .NET replication path (codec + DDS) is complete and
-tested, and the browser already does client-side *interpolation* (§8), so this is polish, not core.
+**STATUS: `Sim.LiveHost` wired to the production `RenderMode`** (optional `chord`/`corner` CLI arg) **and to
+a live client-side dead-reckoned viewer.** The server now publishes only **sparse (~2 Hz) lane-relative
+state** per vehicle (`{ln, nx, p, pl, s, a}` + sim time; backed by the new snapshot `Accel` +
+`NextLaneHandle` columns) and the static lane geometry (with per-lane `len`) once. The browser (`HtmlPage`)
+holds the geometry, **measures the sim rate from consecutive frames**, and at 60 fps **extrapolates each
+vehicle along the lane polyline** (`pos' = p + s·dt + ½·a·dt²`, walking into `nx` at a lane end) via a JS
+port of `PoseResolver`/`PositionAtOffset` — so motion is smooth between the sparse updates and follows the
+real curves (no corner-cutting). Verified end-to-end with a headless-Chromium smoke: vehicles reconstruct
+onto the roads from lane-relative state alone, the HUD reports the measured rate, no JS errors.
+*(This is the compact lane-relative JSON over WebSocket; the binary `FrameCodec` blob / DDS path is the same
+data model for a native/remote consumer.)* **Snapshot columns added:** `Accel`, `NextLaneHandle` — Step-only
+projection, parity/hash unaffected.
 
 ## 11. Phased implementation plan (each additive, gated, hash-stable)
 

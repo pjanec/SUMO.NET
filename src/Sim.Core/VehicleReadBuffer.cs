@@ -22,6 +22,7 @@ internal sealed class VehicleReadBuffer
     public string[] VehicleId = new string[InitialCapacity];
     public string[] VehicleType = new string[InitialCapacity];
     public int[] LaneHandle = new int[InitialCapacity];
+    public int[] NextLane = new int[InitialCapacity];       // next lane handle on the route (-1 if none) -- DR lookahead
     public string[] LaneId = new string[InitialCapacity];
     public double[] Pos = new double[InitialCapacity];
     public double[] SpeedD = new double[InitialCapacity];
@@ -49,7 +50,7 @@ internal sealed class VehicleReadBuffer
 
     public void Add(
         VehicleHandle handle, int entityIndex, string vehicleId, string vehicleType,
-        int laneHandle, string laneId, double pos, double speed, double accel, double posLat,
+        int laneHandle, int nextLane, string laneId, double pos, double speed, double accel, double posLat,
         float x, float y, float z, float angle)
     {
         EnsureColumnCapacity(Count + 1);
@@ -60,6 +61,7 @@ internal sealed class VehicleReadBuffer
         VehicleId[i] = vehicleId;
         VehicleType[i] = vehicleType;
         LaneHandle[i] = laneHandle;
+        NextLane[i] = nextLane;
         LaneId[i] = laneId;
         Pos[i] = pos;
         SpeedD[i] = speed;
@@ -107,6 +109,7 @@ internal sealed class VehicleReadBuffer
         Array.Resize(ref VehicleId, newCap);
         Array.Resize(ref VehicleType, newCap);
         Array.Resize(ref LaneHandle, newCap);
+        Array.Resize(ref NextLane, newCap);
         Array.Resize(ref LaneId, newCap);
         Array.Resize(ref Pos, newCap);
         Array.Resize(ref SpeedD, newCap);
