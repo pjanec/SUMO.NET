@@ -53,6 +53,9 @@ Not every mover is lane-predictable. Coordinated with the laneless branch's **tw
 | **`FreeKinematic`** | holonomic crowd / navmesh / ORCA agent (the laneless branch's `OrcaCrowd` / `WorldDisc`), or a vehicle mid-RVO-swerve whose lateral is not lane-predictable | integrate world position by velocity (± accel) | `x, y, (z), vx, vy, (radius)` |
 | **`Stationary`** | parked / arrived / not-yet-departed | none | position only |
 
+**STATUS: the shared `DrModel` enum has landed** (`src/Sim.Core/DrModel.cs`, `byte`-backed for DDS
+`@bit_bound(8)`), as the frozen cross-branch seam — see §9 / `SUMOSHARP-API.md` §16.
+
 A mover **switches DR model at runtime**: a lane vehicle is normally `LaneArc`; when it enters an
 RVO/ORCA avoidance manoeuvre (`Engine.LanelessRvo` lateral solve, or the cross-regime bridge swerve) its
 short-horizon lateral stops being lane-predictable, so it either (a) stays `LaneArc` but the publisher
@@ -103,6 +106,56 @@ VehicleRecord {                       // ~24–28 bytes, quantized
   needs them for the vehicle shape and the corner-cut correction (§6.3), and they never change.
 - The static **lane geometry** (polylines + `z`) is sent once, exactly as `Sim.LiveHost` already does.
 
+### 4.3 Transport & DDS-friendly framing (owner target: CycloneDDS.NET)
+
+The replication types must suit **DDS** (the owner's `CycloneDds.NET` — a code-first C# DSL: `[DdsTopic]`
+`partial struct`, `[DdsKey]`, `[DdsId(n)]`, `[DdsStruct]` nesting, C#12 `[InlineArray]` fixed buffers,
+`fixed byte[]` blobs, `byte`-backed enums → IDL `@bit_bound(8)`, keyed instances + `LookupInstance`),
+while also working over plain **TCP/UDP**. Design principles:
+
+- **One canonical packed wire format (a blob).** A single little-endian byte layout for a frame of records
+  is the source of truth. It serves TCP/UDP directly, and rides DDS as an opaque `fixed byte[]` payload —
+  so **one (de)serializer covers every transport**. (`byte`-backed `DrModel` packs into one byte.)
+- **Topics split by update rate (DDS strength):**
+  - **Geometry/registry — low-rate, durable/transient-local.** Lane polylines, the `handle→string-id`
+    table, per-vType physical params (`length`/`width`/`type`). Published once / rarely; QoS
+    `TRANSIENT_LOCAL` so late-joining readers get it without a resend.
+  - **Vehicle lifecycle — low-rate, KEYED (`[DdsKey]` handle), transient-local.** Spawn (handle + vType +
+    dims) / despawn. Keyed instances are exactly DDS's "track many objects" sweet spot and are *low-rate*,
+    so the per-sample overhead is affordable here. This is what makes object tracking / late-join correct.
+  - **Vehicle state — high-rate, BATCHED, best-effort keep-last.** The per-tick kinematic state (§4.2).
+- **Batch, do not key, the high-rate state — this is the crux of your 10k concern.** One DDS sample **per
+  vehicle** at 10 Hz = 10 000 samples/tick, and DDS per-sample overhead (headers, sequence numbers,
+  instance bookkeeping) dwarfs a ~26 B record — untenable. Instead **one sample carries an array/blob of
+  many records**, amortizing that overhead ~N×. Two concrete DDS shapes, both supported by `CycloneDds.NET`:
+  1. **Chunked fixed blocks** — a `[DdsTopic]` struct = `{ FrameHeader; ushort count; InlineArray<Record,
+     CHUNK> }` (e.g. `CHUNK=512`), so 10k vehicles = ~20 samples/tick instead of 10 000. Fixed size →
+     zero-alloc marshalling (the binding's `[InlineArray]` path).
+  2. **Opaque blob** — a `[DdsTopic]` struct = `{ FrameHeader; uint byteCount; fixed byte payload[MAX] }`
+     carrying the packed wire format; chunk across samples if it exceeds the DDS max sample size. This is
+     the same bytes TCP/UDP send.
+  Recommendation: ship **(2) the blob** as the canonical high-rate path (one codec everywhere, minimal
+  overhead) and offer **(1) the structured chunk** for consumers who want DDS-native typed access. Both are
+  in the replication package; neither is in `Core`.
+- **Rate-limit at the writer** (§7): the high-rate topic writes at ≤10 Hz globally, and the adaptive policy
+  decides *which* vehicles are even included in each frame (so a predictable vehicle simply isn't re-sent).
+
+### 4.4 Crowd / laneless entities (FreeKinematic) — first-class, same machinery
+
+Human-crowd and laneless-traffic simulations are **large counts of unpredictable movers** — the
+`FreeKinematic` regime. They use the **same transport design** with a tiny uniform record and their own
+topic (independent QoS/rate from vehicles):
+
+```
+CrowdRecord { uint32 handle; float x, y, (z); int16 vx_q, vy_q; uint16 radius_q; }   // ~16–18 B
+```
+
+Kept a **separate topic/blob from the `LaneArc` vehicle state** (uniform record size per topic → clean
+`InlineArray`/blob, independent rate) rather than a discriminated union in one frame. The crowd source is
+the laneless branch's existing **`ICrowdFootprintSource` / `WorldDisc`** seam (§9) — no new abstraction.
+Because these movers are unpredictable, the adaptive policy will keep most of them near full rate; the
+saving comes from the tiny record + batching + area-of-interest culling, not from rate reduction.
+
 ## 5. Threading & non-blocking (already solved, restated)
 
 The publisher reads from the async `SimulationRunner`'s immutable `SimulationSnapshot` (§7 of the API doc)
@@ -138,10 +191,25 @@ and interpolate `z`. `posLat' = posLat + latSpeed·dt`. `FreeKinematic`: `x' = x
   and the back at `pos' − length` along the geometry, heading = the back→front **chord**. This is what
   SUMO actually reports; for long vehicles on curves it differs from the tangent. Client-side, from data
   already present (no extra transmission).
-- **`CornerCutCorrected`** — a **renderer-only** realism pass on top of the chord: fit the vehicle
-  rectangle to the swept path so a long vehicle visually swings wide instead of clipping the inner curb
-  (it may overlap a neighbour's shape slightly — acceptable for visuals). Pure function of physical params
-  + lane geometry; **needs no extra network data**.
+- **`CornerCutCorrected`** — a **renderer-only** realism pass, in **two possible tiers** (this is the
+  "scope" question):
+  - **Tier A — chord heading only (cheap, recommended first).** Just the `ChordHeading` above: the
+    rendered rectangle is *oriented* along the back→front chord. Cost: one extra geometry lookup (back
+    point at `pos−length`) + an `atan2`. The vehicle's **reference point stays on the lane centerline** —
+    so a long vehicle points correctly through the curve, but its body still rides the centerline (the
+    rear can still visually clip the inner edge a little). This already removes most of the "wrong-looking"
+    heading on turns.
+  - **Tier B — full swept-path off-tracking ("trucks swing wide").** Model that a real long/articulated
+    vehicle's **rear axle tracks *inside* the front's path**, so the driver swings the front *outward*
+    entering the turn to keep the rear clear. This **moves the rendered pose off the centerline** (front
+    bows toward the outside, rear cuts across the inside) using a kinematic bicycle/trailer model from the
+    wheelbase/`length`. Cost: a small per-vehicle path integration (or a curvature→offset lookup) over the
+    upcoming/preceding lane geometry — more math, and a bigger visual change (bodies may overlap a
+    neighbour's shape, which you accepted). This is what makes articulated turning look *right*.
+  Both tiers are **renderer-only, derived purely from physical params + lane geometry, and cost zero extra
+  network data**. Tier B is a superset of Tier A. **Recommendation:** implement Tier A first (big
+  realism win, trivial cost, ships with the resolver), make Tier B an opt-in higher tier for hosts that
+  want true off-tracking on long/articulated vehicles.
 
 ### 6.3 Why realism can live in the API layer (the owner's point)
 The correction is a **deterministic pure function** of state the renderer already has (lane-relative pose +
@@ -173,6 +241,18 @@ The renderer keeps extrapolating with the last packet until a new one arrives; w
 arrives it **reconciles** — snap, or blend over a few frames (standard networked-entity smoothing). Because
 the packet describes *future* motion (not just a position), a 1 Hz update still renders smoothly while the
 prediction holds. Load-dependent global scaling (drop everyone's cap under network pressure) sits on top.
+
+**The policy is a pluggable delegate, not a fixed threshold** (owner decision). The scheduler calls an
+`IPublishPolicy` (or a `Func`) per vehicle per candidate frame with the cheap signals below and gets back a
+decision (send now / defer / target interval). A sensible default policy ships, but a host can supply its
+own (e.g. weight by camera distance, by scenario importance, by a bandwidth governor):
+
+```csharp
+public interface IPublishPolicy {
+    // Called with frozen per-vehicle signals; returns whether to include this vehicle in the current frame.
+    bool ShouldPublish(in PublishSignals s);   // s: handle, drModel, |accel|, speed, leaderGap,
+}                                               //    rvoActive, laneChanging, secondsSinceLastSent, ...
+```
 
 ## 8. Extrapolation vs interpolation (one packet, two modes)
 
@@ -219,21 +299,39 @@ world-space seams the DR layer needs. Concretely, from `LANELESS-DIRECTION.md` /
 **Nothing here asks the laneless branch to change its solver** — only to (a) agree the `DrModel` enum lives
 on a shared seam, and (b) expose a "lane-predictable-right-now" flag. Both are cheap and additive.
 
-## 10. Proposed API surface (sketch — for review, not yet built)
+## 10. Package layout & proposed API surface
+
+**Network/replication types go in their own package(s)** (owner decision — not everyone needs them):
+
+| Package | Contents | Depends on |
+|---|---|---|
+| `SumoSharp.Core` | the engine; `DrModel` enum (the shared seam); `PoseResolver` (portable pose math — used by local render too); the opt-in `RenderRealism` read mode | — |
+| **`SumoSharp.Replication`** *(new)* | transport-agnostic record structs + the **canonical packed blob (de)serializer**; the `IPublishPolicy` adaptive scheduler; TCP/UDP helpers | `Core` only |
+| **`SumoSharp.Replication.Dds`** *(new, optional)* | the `[DdsTopic]` types (geometry/registry, keyed lifecycle, batched state + crowd) wrapping the blob/records | `Replication` + `CycloneDds.NET` |
+
+So a host that renders locally needs only `Core`; a host replicating over TCP/UDP adds `Replication`; a
+DDS host adds `Replication.Dds`. `CycloneDds.NET` is a dependency **only** of the optional DDS package.
+(`PoseResolver` and `DrModel` live in `Core` because they are simulation-domain / local-render concerns,
+not networking — the replication packages build the wire types *around* them.)
 
 ```csharp
-// Engine (opt-in production render mode; parity path untouched, off by default):
-public enum RenderRealism { ParityTangent, ChordHeading, CornerCutCorrected }
+// Core — opt-in production render mode (parity path untouched, off by default):
+public enum RenderRealism { ParityTangent, ChordHeading, CornerCutCorrected }  // Tier A/B per §6.2
 public RenderRealism RenderMode { get; set; } = RenderRealism.ParityTangent;
 
-// Portable resolver (new, ns2.1-clean, mirrorable in JS):
+// Core — portable resolver (ns2.1-clean, mirrorable in JS/C++):
 public static class PoseResolver { public static Pose Resolve(/* §6 signature */); }
 
-// Prediction packet (new; home TBD — Core vs a new SumoSharp.Runtime package):
-public readonly struct VehiclePrediction { /* §4.2 fields, handle-based */ }
+// Core — the shared cross-branch seam (LANDED, src/Sim.Core/DrModel.cs):
 public enum DrModel : byte { LaneArc, FreeKinematic, Stationary }
 
-// Publisher-side adaptive scheduler (new): decides per-vehicle next-publish time from the §7 signals.
+// Replication — transport-agnostic records + one blob codec for DDS-blob / TCP / UDP:
+public readonly struct VehicleRecord  { /* §4.2, handle-based */ }
+public readonly struct CrowdRecord    { /* §4.4 */ }
+public static class FrameCodec { /* Write(Span<byte>, records...) / Read(ReadOnlySpan<byte>) */ }
+public interface IPublishPolicy { bool ShouldPublish(in PublishSignals s); }  // §7 pluggable
+
+// Replication.Dds — [DdsTopic] wrappers (geometry/registry, keyed lifecycle, batched state + crowd blob).
 ```
 
 ## 11. Phased implementation plan (each additive, gated, hash-stable)
@@ -251,14 +349,24 @@ public enum DrModel : byte { LaneArc, FreeKinematic, Stationary }
 6. **Wire it into `Sim.LiveHost`** as the reference networked renderer (replace the per-frame world-pose
    JSON with the packet + client-side resolver) — the end-to-end showcase.
 
-## 12. Open decisions for the owner (the forks)
+## 12. Decisions (owner) & remaining open items
 
-- **Packet home:** new `SumoSharp.Runtime` package, or fold into `Core`?
-- **`CornerCutCorrected` scope:** chord-heading only, or full swept-path off-tracking (more math, "trucks
-  swing wide")?
+**Decided:**
+- **Packet home:** separate packages — `SumoSharp.Replication` (transport-agnostic blob+records) +
+  optional `SumoSharp.Replication.Dds` (CycloneDDS.NET topics). Not in `Core`. (§10)
+- **Adaptive-rate policy:** a **pluggable `IPublishPolicy` delegate** (a default ships; hosts can replace).
+  (§7)
+- **`drModel` shared enum:** coordinate **now** — landed in `Core` as the frozen seam; coordination issue
+  filed to the laneless branch (DR1/DR2). (§3, §9)
+- **DDS-friendly + blob:** two topics by rate (durable geometry/lifecycle vs high-rate batched state); the
+  high-rate path is a **batched blob** (not per-vehicle keyed samples) to amortize DDS overhead for 10k+;
+  crowd/laneless is first-class via its own tiny-record topic. (§4.3, §4.4)
+
+**Still open:**
+- **`CornerCutCorrected` scope:** Tier A (chord-heading only, cheap) to ship first — confirmed? And do you
+  want **Tier B** (full swept-path off-tracking, "trucks swing wide") built now or later? (§6.2)
 - **Sim-side chord heading:** keep the parity FCD `Angle` column as tangent (recommended — no parity risk),
   or *also* pursue a parity-gated engine-side chord angle? (Separate, gated, may need golden regen.)
-- **`drModel` shared enum:** coordinate the seam with the laneless branch now (recommended), or stub
-  `LaneArc`-only and wire `FreeKinematic` at the laneless merge?
-- **Adaptive-rate policy:** exposed as a tunable threshold, a pluggable policy delegate, or both?
+- **DDS high-rate shape:** ship the **opaque blob** topic as canonical (recommended) and the structured
+  `InlineArray` chunk as an option, or only one of them?
 ```
