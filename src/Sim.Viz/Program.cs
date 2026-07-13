@@ -101,6 +101,10 @@ internal static class Program
 
         var scenes = new List<ScenePayload>();
 
+        // Scene 0 -- the dense uncontrolled junction (opens first): many mixed movers negotiating a
+        // shared crossroads with no lanes/signals (Egypt/India-style congestion), from the ORCA layer.
+        scenes.Add(SceneGen.BuildDenseJunction());
+
         // Scene A -- FCD "Laneless overtake" (8 vehicles, lateral RVO).
         scenes.Add(RequireFcdScene(
             Path.Combine(scenarios, "65-mixed-sublane"),

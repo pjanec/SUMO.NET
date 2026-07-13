@@ -155,6 +155,133 @@ internal static class SceneGen
             frames);
     }
 
+    // ---------------------------------------------------------------------------------------
+    // Scene F -- "Uncontrolled junction (dense)": the Egypt/India-style chaotic intersection. Four
+    // dense streams of mixed-size movers (cars/tuk-tuks/bikes) approach a shared crossroads from
+    // N/S/E/W with NO lanes and NO signals, and negotiate through the packed centre by reciprocal
+    // avoidance. Pure OrcaCrowd at scale, using the Q2/Q3 machinery so a heavily-loaded junction keeps
+    // FLOWING instead of gridlocking: nearest-k neighbour culling (MaxNeighbours) + a deterministic
+    // symmetry break so the 4-way conflict resolves, removal-on-arrival so movers that clear the box
+    // leave (draining the queue), and the shared spatial hash (UseSpatialHash) so ~90 agents stay cheap.
+    // Movers are wave-spawned each few steps to sustain the congestion. Colour = travel axis
+    // (blue E<->W, red N<->S); sizes cycle across vehicle classes.
+    // ---------------------------------------------------------------------------------------
+    internal static ScenePayload BuildDenseJunction()
+    {
+        const double half = 24.0;    // field half-extent (world units ~= metres)
+        const double roadHalf = 7.0; // half-width of each carriageway (14 m road)
+
+        var crowd = new OrcaCrowd(400)
+        {
+            SymmetryBreak = 0.12,     // break the 4-way symmetry so the centre doesn't lock
+            MaxNeighbours = 10,       // nearest-k cull (Q2) -- desymmetrises + bounds work
+            RemoveOnArrival = true,   // movers that clear the far side leave (drains the queue)
+            ArrivalRadius = 1.0,
+            UseSpatialHash = true,    // Q3 -- keep the crowd cheap at scale
+            NeighbourDist = 8.0,
+        };
+        var kinds = new List<int>();
+
+        var radii = new[] { 0.9, 0.5, 0.75, 0.45, 0.8, 0.55 }; // car / bike / tuk-tuk / bike / car / bike
+        var rows = new[] { 1.6, 3.6, 5.6 };                    // 3 sub-streams per direction (keep-right side)
+        var spawn = 0;
+
+        void TryAdd(Vec2 start, Vec2 goal, int kind, double r)
+        {
+            if (crowd.Count >= 340)
+            {
+                return;
+            }
+
+            crowd.Add(start, r, maxSpeed: 2.6, goal: goal);
+            kinds.Add(kind);
+        }
+
+        void SpawnWave()
+        {
+            var r = radii[spawn % radii.Length];
+            var row = rows[(spawn / 4) % rows.Length];
+            TryAdd(new Vec2(-half, -row), new Vec2(half + 8, -row), 0, r);  // W->E  (blue, right side = -y)
+            TryAdd(new Vec2(half, row), new Vec2(-half - 8, row), 0, r);    // E->W  (blue, +y)
+            TryAdd(new Vec2(row, -half), new Vec2(row, half + 8), 1, r);    // S->N  (red, +x)
+            TryAdd(new Vec2(-row, half), new Vec2(-row, -half - 8), 1, r);  // N->S  (red, -x)
+            spawn++;
+        }
+
+        var snapshots = new List<double[][]>();
+        void Snapshot()
+        {
+            var d = new double[crowd.Count][];
+            for (var i = 0; i < crowd.Count; i++)
+            {
+                var p = crowd.Position(i);
+                d[i] = new[] { R(p.X), R(p.Y), R(crowd.Radius(i)), (double)kinds[i] };
+            }
+
+            snapshots.Add(d);
+        }
+
+        const int steps = 340;
+        const int stopSpawnAt = 300;   // keep the box busy nearly the whole clip, then let it drain
+        for (var step = 0; step < steps; step++)
+        {
+            if (step < stopSpawnAt && step % 5 == 0)
+            {
+                SpawnWave();
+            }
+
+            crowd.Step(0.25);
+            Snapshot();
+        }
+
+        // Keep only frames where the junction is actually populated (trim any empty lead-in / drained
+        // tail), so the clip is wall-to-wall traffic. "On screen" = within the drawn field.
+        int OnScreen(double[][] d)
+        {
+            var n = 0;
+            foreach (var a in d)
+            {
+                if (Math.Abs(a[0]) <= half && Math.Abs(a[1]) <= half)
+                {
+                    n++;
+                }
+            }
+
+            return n;
+        }
+
+        var lastBusy = snapshots.Count - 1;
+        while (lastBusy > 0 && OnScreen(snapshots[lastBusy]) < 6)
+        {
+            lastBusy--;
+        }
+
+        var frames = new List<FramePayload>();
+        var noVehicles = Array.Empty<double[]?>();
+        for (var i = 0; i <= lastBusy; i += 2)   // decimate ~2x
+        {
+            frames.Add(new FramePayload(noVehicles, snapshots[i]));
+        }
+
+        // Two wide crossing carriageways as the drawn network (hand-built -- no SUMO net needed).
+        var hRoad = new LanePayload("EW", "EW", 0, 2 * roadHalf, new double[] { -half - 6, 0, half + 6, 0 });
+        var vRoad = new LanePayload("NS", "NS", 0, 2 * roadHalf, new double[] { 0, -half - 6, 0, half + 6 });
+        var network = new NetworkPayload(
+            new[] { hRoad, vRoad }, Array.Empty<JunctionPayload>(),
+            Array.Empty<TlLogicPayload>(), Array.Empty<SignalHeadPayload>());
+
+        return new ScenePayload(
+            "Uncontrolled junction (dense)",
+            "No lanes, no signals: dense mixed traffic (cars, tuk-tuks, bikes) streams into a shared "
+            + "crossroads from all four directions and negotiates through the packed centre by reciprocal "
+            + "avoidance -- the laneless model at scale. Blue = east<->west, red = north<->south.",
+            new double[] { -half, -half, half, half },
+            network,
+            new double[] { 0, 0 },
+            0.25 * 2,
+            frames.ToArray());
+    }
+
     // Run a pure crowd to convergence, snapshotting disc positions each step and keeping every
     // `decimate`-th snapshot (the frames are dense, so linear interpolation on the front end is
     // ample). Disc kind is per-agent (its stream), captured at Add time.
