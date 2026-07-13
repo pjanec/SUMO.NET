@@ -102,7 +102,9 @@ public sealed class SimHost : IDisposable
             alive.Add(id);
 
             // Demo signals: all viewer vehicles are lane-bound (LaneArc); a non-zero lateral offset stands in
-            // for "mid-manoeuvre" (lane change / lateral dodge), which forces the full rate.
+            // for "mid-manoeuvre" (lane change / lateral dodge), which forces the full rate. Per the frozen
+            // issue #3 contract, at the laneless merge this stand-in is replaced by `Engine.Manoeuvring[i]`
+            // (the sim's own reactive-manoeuvre bit) -- the DR regime stays LaneArc/Stationary for vehicles.
             var manoeuvring = Math.Abs(snap.PosLat[i]) > 0.05;
             if (!_scheduler.ShouldPublish(
                     snap.Handles[i], DrModel.LaneArc, snap.SpeedExact[i], snap.Accel[i], snap.Time, manoeuvring))

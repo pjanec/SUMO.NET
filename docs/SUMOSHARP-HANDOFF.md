@@ -9,7 +9,7 @@ Continuation notes for the **SumoSharp** library/packaging effort. Pairs with
 - **Branch:** `claude/sumo-csharp-nuget-strategy-4vlkki` (all work pushed).
 - **Gates (must stay true after every change):**
   - `dotnet test` → **0 failed, 1 skipped**; the pass count grows as new-surface tests are added
-    (**250** at the start of the packaging work → **288** after this session's B13–B22 tests).
+    (**250** at the start of the packaging work → **294** after this session's B13–B24 tests).
   - `Sim.Bench` determinism hash → **`909605E965BFFE59`** (single **and** parallel).
 - **What exists now:** the whole Phase-1 public API + NuGet packaging + a working browser-live demo.
   Every addition is *additive / inert-when-absent*, so it is byte-identical where the new paths are
@@ -41,7 +41,10 @@ so `apt-get update` first). SUMO is not needed for `dotnet test`.
 
 | Commit | What |
 |---|---|
-| *(this session)* | **Dead-reckoning layer** (`SUMOSHARP-DEADRECKONING.md`): shared `DrModel` seam; `PoseResolver` (chord + swept-path off-tracking, `RungB20`); opt-in `Engine.RenderMode` (`RungB21`); `SumoSharp.Replication` (blob codec + records + `IPublishPolicy`, `RungB22`); `SumoSharp.Replication.Dds` (CycloneDDS topics, out of `Traffic.sln`); `Sim.LiveHost` `chord`/`corner` arg. Coordinated with laneless via issue #3 (DR1–DR4). |
+| `25fb343` | **`PublishScheduler`** (`Sim.Replication`): reusable per-step adaptive-rate loop (last-sent bookkeeping + `IPublishPolicy` + despawn pruning), keyed by `VehicleHandle`, extracted from the demo host so any transport (DDS/TCP) drives §7 the same way; `RungB24`. |
+| `5932989` | **Adaptive publish rate wired live** (`Sim.LiveHost`): `DefaultPublishPolicy` run once per sim step; frame is a `{alive:[ids], vehicles:[published DR records]}` split; client tracks each vehicle independently and dead-reckons deferred ones. ~55–80 % sent/step; HUD shows the saving. Off the parity path. |
+| `c86b6c5` | **Junction demo scenarios** `samples/junctions/{cross,tee,bend,acute}` (viewer inputs, not parity) + CA2014 fix (hoist the lane-window `stackalloc` out of the per-vehicle loop in `Engine.PublishReadState`). |
+| *(this session)* | **Dead-reckoning layer** (`SUMOSHARP-DEADRECKONING.md`): shared `DrModel` seam; `PoseResolver` (chord + swept-path off-tracking, `RungB20`); opt-in `Engine.RenderMode` (`RungB21`); `SumoSharp.Replication` (blob codec + records + `IPublishPolicy`, `RungB22`); `SumoSharp.Replication.Dds` (CycloneDDS topics, out of `Traffic.sln`); `Sim.LiveHost` `chord`/`corner` arg. Coordinated with laneless via issue #3 (DR1–DR4) — **now closed**, contract frozen (see "Dead-reckoning seam — CLOSED" below). |
 | *(this session)* | **Dead-reckoning inputs** (§5.1): `Acceleration` read column (getAcceleration analog) + `GetUpcomingLanes` (lane-handle path ahead); `RungB19`. Foundation for the networked DR layer (below). |
 | *(this session)* | **Vehicle-slot recycling** (§9): `Despawn` frees the `EntityIndex`; next runtime `SpawnVehicle` reuses it (rebuild-in-place + reset idx-keyed side state + bumped generation). `CreateRuntime` split into `BuildRuntime`/append + `AllocateRuntime`. Inert for goldens; `RungB18`. |
 | *(this session)* | **Sim.LiveHost**: verified builds/runs after the core changes (Playwright smoke); enabled the snapshot pool server-side + client-side entity interpolation for smooth 60 fps playback. |
@@ -149,6 +152,23 @@ Design to implement (once confirmed):
 Open forks needing steer: packet wire format / where it lives (new `SumoSharp.Runtime`?); async
 `SimulationSnapshot` gains `accel`+`drModel`+path columns; how the adaptive scheduler is exposed; the
 laneless coordination for `drModel`. **Chord-heading sim-side fix stays out unless separately parity-gated.**
+
+## Dead-reckoning seam — CLOSED (issue #3)
+
+The DR cross-branch coordination (issue #3) is **resolved and closed**; the frozen contract, agreed by both
+branches (hash `909605E965BFFE59` held on both):
+- **Vehicles are `LaneArc`/`Stationary` only.** `FreeKinematic` comes solely from the laneless crowd source
+  (`OrcaCrowd`/`WorldDisc`), never from a swerving *vehicle* (a straight world-line prediction would drift a
+  car off a curved lane; `LaneArc` + a raised publish rate reconstructs the dodge, and it keeps world
+  `(vx,vy)` off the vehicle wire — DR3).
+- **`Engine.Manoeuvring` (span) / `Engine.IsManoeuvring(handle)`** is the separate per-vehicle rate signal
+  the laneless branch added (commit `223580f`): true during a reactive lateral manoeuvre. The DR publisher
+  feeds it into `PublishSignals.LaneChangingOrManoeuvring` (our `DefaultPublishPolicy` already consumes it).
+- **`DrModel.cs` is byte-identical on both branches** (mirrored like `RvoNeighbor`); merge-order-independent.
+- **At merge:** the publisher swaps its local `LaneArc`/`Stationary` classifier for the laneless `DrModels`
+  column and reads `Manoeuvring` for the rate — **no packet-shape change**. The `Sim.LiveHost` demo currently
+  uses a `posLat` stand-in for the manoeuvring bit (see `SimHost.BuildFrameJson`); that is the one line the
+  merge replaces with `Engine.Manoeuvring[i]`.
 
 ## Coordination with the laneless/RVO branch (`claude/sumo-phase-2-planning-p3w7kh`)
 
