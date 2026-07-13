@@ -1138,6 +1138,11 @@ public sealed partial class Engine : IEngine
     // float; parity-exact lane-relative values are double (D7). PosZ is present from day one (0 on 2-D
     // nets, real when geometry-3D lands, SUMOSHARP-API.md §6). Same index across every span == same vehicle.
     public ReadOnlySpan<VehicleHandle> VehicleHandles => _readBuffer.Handles.AsSpan(0, _readBuffer.Count);
+    // DR2 (issue #3): per-vehicle dead-reckoning regime, aligned with VehicleHandles (same index == same
+    // vehicle). The batched read the DR publisher iterates for 10k+ vehicles: LaneArc unless the vehicle is
+    // mid-RVO/ORCA swerve this step (FreeKinematic) or effectively stopped (Stationary). Cast each byte to
+    // `DrModel`. Populated only in the Step projection (off the golden path) -> hash unaffected.
+    public ReadOnlySpan<byte> DrModels => _readBuffer.DrModel.AsSpan(0, _readBuffer.Count);
     public ReadOnlySpan<float> PosX => _readBuffer.PosX.AsSpan(0, _readBuffer.Count);
     public ReadOnlySpan<float> PosY => _readBuffer.PosY.AsSpan(0, _readBuffer.Count);
     public ReadOnlySpan<float> PosZ => _readBuffer.PosZ.AsSpan(0, _readBuffer.Count);
@@ -1178,6 +1183,23 @@ public sealed partial class Engine : IEngine
         return false;
     }
 
+    // DR2 (issue #3): the per-vehicle accessor form of the DrModels column -- the shape SUMOSHARP-API §16
+    // names ("DrModel Engine.GetDrModel(VehicleHandle) returning FreeKinematic while swerving"). Same
+    // regime the DrModels column carries; use the column for bulk (10k) publishing, this for random
+    // access. Inert-when-absent: a stale generation or a vehicle not in the current snapshot -> Stationary
+    // (nothing to extrapolate).
+    public DrModel GetDrModel(VehicleHandle handle)
+    {
+        var idx = (int)handle.Index;
+        if (idx >= 0 && idx < _vehicleGeneration.Length && _vehicleGeneration[idx] == handle.Generation
+            && _readBuffer.TryGetSlot(idx, out var slot))
+        {
+            return (DrModel)_readBuffer.DrModel[slot];
+        }
+
+        return DrModel.Stationary;
+    }
+
     // Fill the read buffer from the current active vehicles, projecting each to (x, y, angle) with the SAME
     // LaneGeometry.PositionAtOffset call EmitTrajectory uses -- so the read columns match the FCD geometry
     // exactly. Reads only committed post-step state; mutates nothing in the simulation.
@@ -1200,11 +1222,33 @@ public sealed partial class Engine : IEngine
 
             _readBuffer.Add(handle, v.EntityIndex, v.Def.Id, v.Def.TypeId,
                 v.LaneHandle, v.LaneId, v.Kinematics.Pos, v.Kinematics.Speed, v.Kinematics.LatOffset,
-                (float)x, (float)y, (float)z, (float)angle);
+                (float)x, (float)y, (float)z, (float)angle, (byte)RegimeOf(v));
         }
 
         DetectLifecycleEvents();
     }
+
+    // DR2 (issue #3): a lane vehicle's dead-reckoning regime for the current published frame. Derived from
+    // committed post-step state only. Stationary when effectively stopped (no extrapolation needed this
+    // frame); FreeKinematic when it actively coupled to a neighbour/crowd this step (mid-swerve, reactive
+    // lateral -> not linearly lane-predictable, so the DR publisher raises its rate or emits it as a
+    // FreeKinematic record for the manoeuvre); otherwise LaneArc (predict `pos` along the lane, `posLat`
+    // by `latSpeed`). Crowd/ORCA agents are NOT vehicles -- they are tagged FreeKinematic by the crowd
+    // source (OrcaCrowd via ICrowdFootprintSource/WorldDisc), not here. Inert for the parity path: a plain
+    // lane vehicle (LateralManoeuvre never set unless LanelessRvo && _sublane) is always LaneArc/Stationary.
+    private DrModel RegimeOf(VehicleRuntime v)
+    {
+        if (v.Kinematics.Speed <= DrStationarySpeed)
+        {
+            return DrModel.Stationary;
+        }
+
+        return v.LateralManoeuvre ? DrModel.FreeKinematic : DrModel.LaneArc;
+    }
+
+    // Below this speed (m/s) a vehicle is classified Stationary for dead-reckoning (position only, no
+    // extrapolation this frame). A render/DR-only threshold; never touches the parity path.
+    private const double DrStationarySpeed = 0.01;
 
     // §10: diff each vehicle's lifecycle against the previous published frame and record Departed
     // (Pending -> Active) / Arrived (-> Arrived) events. Iterates ALL vehicles (not just active) so an
@@ -6166,6 +6210,12 @@ public sealed partial class Engine : IEngine
                 target = curLat;                         // fully blocked -> hold; car-following brakes
             }
         }
+
+        // DR2 (issue #3): record whether ego actively coupled to a neighbour/crowd this step -- i.e. it is
+        // mid-swerve, so its short-horizon lateral is reactive and NOT linearly lane-predictable. Pure
+        // side-write consumed only by the (opt-in) DR classification (Engine.GetDrModel / DrModels);
+        // nothing on the golden path reads it, so byte-identical. forbCount > 0 == coupled == FreeKinematic.
+        v.LateralManoeuvre = forbCount > 0;
 
         return DriftToward(curLat, target, maxStep);
     }

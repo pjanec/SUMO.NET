@@ -295,6 +295,55 @@ accounted for?** Mostly confirmations; two genuinely new items:
   spatial hash (Stage-2b internal, no public surface); insertion/spawn. No new `ScenarioConfig` keys
   beyond `LateralResolution`.
 
+## Dead-reckoning coordination (issue #3 / SUMOSHARP-DEADRECKONING.md) — this session
+
+The NuGet branch designed a networked dead-reckoning (DR) layer that predicts 10k+ movers on a remote
+renderer from ~10 Hz updates. It has two motion regimes that map onto our two-regime model: `LaneArc`
+(lane vehicles) and `FreeKinematic` (our `OrcaCrowd` / `WorldDisc` / `ICrowdFootprintSource` movers).
+Two additive asks (DR1/DR2) plus two sanity checks (DR3/DR4). **STATUS: confirmed + DR2 implemented on
+this branch.** Nothing here changes the RVO/ORCA solvers; hash `909605E965BFFE59` held, suite 297/3/0.
+
+- **DR1 — `DrModel { LaneArc, FreeKinematic, Stationary }` (byte-backed): CONFIRMED at three members;
+  do NOT add a "vehicle-mid-swerve" member.** The enum answers *which extrapolator*, and a swerving
+  vehicle and a pure crowd agent published as `FreeKinematic` extrapolate identically (velocity
+  integration) — a fourth member would carry no extrapolation difference. The vehicle-vs-crowd
+  distinction the renderer needs (rectangle vs disc, oriented vs holonomic) is already carried by the
+  packet split — crowd agents ride the separate `CrowdRecord` topic (§4.4) and vehicles are registered
+  in the keyed lifecycle topic with their dims/type — so a fourth enum value would *duplicate* the
+  registry (the same anti-duplication rule the design applies to `avoidanceKind`). The runtime choice
+  "swerving vehicle → `LaneArc`-at-high-rate vs `FreeKinematic`" is exactly what DR2 drives; the enum
+  stays three. A byte leaves headroom if a genuinely new *extrapolation* regime ever appears. We mirror
+  `DrModel.cs` verbatim on this branch (like `RvoNeighbor`); the merge reconciles them as identical.
+- **DR2 — "lane-predictable right now?" read: IMPLEMENTED, both shapes.** `ReadOnlySpan<byte>
+  Engine.DrModels` (the batched column aligned with `VehicleHandles`, the form the publisher iterates
+  for 10k) and `DrModel Engine.GetDrModel(VehicleHandle)` (the §16-named per-handle accessor). Source: a
+  per-vehicle `LateralManoeuvre` bit set in `ComputeRvoLateral` (`forbCount > 0` == actively coupled to a
+  neighbour/crowd this step == mid-swerve). Regime precedence: `Stationary` (speed ≤ 1 cm/s) →
+  `FreeKinematic` (mid-swerve) → `LaneArc`. A pure crowd/ORCA agent is NOT a vehicle and is tagged
+  `FreeKinematic` by the crowd source, not by `GetDrModel` (vehicles only) — consistent with §9. Gated:
+  `LateralManoeuvre` is only ever set under `LanelessRvo && _sublane`; a plain lane vehicle is always
+  `LaneArc`/`Stationary`; the column is populated only in the `Step()` projection (off the `Run()`/golden
+  path), so parity is untouched. **Open option for the publisher:** the normal-mode crowd swerve (Q6,
+  `ComputeLateralEvasion`) and B6 obstacle swerves do NOT currently flip `LateralManoeuvre` (only the
+  laneless `ComputeRvoLateral` path does). If you want a *normal-mode* vehicle swerving for a crowd agent
+  to also read `FreeKinematic`, that is a one-line addition (set it when `threatIsCrowd` drives a steer) —
+  say the word; I scoped DR2 to the path §16 named.
+- **DR3 — `FreeKinematic` wire `{handle, x, y, (z), vx, vy, radius}`: CONFIRMED, no additions needed.**
+  This maps 1:1 to an `OrcaCrowd` agent's state / a `WorldDisc` (`{X, Y, Vx, Vy, Radius}`). Notes: (a)
+  **heading is NOT needed on the wire** — our crowd agents are holonomic discs with no facing independent
+  of motion; a renderer that wants a facing derives it from `atan2(vy, vx)` (zero extra bytes). Only add a
+  heading field if a future agent can face independently of its velocity, which the current model has no
+  state for. (b) **Do NOT put `avoidanceKind`/`Responsibility` in the DR packet** — DR is *prediction*
+  (extrapolate position by velocity), not a re-run of the ORCA solve on the renderer; the cooperative
+  class is a sim-side solver input, orthogonal to DR (as §9 notes). (c) `z` optional: `OrcaCrowd` is 2-D
+  today (send 0 / omit); keep `(z)` reserved for a future 3-D navmesh.
+- **DR4 — `Kinematics.LatSpeed` as the `LaneArc` `latSpeed` source: CONFIRMED.** It is the sim's own
+  per-step lateral velocity (m/s, +left, same sign convention as `PosLat`), exactly `posLat' = posLat +
+  latSpeed·dt`. It is 0 for a plain lane-centred vehicle (so `LaneArc` correctly holds `posLat = 0`), and
+  non-zero only under sublane/laneless. During a reactive swerve `latSpeed` is changing — but that is
+  precisely when DR2 classifies the vehicle `FreeKinematic`, so the linear `LaneArc` `latSpeed` prediction
+  is not used then. Correct source for the steady-drift `LaneArc` case.
+
 ## What we explicitly do NOT do
 
 Port SUMO's persistent lateral state machine (`mySafeLatDist*` / `updateExpectedSublaneSpeeds` /
