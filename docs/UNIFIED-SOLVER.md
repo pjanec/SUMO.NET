@@ -24,10 +24,10 @@ rather than closing it:
   advance IS the atomic Krauss step. Closing the guarantee therefore requires sub-stepping the
   crowd-coupled vehicle's *full motion* at `dt/K` — permitted on the crowd-coupled path (§2.2, no golden)
   but a genuinely invasive change that makes a crowd-coupled vehicle's longitudinal dynamics no longer the
-  validated single-step Krauss, and needs its own owner decision. **Recommendation: keep the
-  `LockstepBridge`;** the coarse-dt residual affects only extreme-close crossings (realistic separations
-  are already safe), matching the honest bound this doc set out. Pursue full-motion sub-stepping only if a
-  hard guarantee at close range is a real requirement.
+  validated single-step Krauss, and needs its own owner decision. **DECIDED (owner): keep the
+  `LockstepBridge`.** The coarse-dt residual affects only extreme-close crossings (realistic separations
+  are already safe), matching the honest bound this doc set out — an accepted limitation. Full-motion
+  sub-stepping is NOT pursued unless a hard guarantee at close range later becomes a firm requirement.
 
 **Prototype status (Q5 — LANDED, standalone).** `src/Sim.Core/Unified/UnifiedWorld.cs` implements this
 design's two load-bearing claims and validates them on the canonical hard case (`UnifiedSolverTests`):

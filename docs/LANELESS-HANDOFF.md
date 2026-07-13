@@ -160,7 +160,7 @@ skipped / 0 failed**.
    the lateral swerve + longitudinal brake, byte-identical at K=1) and **reverted**: measured to give no
    benefit and slight harm, because the prototype's win needs co-simulating the vehicle's atomic Krauss
    LONGITUDINAL step, which the iron law forbids sub-stepping on the committed path. See the
-   "Integration attempt" note in `docs/UNIFIED-SOLVER.md` for the evidence. **Net: keep the
+   "Integration attempt" note in `docs/UNIFIED-SOLVER.md` for the evidence. **DECIDED (owner): keep the
    `LockstepBridge`.** The only way to a hard close-range guarantee is sub-stepping the crowd-coupled
    vehicle's FULL motion at dt/K (allowed off-golden, but changes its longitudinal dynamics away from
    validated single-step Krauss) — a separate, invasive decision, pursue only if close-range crossing
