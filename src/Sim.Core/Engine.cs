@@ -1275,6 +1275,11 @@ public sealed partial class Engine : IEngine
     // Previous lane handle on each vehicle's route (-1 if none). Lets a renderer walk the chord/off-track
     // back point past the current lane's start for a correct heading on curves (§6.2).
     public ReadOnlySpan<int> PrevLaneHandles => _readBuffer.PrevLane.AsSpan(0, _readBuffer.Count);
+    // Flattened per-vehicle lane window [prev2,prev1,current,next1,next2,next3] (VehicleReadBuffer layout
+    // constants), for multi-lane DR walks (forward + chord/off-track back). Length == VehicleCount * Stride.
+    public ReadOnlySpan<int> LaneWindows => _readBuffer.LaneWindow.AsSpan(0, _readBuffer.Count * VehicleReadBuffer.LaneWindowSize);
+    public static int LaneWindowStride => VehicleReadBuffer.LaneWindowSize;
+    public static int LaneWindowCurrentIndex => VehicleReadBuffer.LaneWindowBack;
     // §5.2: TL-controlled approach lanes (static) and their current signal-state chars (refreshed each
     // Step), aligned index-for-index. For rendering junction signals; empty when the net has no road TL.
     public ReadOnlySpan<int> TlLaneHandles => _tlLaneHandles.AsSpan();
@@ -1355,8 +1360,18 @@ public sealed partial class Engine : IEngine
                 ? _laneSeqPool[v.LaneSeqStart + v.LaneSeqIndex - 1]
                 : -1;
 
+            // Multi-lane window [prev2, prev1, current, next1, next2, next3] for multi-boundary DR walks.
+            Span<int> laneWindow = stackalloc int[VehicleReadBuffer.LaneWindowSize];
+            for (var k = 0; k < VehicleReadBuffer.LaneWindowSize; k++)
+            {
+                var seqIdx = v.LaneSeqIndex + (k - VehicleReadBuffer.LaneWindowBack);
+                laneWindow[k] = seqIdx >= 0 && seqIdx < v.LaneSeqLen
+                    ? _laneSeqPool[v.LaneSeqStart + seqIdx]
+                    : -1;
+            }
+
             _readBuffer.Add(handle, v.EntityIndex, v.Def.Id, v.Def.TypeId,
-                v.LaneHandle, nextLane, prevLane, v.LaneId, v.Kinematics.Pos, v.Kinematics.Speed, v.Acceleration, v.Kinematics.LatOffset,
+                v.LaneHandle, nextLane, prevLane, laneWindow, v.LaneId, v.Kinematics.Pos, v.Kinematics.Speed, v.Acceleration, v.Kinematics.LatOffset,
                 (float)x, (float)y, (float)z, (float)angle, (float)v.VType.Length, (float)v.VType.Width);
         }
 

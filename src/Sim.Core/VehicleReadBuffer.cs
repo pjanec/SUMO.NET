@@ -24,6 +24,15 @@ internal sealed class VehicleReadBuffer
     public int[] LaneHandle = new int[InitialCapacity];
     public int[] NextLane = new int[InitialCapacity];       // next lane handle on the route (-1 if none) -- DR lookahead
     public int[] PrevLane = new int[InitialCapacity];       // previous lane handle on the route (-1 if none) -- chord back-walk
+
+    // A small lane WINDOW around each vehicle's current lane for multi-lane DR walks (forward
+    // extrapolation across several short junction lanes; backward for the chord/off-track point). Layout
+    // per vehicle: [prev2, prev1, current, next1, next2, next3]; -1 pads off-route slots. Flattened row-major.
+    public const int LaneWindowBack = 2;
+    public const int LaneWindowFwd = 3;
+    public const int LaneWindowSize = LaneWindowBack + 1 + LaneWindowFwd; // 6; current is at index LaneWindowBack
+    public int[] LaneWindow = new int[InitialCapacity * LaneWindowSize];
+
     public string[] LaneId = new string[InitialCapacity];
     public double[] Pos = new double[InitialCapacity];
     public double[] SpeedD = new double[InitialCapacity];
@@ -53,12 +62,18 @@ internal sealed class VehicleReadBuffer
 
     public void Add(
         VehicleHandle handle, int entityIndex, string vehicleId, string vehicleType,
-        int laneHandle, int nextLane, int prevLane, string laneId, double pos, double speed, double accel, double posLat,
+        int laneHandle, int nextLane, int prevLane, ReadOnlySpan<int> laneWindow,
+        string laneId, double pos, double speed, double accel, double posLat,
         float x, float y, float z, float angle, float length, float width)
     {
         EnsureColumnCapacity(Count + 1);
 
         var i = Count;
+        for (var k = 0; k < LaneWindowSize; k++)
+        {
+            LaneWindow[i * LaneWindowSize + k] = k < laneWindow.Length ? laneWindow[k] : -1;
+        }
+
         Handles[i] = handle;
         EntityIndex[i] = entityIndex;
         VehicleId[i] = vehicleId;
@@ -117,6 +132,7 @@ internal sealed class VehicleReadBuffer
         Array.Resize(ref LaneHandle, newCap);
         Array.Resize(ref NextLane, newCap);
         Array.Resize(ref PrevLane, newCap);
+        Array.Resize(ref LaneWindow, newCap * LaneWindowSize);
         Array.Resize(ref LaneId, newCap);
         Array.Resize(ref Pos, newCap);
         Array.Resize(ref SpeedD, newCap);

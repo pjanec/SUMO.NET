@@ -27,6 +27,8 @@ public sealed class SimulationSnapshot
     public int[] LaneHandle { get; init; } = Array.Empty<int>();
     public int[] NextLaneHandle { get; init; } = Array.Empty<int>();     // next lane on route, -1 if none (DR lookahead)
     public int[] PrevLaneHandle { get; init; } = Array.Empty<int>();     // previous lane on route, -1 if none (chord back-walk)
+    public int[] LaneWindow { get; init; } = Array.Empty<int>();         // flattened [p2,p1,cur,n1,n2,n3] per vehicle (multi-lane DR walk)
+    public int LaneWindowStride { get; init; }
     public double[] Pos { get; init; } = Array.Empty<double>();
     public double[] PosLat { get; init; } = Array.Empty<double>();
     public string[] VehicleId { get; init; } = Array.Empty<string>();
@@ -67,6 +69,8 @@ public sealed class SimulationSnapshot
             LaneHandle = engine.LaneHandles.ToArray(),
             NextLaneHandle = engine.NextLaneHandles.ToArray(),
             PrevLaneHandle = engine.PrevLaneHandles.ToArray(),
+            LaneWindow = engine.LaneWindows.ToArray(),
+            LaneWindowStride = Engine.LaneWindowStride,
             Pos = engine.Pos.ToArray(),
             PosLat = engine.PosLat.ToArray(),
             VehicleId = engine.VehicleIds.ToArray(),

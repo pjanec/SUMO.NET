@@ -13,6 +13,7 @@ public sealed class SimHost : IDisposable
     private readonly SimulationRunner _runner;
     private readonly NetworkModel _network;
     private readonly VTypeHandle _vType;
+    private readonly VTypeHandle _truckType;
     private readonly string[] _normalEdges;
     private readonly Random _rng = new(12345);
 
@@ -34,6 +35,8 @@ public sealed class SimHost : IDisposable
         // default (SUMO-exact tangent). Set before Start so the engine thread never races it.
         _engine.RenderMode = renderMode;
         _vType = _engine.DefaultVType;
+        // A long vehicle so the renderer's swept-path off-tracking ("swing wide") is visible on turns.
+        _truckType = _engine.DefineVType(new VTypeParams { VClass = "truck", Length = 12.0 });
 
         _normalEdges = _network.EdgesById.Keys.Where(e => !e.StartsWith(':')).ToArray();
 
@@ -61,15 +64,18 @@ public sealed class SimHost : IDisposable
     public string BuildFrameJson()
     {
         var snap = _runner.Snapshot;
+        var stride = snap.LaneWindowStride;
         var vehicles = new List<object>(snap.Count);
         for (var i = 0; i < snap.Count; i++)
         {
+            // The lane window [prev2,prev1,current,next1,next2,next3] for multi-lane DR walks.
+            var lw = new int[stride];
+            Array.Copy(snap.LaneWindow, i * stride, lw, 0, stride);
+
             vehicles.Add(new
             {
                 id = snap.VehicleId[i],
-                ln = snap.LaneHandle[i],
-                nx = snap.NextLaneHandle[i],
-                pv = snap.PrevLaneHandle[i],
+                lw,
                 p = Math.Round(snap.Pos[i], 3),
                 pl = Math.Round(snap.PosLat[i], 3),
                 s = Math.Round(snap.SpeedExact[i], 3),
@@ -139,11 +145,12 @@ public sealed class SimHost : IDisposable
             return;
         }
 
+        var vt = _rng.Next(3) == 0 ? _truckType : _vType; // ~1/3 trucks, to show off-tracking on turns
         _runner.Post(e =>
         {
             try
             {
-                e.SpawnVehicle(_vType, from, to, departPos: 0.0, departSpeed: 0.0, departLane: 0);
+                e.SpawnVehicle(vt, from, to, departPos: 0.0, departSpeed: 0.0, departLane: 0);
             }
             catch
             {

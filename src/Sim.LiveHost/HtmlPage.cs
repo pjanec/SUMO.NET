@@ -100,36 +100,55 @@ internal static class HtmlPage
     return { x: pts[pts.length-2], y: pts[pts.length-1], deg: 0 };
   }
 
-  // Dead-reckon one vehicle `dt` sim-seconds past its sampled lane-relative state, walking into the next
-  // lane if it runs off the end. Returns the FRONT point (SUMO's reference) + a heading precisely matching
-  // SUMO's computeAngle: the back->front CHORD, where the back point is one body length behind the front
-  // along the geometry (into the previous lane `pv` when the front is near a lane start). This orients the
-  // rectangle correctly through curves, unlike the raw lane tangent.
+  const WIN_CUR = 2;  // lw layout: [prev2, prev1, CURRENT, next1, next2, next3]
+
+  // navi-deg (0=N, cw) -> unit world direction (matches PoseResolver.VectorFromNavi).
+  function naviVec(deg){ const r = deg*Math.PI/180; return [Math.sin(r), Math.cos(r)]; }
+
+  // Dead-reckon one vehicle `dt` sim-seconds along its lane WINDOW (walks any number of the window's lanes,
+  // forward and back), returning the render pose. Heading = SUMO's back->front CHORD; position = the front,
+  // bowed toward the OUTSIDE of the turn by the swept-path off-tracking amount (PoseResolver Tier B) so long
+  // vehicles visibly swing wide. Reduces to the plain lane point on straights / short bodies.
   function resolvePose(v, dt){
-    let arc = v.p + v.s * dt + 0.5 * v.a * dt * dt;
-    if(arc < v.p) arc = v.p;                       // never predict backwards (matches PoseResolver)
-    let curH = v.ln, beforeH = v.pv;               // the lane before `curH` on the route
-    let cur = net.lanes[curH];
-    if(!cur) return null;
-    if(arc > cur.len && v.nx >= 0 && net.lanes[v.nx]){ arc -= cur.len; beforeH = curH; curH = v.nx; cur = net.lanes[curH]; }
-    const frontArc = Math.max(0, Math.min(arc, cur.len));
-    const front = positionAtOffset(cur.pts, frontArc, v.pl);
+    const lw = v.lw; if(!lw) return null;
+    // The contiguous run of valid lanes in the window (current is always valid), with cumulative starts.
+    let lo = WIN_CUR, hi = WIN_CUR;
+    while(lo-1 >= 0 && lw[lo-1] >= 0 && net.lanes[lw[lo-1]]) lo--;
+    while(hi+1 < lw.length && lw[hi+1] >= 0 && net.lanes[lw[hi+1]]) hi++;
+    const start = []; let cum = 0;
+    for(let i = lo; i <= hi; i++){ start[i] = cum; cum += net.lanes[lw[i]].len; }
+    const total = cum;
+    const curStart = start[WIN_CUR];
 
     const bodyLen = v.l || CAR_LEN;
-    let back;
-    if(frontArc >= bodyLen){
-      back = positionAtOffset(cur.pts, frontArc - bodyLen, v.pl);
-    } else if(beforeH >= 0 && net.lanes[beforeH]){
-      const bl = net.lanes[beforeH];
-      back = positionAtOffset(bl.pts, Math.max(0, bl.len - (bodyLen - frontArc)), v.pl);
-    } else {
-      back = positionAtOffset(cur.pts, 0, v.pl);   // no known previous lane -> clamp to this lane's start
-    }
+    let arc = v.p + v.s * dt + 0.5 * v.a * dt * dt;
+    if(arc < v.p) arc = v.p;                                   // never predict backwards
+    let frontG = curStart + arc;
+    if(frontG > total - 1e-4) frontG = total - 1e-4;           // clamp at the end of the known window
+    if(frontG < 0) frontG = 0;
+    const backG = Math.max(0, frontG - bodyLen);
 
+    const sample = (g) => {
+      for(let i = lo; i <= hi; i++){
+        const lane = net.lanes[lw[i]];
+        if(g <= start[i] + lane.len || i === hi){ return positionAtOffset(lane.pts, g - start[i], v.pl); }
+      }
+      const l = net.lanes[lw[hi]]; return positionAtOffset(l.pts, l.len, v.pl);
+    };
+
+    const front = sample(frontG), back = sample(backG);
     const dx = front.x - back.x, dy = front.y - back.y;
     let deg = (dx*dx + dy*dy) > 1e-9 ? (90 - Math.atan2(dy, dx) * 180/Math.PI) : front.deg;
     deg %= 360; if(deg < 0) deg += 360;
-    return { x: front.x, y: front.y, deg };
+
+    // Off-tracking bow: shift the front toward the outside of the turn by ~ bodyLen*|dpsi|/2.
+    const ft = naviVec(front.deg), bt = naviVec(back.deg);
+    const cross = bt[0]*ft[1] - bt[1]*ft[0];                   // >0 => left/CCW turn (outside is right)
+    let off = bodyLen * Math.abs(Math.asin(Math.max(-1, Math.min(1, cross)))) * 0.5;
+    if(off > bodyLen) off = bodyLen;
+    const sign = cross >= 0 ? -1 : 1;
+    const bx = front.x + off * (-ft[1]*sign), by = front.y + off * (ft[0]*sign);
+    return { x: bx, y: by, deg };
   }
 
   function resize(){ cv.width = innerWidth; cv.height = innerHeight; if(net) draw(); }
