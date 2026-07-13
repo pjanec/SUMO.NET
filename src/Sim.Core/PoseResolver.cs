@@ -117,22 +117,42 @@ public static class PoseResolver
         // point is `Length` behind the front along the actual geometry (into preceding lanes if needed).
         var backArc = posPred - s.Length;
         Vec3 back;
+        float backTangent;
         if (backArc >= 0.0)
         {
-            SampleForward(lanes, upcomingLanes, backArc, posLatPred, out back, out _);
+            SampleForward(lanes, upcomingLanes, backArc, posLatPred, out back, out backTangent);
         }
         else
         {
-            SampleBackward(lanes, upcomingLanes, precedingLanes, -backArc, posLatPred, out back);
+            SampleBackward(lanes, upcomingLanes, precedingLanes, -backArc, posLatPred, out back, out backTangent);
         }
 
         var dx = front.X - back.X;
         var dy = front.Y - back.Y;
         var chord = (dx * dx + dy * dy) > 1e-12 ? NaviFromVector(dx, dy) : frontTangent;
 
-        // Tier B (CornerCutCorrected off-tracking) is added in the next increment; for now it renders as
-        // ChordHeading (a strict improvement over tangent, and its heading base).
-        return new Pose(front.X, front.Y, front.Z, chord);
+        if (realism != RenderRealism.CornerCutCorrected)
+        {
+            return new Pose(front.X, front.Y, front.Z, chord); // ChordHeading
+        }
+
+        // Tier B — swept-path off-tracking ("trucks swing wide"). A long vehicle's rear tracks INSIDE the
+        // curve, so the front bows toward the OUTSIDE. Approximate the swept-wide distance from the heading
+        // change over the body: dpsi = signed turn angle between the back and front tangents; the body's
+        // rear offsets from the front's path by ~ length*|dpsi|/2, so we shift the rendered front outward by
+        // that much. On a straight (dpsi==0) this vanishes -> identical to ChordHeading. Renderer-only,
+        // derived purely from geometry + length; deliberately a visual approximation (documented), and
+        // clamped so a sharp polyline vertex cannot produce an absurd shift.
+        var (ftx, fty) = VectorFromNavi(frontTangent);
+        var (btx, bty) = VectorFromNavi(backTangent);
+        var cross = btx * fty - bty * ftx;           // > 0 => left / CCW turn (outside is to the right)
+        var dpsi = Math.Asin(cross < -1.0 ? -1.0 : (cross > 1.0 ? 1.0 : cross));
+        var off = s.Length * Math.Abs(dpsi) * 0.5;
+        if (off > s.Length) off = s.Length;
+        var sign = cross >= 0.0 ? -1.0 : 1.0;        // outward = opposite the turn side
+        var nx = -fty * sign;                        // (left-normal of the front tangent) * outward sign
+        var ny = ftx * sign;
+        return new Pose(front.X + off * nx, front.Y + off * ny, front.Z, chord);
     }
 
     private readonly struct Vec3
@@ -175,14 +195,14 @@ public static class PoseResolver
     // Walk `dist` metres BEHIND the current lane's start, into precedingLanes (nearest-behind first).
     private static void SampleBackward(
         ILaneShapeSource lanes, ReadOnlySpan<int> upcoming, ReadOnlySpan<int> preceding,
-        double dist, double latOffset, out Vec3 point)
+        double dist, double latOffset, out Vec3 point, out float tangentDeg)
     {
         if (preceding.IsEmpty)
         {
             // No known lane behind: clamp to the current lane's start.
             var cur = upcoming.IsEmpty ? -1 : upcoming[0];
-            if (cur < 0) { point = default; return; }
-            Sample(lanes, cur, 0.0, latOffset, out point, out _);
+            if (cur < 0) { point = default; tangentDeg = 0f; return; }
+            Sample(lanes, cur, 0.0, latOffset, out point, out tangentDeg);
             return;
         }
 
@@ -196,14 +216,14 @@ public static class PoseResolver
                 // `remaining` behind this lane's END == (len - remaining) from its start.
                 var fromStart = len - remaining;
                 if (fromStart < 0.0) fromStart = 0.0;
-                Sample(lanes, h, fromStart, latOffset, out point, out _);
+                Sample(lanes, h, fromStart, latOffset, out point, out tangentDeg);
                 return;
             }
 
             remaining -= len;
         }
 
-        Sample(lanes, preceding[^1], 0.0, latOffset, out point, out _);
+        Sample(lanes, preceding[^1], 0.0, latOffset, out point, out tangentDeg);
     }
 
     private static void Sample(
@@ -226,5 +246,12 @@ public static class PoseResolver
         deg %= 360.0;
         if (deg < 0.0) deg += 360.0;
         return (float)deg;
+    }
+
+    // Inverse of NaviFromVector: the unit direction vector for a navi-degree heading (0 = north = (0,1)).
+    private static (double X, double Y) VectorFromNavi(double naviDeg)
+    {
+        var math = (90.0 - naviDeg) * Math.PI / 180.0;
+        return (Math.Cos(math), Math.Sin(math));
     }
 }

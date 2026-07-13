@@ -207,9 +207,13 @@ and interpolate `z`. `posLat' = posLat + latSpeed·dt`. `FreeKinematic`: `x' = x
     upcoming/preceding lane geometry — more math, and a bigger visual change (bodies may overlap a
     neighbour's shape, which you accepted). This is what makes articulated turning look *right*.
   Both tiers are **renderer-only, derived purely from physical params + lane geometry, and cost zero extra
-  network data**. Tier B is a superset of Tier A. **Recommendation:** implement Tier A first (big
-  realism win, trivial cost, ships with the resolver), make Tier B an opt-in higher tier for hosts that
-  want true off-tracking on long/articulated vehicles.
+  network data**. Tier B is a superset of Tier A.
+
+  **STATUS: both tiers landed** in `PoseResolver` (`RenderRealism.ChordHeading` / `CornerCutCorrected`,
+  `RungB20`). Tier B approximates the swept-wide distance from the heading change over the vehicle body
+  (`≈ length·|Δψ|/2`) and bows the rendered front toward the outside of the turn (clamped; vanishes on a
+  straight → collapses to ChordHeading). It is a deliberate **visual approximation** (not a full
+  bicycle/trailer integration), documented as such in the code.
 
 ### 6.3 Why realism can live in the API layer (the owner's point)
 The correction is a **deterministic pure function** of state the renderer already has (lane-relative pose +

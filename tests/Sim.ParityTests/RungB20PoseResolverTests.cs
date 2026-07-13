@@ -76,6 +76,33 @@ public class RungB20PoseResolverTests
         Assert.Equal(1.0, chord.Y, 6);  // pos 11 => 1 m up the vertical leg
     }
 
+    // (Tier B) CornerCutCorrected bows the front toward the OUTSIDE of the turn on a curve, and collapses
+    // to ChordHeading on a straight lane.
+    [Fact]
+    public void CornerCutCorrected_BowsOutwardOnCurve_AndVanishesOnStraight()
+    {
+        // Same right-angle bend as above; front on the vertical leg at x=10 heading north, turning left
+        // (east->north). The outside of a left turn is to the RIGHT (+x), so the corrected front x > 10.
+        var bend = new FakeLaneSource(0, new[] { (0.0, 0.0), (10.0, 0.0), (10.0, 10.0) }, 20.0);
+        var state = new DrState { Model = DrModel.LaneArc, LaneHandle = 0, Pos = 11.0, Length = 8.0 };
+        Span<int> up = stackalloc int[] { 0 };
+
+        var chord = PoseResolver.Resolve(bend, state, up, default, 0.0, RenderRealism.ChordHeading);
+        var corrected = PoseResolver.Resolve(bend, state, up, default, 0.0, RenderRealism.CornerCutCorrected);
+
+        Assert.True(corrected.X > chord.X + 0.5,
+            $"corrected front x {corrected.X} should bow outward (east) beyond the chord front {chord.X}");
+        Assert.Equal(chord.HeadingDeg, corrected.HeadingDeg, 0.01f); // heading is still the chord
+
+        // On a straight lane the off-track offset is zero: corrected == chord.
+        var straight = new FakeLaneSource(0, new[] { (0.0, 0.0), (100.0, 0.0) }, 100.0);
+        var st2 = new DrState { Model = DrModel.LaneArc, LaneHandle = 0, Pos = 50.0, Length = 8.0 };
+        var c2 = PoseResolver.Resolve(straight, st2, up, default, 0.0, RenderRealism.ChordHeading);
+        var cc2 = PoseResolver.Resolve(straight, st2, up, default, 0.0, RenderRealism.CornerCutCorrected);
+        Assert.Equal(c2.X, cc2.X, 6);
+        Assert.Equal(c2.Y, cc2.Y, 6);
+    }
+
     // On a straight lane, chord == tangent (the correction only bites on curves).
     [Fact]
     public void ChordHeading_EqualsTangent_OnStraightLane()
