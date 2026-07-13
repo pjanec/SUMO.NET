@@ -44,12 +44,17 @@ internal static class HtmlPage
   // Because it follows the actual lane polyline, prediction tracks real curves (no corner-cutting) --
   // unlike naive world-space (x,y) extrapolation. dt is in SIM seconds; the sim rate is measured from
   // consecutive frames so this works at any server rate.
-  let frameVehicles = [];   // latest frame's [{id,ln,nx,p,pl,s,a}]
+  // Each vehicle is dead-reckoned from ITS OWN last-published state, because the adaptive publish policy
+  // (SUMOSHARP-DEADRECKONING.md §7) re-sends predictable vehicles less often than active ones. `tracked`
+  // maps id -> { v (the DR record), wall0 (performance.now()/1000 at receipt) }; a vehicle absent from a
+  // frame keeps extrapolating from its last packet. Liveness comes from the frame's cheap `alive` id list.
+  const tracked = new Map();
   let frameObstacles = [];
   let frameTl = [];         // [{ln, st}] traffic-light state per controlled lane
-  let frameTime = 0;        // sim time (s) of the latest frame's sample
+  let frameTime = 0;        // sim time (s) of the latest frame's sample (HUD clock)
+  let npub = 0, nalive = 0; // last step's published-count / alive-count (HUD bandwidth stat)
   const CAR_LEN = 5.0, CAR_W = 1.8;  // demo vehicles are the default passenger vType
-  let frameRecvWall = 0;    // performance.now()/1000 when it arrived
+  let lastRecvWall = 0;     // performance.now()/1000 of the last accepted frame (for rate + HUD clock)
   let simRate = 1;          // measured sim-seconds per wall-second (smoothed)
   let lastStep = -1;        // dedupe: the server re-sends the latest snapshot faster than the sim ticks
 
@@ -57,15 +62,21 @@ internal static class HtmlPage
     if(m.step === lastStep) return; // same sim step re-sent -> ignore (keep extrapolating)
     lastStep = m.step;
     const nowWall = performance.now() / 1000;
-    if(frameRecvWall > 0){
-      const dW = nowWall - frameRecvWall, dT = m.time - frameTime;
+    if(lastRecvWall > 0){
+      const dW = nowWall - lastRecvWall, dT = m.time - frameTime;
       if(dW > 1e-3 && dT > 0){ simRate = simRate * 0.7 + (dT / dW) * 0.3; }
     }
-    frameVehicles = m.vehicles || [];
+    // Update only the vehicles the server published this step; each resets its own DR baseline to `nowWall`.
+    for(const v of (m.vehicles || [])){ tracked.set(v.id, { v, wall0: nowWall }); }
+    // Despawn: drop any tracked vehicle no longer alive. Absence from `vehicles` alone is NOT a despawn --
+    // it just means "keep dead-reckoning it".
+    const aliveSet = new Set(m.alive || []);
+    for(const id of tracked.keys()){ if(!aliveSet.has(id)) tracked.delete(id); }
     frameObstacles = m.obstacles || [];
     frameTl = m.tl || [];
     frameTime = m.time;
-    frameRecvWall = nowWall;
+    lastRecvWall = nowWall;
+    npub = m.npub || 0; nalive = (m.nalive != null) ? m.nalive : aliveSet.size;
   }
 
   // SUMO signal char -> colour.
@@ -229,13 +240,16 @@ internal static class HtmlPage
       ctx.strokeStyle = '#0a0c10'; ctx.lineWidth = 1; ctx.stroke();
     }
 
-    // vehicles: dead-reckoned from the latest sparse frame to *now* (clamp dt so a server stall can't run
-    // the extrapolation away), drawn as oriented rectangles (front at the pose point, extending back).
-    let dt = simRate * (performance.now()/1000 - frameRecvWall);
-    if(!(dt >= 0)) dt = 0;
-    if(dt > 2.0) dt = 2.0;
+    // vehicles: each dead-reckoned from ITS OWN last packet to *now* (clamp dt so a server stall or a
+    // long-deferred predictable vehicle can't run the extrapolation away), drawn as oriented rectangles
+    // (front at the pose point, extending back).
+    const nowWall = performance.now()/1000;
     let drawn = 0;
-    for(const v of frameVehicles){
+    for(const e of tracked.values()){
+      let dt = simRate * (nowWall - e.wall0);
+      if(!(dt >= 0)) dt = 0;
+      if(dt > 2.0) dt = 2.0;
+      const v = e.v;
       const pose = resolvePose(v, dt);
       if(!pose) continue;
       const s = w2s(pose.x, pose.y);
@@ -260,8 +274,13 @@ internal static class HtmlPage
       ctx.moveTo(s[0]+k,s[1]-k); ctx.lineTo(s[0]-k,s[1]+k); ctx.stroke();
     }
 
-    stat.textContent = drawn + ' vehicles · t=' + (frameTime + dt).toFixed(1) + 's · dead-reckoned ' +
-      simRate.toFixed(1) + '× (updates ' + simRate.toFixed(1) + '/s)';
+    let hudDt = simRate * (nowWall - lastRecvWall);
+    if(!(hudDt >= 0)) hudDt = 0; if(hudDt > 2.0) hudDt = 2.0;
+    const pct = nalive > 0 ? Math.round(100*npub/nalive) : 0;
+    // Bandwidth stat: state records SENT this step vs vehicles ALIVE. The adaptive policy re-sends only
+    // uncertain movers at full rate; predictable ones ride on the client's dead reckoning.
+    stat.textContent = drawn + ' vehicles · sent ' + npub + '/' + nalive + ' states/step (' + pct +
+      '%) · t=' + (frameTime + hudDt).toFixed(1) + 's · sim ' + simRate.toFixed(1) + '/s → 60fps DR';
   }
 
   // --- interaction ---

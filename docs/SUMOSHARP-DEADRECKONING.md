@@ -275,6 +275,17 @@ public interface IPublishPolicy {
 }                                               //    rvoActive, laneChanging, secondsSinceLastSent, ...
 ```
 
+**Status — landed + demonstrated live.** `IPublishPolicy` / `PublishSignals` / `DefaultPublishPolicy` ship
+in `Sim.Replication` (unit-tested, `RungB22`). `Sim.LiveHost` now **wires the policy end to end**: it runs
+`DefaultPublishPolicy` once per sim step and streams a `{ alive:[ids], vehicles:[published DR records] }`
+split — `alive` is the cheap liveness/despawn signal, `vehicles` carries full state only for the ids the
+policy chose. The browser tracks each vehicle independently and dead-reckons the deferred ones from their
+own last packet (absence ≠ despawn; a vehicle is removed only when it drops out of `alive`). The HUD shows
+the live saving (`sent N/M states/step`). On the default reroute scenario ~55–80 % of vehicles are sent per
+step (the steady fraction is deferred to ~1 send / 3 steps); with more free-flow cruising the reduction is
+larger. Demo intervals are scaled to that scenario's 1 s step; the library defaults (0.1 s / 1.0 s) target a
+10 Hz publisher. This path is off the parity/`Run()` path (Step-only projection), so goldens are untouched.
+
 ## 8. Extrapolation vs interpolation (one packet, two modes)
 
 - **Extrapolation** (zero added latency): render at `now`; predict forward from the last packet. Can

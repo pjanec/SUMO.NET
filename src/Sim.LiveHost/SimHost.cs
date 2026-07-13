@@ -1,6 +1,7 @@
 using System.Text.Json;
 using Sim.Core;
 using Sim.Ingest;
+using Sim.Replication;
 
 namespace Sim.LiveHost;
 
@@ -21,6 +22,24 @@ public sealed class SimHost : IDisposable
     private readonly List<(double X, double Y)> _obstacles = new();
 
     private Timer? _spawnTimer;
+
+    // §7 adaptive publish rate: run the pluggable policy ONCE per sim step (BuildFrameJson is called ~20x/s
+    // but the sim ticks slower, and the client dedupes by step). Predictable steady followers are re-sent
+    // only at the slow keep-alive interval; the client keeps dead-reckoning the ones we skip. `_lastSentTime`
+    // is the per-vehicle last-published sim time the policy compares against; the per-step frame is cached so
+    // repeated sends of the same step return identical bytes (and don't re-run the policy).
+    // Intervals are scaled to THIS demo's 1 s sim step (the library defaults 0.1/1.0 target a 10 Hz
+    // publisher, where they'd defer 10:1). Here: uncertain movers every step (1 s), predictable steady
+    // followers only every 3rd step (~1 send / 3 s) -- the client dead-reckons them in between.
+    private readonly IPublishPolicy _publishPolicy = new DefaultPublishPolicy
+    {
+        FastInterval = 1.0,
+        SlowInterval = 3.0,
+        AccelThreshold = 0.3,
+    };
+    private readonly Dictionary<string, double> _lastSentTime = new();
+    private int _lastFrameStep = -1;
+    private string _lastFrameJson = "{\"type\":\"frame\",\"time\":0,\"step\":-1,\"alive\":[],\"vehicles\":[],\"obstacles\":[],\"tl\":[],\"npub\":0,\"nalive\":0}";
 
     public string NetworkJson { get; }
 
@@ -64,17 +83,48 @@ public sealed class SimHost : IDisposable
     public string BuildFrameJson()
     {
         var snap = _runner.Snapshot;
+        // Once per sim step only: repeated 20 Hz sends between ticks return the cached bytes (the client
+        // dedupes by step anyway), so the publish policy advances exactly one step per snapshot.
+        if (snap.StepCount == _lastFrameStep)
+        {
+            return _lastFrameJson;
+        }
+
+        _lastFrameStep = snap.StepCount;
         var stride = snap.LaneWindowStride;
+
+        // `alive` (every current id -- cheap) is the client's liveness/despawn signal; `vehicles` (full DR
+        // state) carries only the ids the policy chose to publish this step. Bandwidth is saved on the
+        // expensive per-vehicle state, not on the id list.
+        var alive = new List<string>(snap.Count);
+        var live = new HashSet<string>(snap.Count);
         var vehicles = new List<object>(snap.Count);
         for (var i = 0; i < snap.Count; i++)
         {
+            var id = snap.VehicleId[i];
+            alive.Add(id);
+            live.Add(id);
+
+            var since = _lastSentTime.TryGetValue(id, out var last) ? snap.Time - last : double.PositiveInfinity;
+            // Demo signals: all viewer vehicles are lane-bound (LaneArc); a non-zero lateral offset stands in
+            // for "mid-manoeuvre" (lane change / lateral dodge), which forces the full rate.
+            var manoeuvring = Math.Abs(snap.PosLat[i]) > 0.05;
+            var signals = new PublishSignals(
+                snap.Handles[i], DrModel.LaneArc, snap.SpeedExact[i], snap.Accel[i], since, manoeuvring);
+            if (!_publishPolicy.ShouldPublish(signals))
+            {
+                continue; // predictable + recently sent -> let the client keep dead-reckoning it
+            }
+
+            _lastSentTime[id] = snap.Time;
+
             // The lane window [prev2,prev1,current,next1,next2,next3] for multi-lane DR walks.
             var lw = new int[stride];
             Array.Copy(snap.LaneWindow, i * stride, lw, 0, stride);
 
             vehicles.Add(new
             {
-                id = snap.VehicleId[i],
+                id,
                 lw,
                 p = Math.Round(snap.Pos[i], 3),
                 pl = Math.Round(snap.PosLat[i], 3),
@@ -83,6 +133,15 @@ public sealed class SimHost : IDisposable
                 l = Math.Round(snap.Length[i], 2),   // body dims for a correctly-sized rectangle
                 w = Math.Round(snap.Width[i], 2),
             });
+        }
+
+        // Drop despawned vehicles from the policy's memory so it doesn't grow without bound.
+        if (_lastSentTime.Count > live.Count)
+        {
+            foreach (var stale in _lastSentTime.Keys.Where(k => !live.Contains(k)).ToList())
+            {
+                _lastSentTime.Remove(stale);
+            }
         }
 
         object[] obstacles;
@@ -100,8 +159,21 @@ public sealed class SimHost : IDisposable
         }
 
         // `time` is the sim clock (seconds); the client measures the sim rate from consecutive frames and
-        // extrapolates each vehicle by (renderSimTime - time).
-        return JsonSerializer.Serialize(new { type = "frame", time = Math.Round(snap.Time, 3), step = snap.StepCount, vehicles, obstacles, tl });
+        // extrapolates each vehicle by (renderSimTime - itsOwnLastPublishTime). `npub`/`nalive` let the HUD
+        // show the live bandwidth saving (state records sent vs vehicles alive).
+        _lastFrameJson = JsonSerializer.Serialize(new
+        {
+            type = "frame",
+            time = Math.Round(snap.Time, 3),
+            step = snap.StepCount,
+            alive,
+            vehicles,
+            obstacles,
+            tl,
+            npub = vehicles.Count,
+            nalive = alive.Count,
+        });
+        return _lastFrameJson;
     }
 
     // A canvas click (already converted to WORLD coordinates by the browser) -> project to the nearest
