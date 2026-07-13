@@ -1815,6 +1815,47 @@ public sealed partial class Engine : IEngine
         return true;
     }
 
+    // PANIC-EVAC.md R2: override the individual SUMO driver knobs of an ACTIVE vehicle at runtime.
+    // Merges the non-null fields of `ov` onto the vehicle's resolved vType (a `with`-copy) and its
+    // SpeedFactor; unset fields keep their current value, so knobs are independently settable and
+    // "flee mode" is just this call with an aggressive preset. Returns false if the handle is stale
+    // or the vehicle is not active. Purely additive -- no golden/parity scenario ever calls it, so
+    // the determinism hash is unaffected (VehicleRuntime.VType's `set` header carries the argument).
+    public bool SetVehicleParams(VehicleHandle handle, VehicleParamOverride ov)
+    {
+        if (!TryResolveActive(handle, out var v))
+        {
+            return false;
+        }
+
+        if (ov.SpeedFactor is double sf)
+        {
+            v.SpeedFactor = sf;
+        }
+
+        var t = v.VType;
+        var newDecel = ov.Decel ?? t.Decel;
+        // EmergencyDecel must never sit below Decel (SUMO invariant): honour an explicit override,
+        // else lift it to the raised decel when needed, otherwise leave it be.
+        var newEmergency = ov.EmergencyDecel ?? Math.Max(t.EmergencyDecel, newDecel);
+        v.VType = t with
+        {
+            MaxSpeed = ov.MaxSpeed ?? t.MaxSpeed,
+            Tau = ov.Tau ?? t.Tau,
+            MinGap = ov.MinGap ?? t.MinGap,
+            Accel = ov.Accel ?? t.Accel,
+            Decel = newDecel,
+            EmergencyDecel = newEmergency,
+            // ApparentDecel tracks Decel unless the caller changed neither (SUMO defaults apparent
+            // to decel); only move it when Decel actually changed.
+            ApparentDecel = ov.Decel is null ? t.ApparentDecel : newDecel,
+            JmIgnoreFoeProb = ov.JmIgnoreFoeProb ?? t.JmIgnoreFoeProb,
+            JmIgnoreFoeSpeed = ov.JmIgnoreFoeSpeed ?? t.JmIgnoreFoeSpeed,
+            JmIgnoreJunctionFoeProb = ov.JmIgnoreJunctionFoeProb ?? t.JmIgnoreJunctionFoeProb,
+        };
+        return true;
+    }
+
     private NetworkRouter Router() => _router ??= new NetworkRouter(_network!);
 
     private bool TryResolveActive(VehicleHandle handle, out VehicleRuntime v)

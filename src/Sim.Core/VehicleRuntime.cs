@@ -20,7 +20,14 @@ internal sealed class VehicleRuntime
 
     // Resolved (fully-defaulted) vType parameters (Sim.Ingest.VTypeDefaults) -- the car-
     // following model reads these, never the raw .rou.xml VType with its optional fields.
-    public required ResolvedVType VType { get; init; }
+    //
+    // `set` (not `init`) SOLELY for the panic-evac per-vehicle param override
+    // (Engine.SetVehicleParams -- PANIC-EVAC.md R2: "flee mode is just another override/call"):
+    // the external evac layer bulk-swaps a running vehicle's knobs to aggressive values by
+    // assigning a `VType with { ... }` copy. Nothing on the golden/parity path ever assigns this
+    // after creation, so the determinism hash (909605E965BFFE59) is byte-identical unless a caller
+    // opts in -- exactly the inert-when-unused posture every other laneless/evac seam carries.
+    public required ResolvedVType VType { get; set; }
 
     // D3: this vehicle's stable index in Engine._vehicles, set once at creation (LoadScenario).
     // Vehicles are never removed from that list -- only flagged Arrived -- so the list index is
