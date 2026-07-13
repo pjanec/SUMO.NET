@@ -159,13 +159,16 @@ skipped / 0 failed**.
    What remains is wiring it into the real Engine (reusing the Engine's exact Krauss longitudinal
    reduction instead of the prototype's simplified follower) behind a default-off `Mode` switch. **Answer
    the §10 questions first** (esp. reciprocity default + replace-vs-coexist), then authorise.
-2. **[small, needs a product decision] Wire the swerve into normal lane mode.** Braking for a crowd agent
-   (`CrowdLongitudinalConstraint`) already works in normal mode whenever `CrowdSource` is set; only the
-   *swerve* (`ComputeRvoLateral`) is laneless-gated (`LanelessRvo && _sublane`). Deferred deliberately
-   this session: it is a product decision (should normal SUMO vehicles swerve for crowd agents?) AND it
-   writes into the parity-critical `Engine.cs` hot path, so it wants your call before I build it (even
-   default-off). The non-string crowd hook it needs already exists (`Engine.CrowdSource` + the
-   `ComputeRvoLateral` crowd loop); the normal-mode path would reuse it.
+2. **[DONE — Q6, option b] Normal-mode vehicles swerve for crowd agents.** Owner chose realism over
+   hard-stops: a normal (phase-1, non-laneless, non-sublane) vehicle now SWERVES around a `CrowdSource`
+   crowd agent it can clear, braking to a stop only when boxed in. Implemented in `ComputeLateralEvasion`
+   (the non-sublane lateral path) by making `CrowdSource` agents first-class dodgeable threats
+   (projected onto the lane, synthesised as `ExternalObstacle`s so the full B6 swerve machinery applies)
+   and skipping the emergency-only brake gate for a crowd threat (swerve preferred). Gated on
+   `CrowdSource != null` — inert for every golden (hash `909605E965BFFE59` held). Test:
+   `NormalModeCrowdSwerveTests` (swerves 1.75 m around a standing pedestrian, 0.5 m clearance, drives on).
+   Obstacle (`_obstacles`) evasion stays emergency-only (byte-identical). Fixture:
+   `scenarios/_fixtures/bridge-crossing-normal/`.
 3. **[optional] SL2015 full-state-machine port** — only if byte-exact dynamic sublane *decisions* are
    ever required. `docs/PHASE2-SUBLANE.md` scopes it; the magnitude/geometry mechanisms are already
    understood and reused as the RVO physics constants. Large, brittle, ECS-hostile — the explicit

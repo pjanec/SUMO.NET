@@ -6359,10 +6359,13 @@ public sealed partial class Engine : IEngine
             return DriftToward(curLat, GiveWayEdgeTarget(v, lane), maxStep);
         }
 
-        if (_obstacles.Count == 0)
+        if (_obstacles.Count == 0 && CrowdSource is null)
         {
             // Recentre if a just-cleared give-way (or other) drift left us off-centre; otherwise the
             // unchanged fast path (curLat is already 0 in lane-centred mode -> returns 0 exactly).
+            // NB the CrowdSource guard: when a crowd is attached we must fall through to the crowd scan
+            // below even with no obstacles. CrowdSource is null for every committed golden, so this is
+            // byte-identical there.
             return curLat != 0.0 ? DriftToward(curLat, 0.0, maxStep) : curLat;
         }
 
@@ -6378,6 +6381,7 @@ public sealed partial class Engine : IEngine
         ExternalObstacle? threat = null;
         var threatBack = double.PositiveInfinity;
         var threatPredLat = 0.0;
+        var threatIsCrowd = false;
         foreach (var o in _obstacles.Values)
         {
             if (o.Width <= 0.0 || o.StartTime > time || time >= o.EndTime || o.LaneId != v.LaneId)
@@ -6404,6 +6408,56 @@ public sealed partial class Engine : IEngine
             }
         }
 
+        // Q6 (option b): make CrowdSource crowd agents first-class dodgeable threats in NORMAL mode too,
+        // so a vehicle SWERVES around a pedestrian/agent it can clear instead of hard-stopping (the
+        // brake-vs-swerve gate below is skipped for a crowd threat -> swerve preferred). Gated on
+        // CrowdSource != null, which no committed golden sets and no normal-mode test sets (only the
+        // laneless bridge attaches a crowd, and that runs the ComputeRvoLateral path, not this one) --
+        // so byte-identical / hash-safe by construction. Each nearby crowd agent is projected onto ego's
+        // lane and synthesised as an ExternalObstacle, so the entire B6 selection + swerve machinery
+        // (predicted lateral, vacating-side, spill-to-adjacent-lane) applies unchanged. Uses the neutral
+        // world-disc seam + LaneProjection, NOT the string obstacle store.
+        if (CrowdSource is not null)
+        {
+            var (egoWX, egoWY, _) = LaneGeometry.PositionAtOffset(lane.Shape, v.Kinematics.Pos, 0.0);
+            var crowdLookahead = v.Kinematics.Speed * SwervePredictionHorizon + v.VType.Length + v.VType.MinGap + 5.0;
+            Span<Sim.Core.Bridge.WorldDisc> discs = stackalloc Sim.Core.Bridge.WorldDisc[16];
+            var got = CrowdSource.QueryNear(egoWX, egoWY, crowdLookahead, discs);
+            for (var d = 0; d < got; d++)
+            {
+                var disc = discs[d];
+                var (offset, latOff, dist) = LaneProjection.Project(lane.Shape, disc.X, disc.Y);
+
+                // Ignore an agent too far off THIS lane laterally to be a same-lane threat.
+                if (dist > v.VType.Width / 2.0 + disc.Radius + lane.Width / 2.0)
+                {
+                    continue;
+                }
+
+                var (laneSpeed, latVel) = LaneFrameVelocity(lane, offset, disc.Vx, disc.Vy);
+                var width = 2.0 * disc.Radius;
+                var synth = new ExternalObstacle(
+                    string.Empty, lane.Id, offset + disc.Radius, width,
+                    double.NegativeInfinity, double.PositiveInfinity, laneSpeed, 0.0, latOff, width, latVel);
+
+                var predLat = PredictedLatPos(synth, v);
+                if (synth.FrontPos < v.Kinematics.Pos - v.VType.Length
+                    || !FootprintsOverlap(predLat, width, 0.0, v.VType.Width))
+                {
+                    continue;   // fully behind ego, or a centred car would clear its predicted position
+                }
+
+                var back = synth.FrontPos - synth.Length;
+                if (back < threatBack)   // strict: an obstacle wins an exact tie (deterministic)
+                {
+                    threatBack = back;
+                    threat = synth;
+                    threatPredLat = predLat;
+                    threatIsCrowd = true;
+                }
+            }
+        }
+
         if (threat is null)
         {
             return DriftToward(curLat, 0.0, maxStep); // no threat -> recentre toward the lane centre
@@ -6412,14 +6466,17 @@ public sealed partial class Engine : IEngine
         // ExternalObstacle is now a value type; capture the resolved threat once (stack copy).
         var th = threat.Value;
 
-        // Swerve ONLY when braking alone cannot stop before the obstacle (the "jumped out, can't stop
-        // in time" case). While the obstacle is still strictly AHEAD and ego is still lane-centred and
-        // CAN stop, just brake (ObstacleConstraint) and stay centred -- the pre-B6 stop-behind
-        // behaviour. Once ego has committed to a swerve (off-centre) or can no longer stop, it evades.
+        // For an OBSTACLE threat: swerve ONLY when braking alone cannot stop before it (the "jumped out,
+        // can't stop in time" case) -- while it is still strictly AHEAD and ego is lane-centred and CAN
+        // stop, just brake (ObstacleConstraint) and stay centred (the pre-B6 stop-behind behaviour).
+        // For a CROWD threat (Q6 option b): PREFER the swerve -- skip this stop-and-stay-centred gate so
+        // a dodgeable crowd agent is gone around (decelerating as needed via CrowdLongitudinalConstraint)
+        // rather than hard-stopped; if no side is feasible below, ego still holds and brakes. Once ego
+        // has committed to a swerve (off-centre) or can no longer stop, it evades either way.
         var stillAhead = threatBack >= v.Kinematics.Pos;
         var gap = threatBack - v.VType.MinGap - v.Kinematics.Pos;
         var brakeGap = KraussModel.BrakeGap(v.Kinematics.Speed, v.VType.Decel, headwayTime: 0.0, dt);
-        if (stillAhead && brakeGap <= gap && Math.Abs(curLat) < 1e-6)
+        if (!threatIsCrowd && stillAhead && brakeGap <= gap && Math.Abs(curLat) < 1e-6)
         {
             return DriftToward(curLat, 0.0, maxStep);
         }
