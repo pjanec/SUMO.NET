@@ -9,7 +9,7 @@ Continuation notes for the **SumoSharp** library/packaging effort. Pairs with
 - **Branch:** `claude/sumo-csharp-nuget-strategy-4vlkki` (all work pushed).
 - **Gates (must stay true after every change):**
   - `dotnet test` → **0 failed, 1 skipped**; the pass count grows as new-surface tests are added
-    (**250** at the start of the packaging work → **268** after this session's B13–B17 tests).
+    (**250** at the start of the packaging work → **273** after this session's B13–B18 tests).
   - `Sim.Bench` determinism hash → **`909605E965BFFE59`** (single **and** parallel).
 - **What exists now:** the whole Phase-1 public API + NuGet packaging + a working browser-live demo.
   Every addition is *additive / inert-when-absent*, so it is byte-identical where the new paths are
@@ -41,6 +41,7 @@ so `apt-get update` first). SUMO is not needed for `dotnet test`.
 
 | Commit | What |
 |---|---|
+| *(this session)* | **Vehicle-slot recycling** (§9): `Despawn` frees the `EntityIndex`; next runtime `SpawnVehicle` reuses it (rebuild-in-place + reset idx-keyed side state + bumped generation). `CreateRuntime` split into `BuildRuntime`/append + `AllocateRuntime`. Inert for goldens; `RungB18`. |
 | *(this session)* | **Sim.LiveHost**: verified builds/runs after the core changes (Playwright smoke); enabled the snapshot pool server-side + client-side entity interpolation for smooth 60 fps playback. |
 | *(this session)* | **Publish + CI workflows** `.github/workflows/publish.yml` (tag-gated pack+push, version-from-tag, SourceLink fetch-depth 0) and `ci.yml` (build/test/determinism-hash on push/PR). |
 | *(this session)* | **ns2.1 consumer sample** `samples/SumoSharp.GameHostSample` (multi-target net8.0/ns2.1; `GameHost` drop-in + runnable net8 demo; `RungB17`). |
@@ -102,14 +103,12 @@ host game engine's convention), `VTypeHandle`, `AvoidanceClass`, `VehicleLifecyc
 3. ~~**Async runner refinements (§7):** two-frame **interpolation hook** + **snapshot pool**~~ — **DONE**
    (commits `ce37400`, `3ac73c1`; see API §7). Both additive/async-only; pool is opt-in.
 4. ~~**`GetEdge(string) → int`** dense edge handles (§9)~~ — **DONE** (commit `0ceeaf0`; API §9).
-5. **Vehicle-slot recycling** on `Despawn` (§9) — slots are not reused yet (EntityIndex only grows).
-   **Deliberately deferred this session (not a blocker).** In-place slot reuse is coupled to a lot of
-   `EntityIndex`-keyed state that must all be reset atomically without perturbing the *shared* append path
-   the goldens use: `CreateRuntime` seeds `RngState`/`SpeedFactor`/`Entity` off `EntityIndex`; the lifecycle
-   event-diff (`_prevLifecycle[idx]`) and the `_stopsByEntity`/`_avoidedByEntity` side tables are all
-   index-keyed. Correct recycling is a focused, well-tested change to the vehicle-creation + lifecycle-diff
-   code — worth doing deliberately, not bundled with lower-risk work. Until then `_vehicles` grows on each
-   `SpawnVehicle` (fine for bounded/most runs; a concern only for very-long-lived spawn/despawn-heavy hosts).
+5. ~~**Vehicle-slot recycling** on `Despawn` (§9)~~ — **DONE** (API §9). `Despawn` frees the slot; the next
+   runtime `SpawnVehicle` reuses it (rebuild-in-place + reset the idx-keyed side state + bumped generation).
+   `CreateRuntime` was split into `BuildRuntime` + append-wrapper (golden path byte-identical) and a
+   recycle-aware `AllocateRuntime`. Inert for goldens (free list only fills on `Despawn`). `RungB18`;
+   `RecycleVehicleSlots=false` restores monotonic indices. Noted nuance: recycled slot reuses its RNG seed
+   (inert at `sigma=0`; per-reuse salt is a future `sigma>0` refinement).
 6. **Lifecycle events**: `InsertionFailed`/`Teleported` are defined but not emitted (no insertion
    timeout; teleport off). Wire if/when those engine behaviors exist.
 7. **`VTypeParams` sublane fields** (`maxSpeedLat`/`latAlignment`/`minGapLat`) — added at the laneless

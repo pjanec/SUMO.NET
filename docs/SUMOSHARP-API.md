@@ -441,8 +441,22 @@ lanes). They are a pure translation facade over the still-string-keyed router/ed
 to the string overloads (proven by `RungB16EdgeHandleTests` trajectory-equivalence) and inert on the parity
 path. `VTypeParams` omits the **sublane** lateral attributes (`maxSpeedLat`/`latAlignment`/`minGapLat`)
 until the laneless-branch merge that adds them to `VType`; `SetDestination`/`Reroute` operate on **active**
-vehicles (a pending vehicle is respawned with the intended route); the despawn slot is **not** recycled yet
-(EntityIndex stays stable), and the lifecycle **event buffer** (§10) is deferred — poll `GetLifecycle` for now.
+vehicles (a pending vehicle is respawned with the intended route).
+
+**STATUS: vehicle-slot recycling landed.** `Despawn` now frees the vehicle's `EntityIndex` slot; the next
+runtime `SpawnVehicle` reuses it — `_vehicles[idx]` is rebuilt in place and the idx-keyed side state
+(`_stopsByEntity`, `_avoidedByEntity`, the `_prevLifecycle` diff baseline) is reset, so the recycled slot
+carries none of the previous occupant's state and emits a fresh `Departed`. The freed slot's generation was
+bumped by `Despawn`, so the recycled handle is distinct and the despawned handle stays stale. This bounds
+`_vehicles` growth for long-lived spawn/despawn-heavy hosts. Implementation split `CreateRuntime` into a
+pure `BuildRuntime(def, idx)` + an append wrapper (unchanged for the golden/flow path) and a recycle-aware
+`AllocateRuntime` (runtime spawns only). **Inert for parity:** the free list is only ever populated by
+`Despawn` (a runtime-host API the goldens never call), so golden/flow runs always append → byte-identical
+(gate + hash unchanged). Off by `RecycleVehicleSlots = false` for stable monotonic indices (debugging).
+Tested by `RungB18SlotRecyclingTests` (reuse + bumped generation, stale-handle rejection, fresh Departed,
+new-route isolation, recycling-off growth, determinism). **Nuance (documented):** a recycled slot reuses
+its `VehicleRng.SeedFor(Seed, idx)` stream; inert under phase-1 `sigma=0`, a per-reuse salt is a noted
+future refinement for statistical (`sigma>0`) parity.
 
 ### Insertion semantics — SUMO-parity queued insertion (decided)
 
