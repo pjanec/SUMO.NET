@@ -691,3 +691,33 @@ Both branches make **additive** edits to 8 shared files: `Engine.cs`, `VehicleEx
 additive hunks.** Both sides hold the **same parity anchor** (determinism hash `909605E965BFFE59`,
 goldens byte-identical); every change on both branches is additive/gated, so the merged result must
 reproduce that anchor. That invariant is the shared acceptance gate for the merge.
+
+---
+
+## 16. Dead-reckoning coordination (to the laneless/RVO branch) — NEW, needs alignment
+
+Full design: **`docs/SUMOSHARP-DEADRECKONING.md`** (read that first). This section is the cross-branch
+**ask**, placed in the same §15 channel the two sessions use to coordinate.
+
+The networked dead-reckoning layer (renderer-side prediction of 10k+ vehicles at 60–120 Hz over a ~10 Hz
+sim, over the network, no strings) publishes a compact **lane-relative** prediction packet and a renderer
+resolves world pose by walking the once-sent lane geometry. It has **two motion regimes that map exactly
+onto your two-regime model**: `LaneArc` (lane-bound vehicles) and `FreeKinematic` (holonomic crowd/ORCA
+agents — your `OrcaCrowd` / `WorldDisc` / `ICrowdFootprintSource`, which *is* the `FreeKinematic`
+primitive). Two cheap, additive asks:
+
+- **DR1 — a shared `DrModel` enum** (`LaneArc | FreeKinematic | Stationary`) on a neutral seam both layers
+  reference (mirroring `RvoNeighbor`). Lane engine tags its vehicles; `OrcaCrowd`/the bridge tag crowd
+  agents `FreeKinematic`. The NuGet branch owns publishing the packet; the laneless branch owns producing
+  `FreeKinematic` movers via the existing `ICrowdFootprintSource`/`WorldDisc` seam.
+- **DR2 — a per-vehicle "lane-predictable right now?" flag.** A lane vehicle mid-RVO/ORCA swerve or
+  lane-change this step is *not* short-horizon lane-predictable; the DR publisher needs a cheap flag (which
+  `ComputeRvoLateral` already knows) to either raise that vehicle's publish rate or emit it as
+  `FreeKinematic` for the manoeuvre. No solver change — just expose the state you already compute.
+
+Also relevant to you: the **corner-cut / chord-heading realism correction is renderer-only** and derived
+purely from lane geometry + physical params, so it costs **zero extra wire data** and never touches the
+parity path or your solver. `Kinematics.LatSpeed` (yours) is the `LaneArc` `latSpeed` prediction field.
+Merge order is independent (DR is additive/gated through the neutral seams, hash `909605E965BFFE59`
+preserved), exactly like the obstacle store. Please sanity-check DR1/DR2 and flag anything the DR packet
+shape misses for the crowd/ORCA side.

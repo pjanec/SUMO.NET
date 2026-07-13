@@ -117,6 +117,9 @@ host game engine's convention), `VTypeHandle`, `AvoidanceClass`, `VehicleLifecyc
 
 ## Networked dead-reckoning layer — design (inputs landed §5.1; full layer pending scope confirmation)
 
+**Full design doc: `docs/SUMOSHARP-DEADRECKONING.md`** (read that for the complete treatment; cross-branch
+coordination ask is in `SUMOSHARP-API.md` §16). Summary below.
+
 Motivation (from the user): 10k+ vehicles; reading location for render/replication must not block the sim
 step (use the async runner's immutable snapshot — it already doesn't); renderer at 60–120 Hz over a ~10 Hz
 sim, often on a **different machine**; rate-limit network updates to ~10 Hz (and lower for predictable
