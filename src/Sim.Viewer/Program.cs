@@ -348,8 +348,12 @@ static int RunLocal(string netPath, string? screenshotPath, int frames, (double 
         var span = snapshot.Time - prevSnapshot.Time;
         if (smooth && span > 1e-9 && intervalEma > 1e-6)
         {
+            // frac past 1.0 means the next snapshot is running late (variable per-tick compute time). Rather
+            // than freeze at `cur` until it lands (a once-per-snapshot stall), allow a small bounded
+            // extrapolation beyond it (frac up to 1.25 => 0.25 step ahead) to bridge the gap smoothly; it
+            // only engages when the sim is late, so on-time frames (incl. turns) never extrapolate.
             var frac = (wallClock - lastSnapWall) / intervalEma;
-            if (frac < 0.0) frac = 0.0; else if (frac > 1.0) frac = 1.0;
+            if (frac < 0.0) frac = 0.0; else if (frac > 1.25) frac = 1.25;
             renderClock = prevSnapshot.Time + frac * span;
         }
         else
@@ -931,9 +935,11 @@ static void BuildLocalVehicleDraws(
     var a = 0f;
     if (interp)
     {
+        // [0, 1.25]: >1 is the small bounded extrapolation the render clock uses to bridge a late snapshot
+        // (see the clock in RunLocal) -- lerp beyond `cur` predicts slightly ahead instead of freezing.
         a = (float)((renderClock - prev.Time) / span);
         if (a < 0f) a = 0f;
-        else if (a > 1f) a = 1f;
+        else if (a > 1.25f) a = 1.25f;
 
         prevIndex.Clear();
         for (var j = 0; j < prev.Count; j++)
