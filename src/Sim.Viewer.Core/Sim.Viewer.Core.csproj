@@ -17,6 +17,11 @@
   <ItemGroup>
     <ProjectReference Include="..\Sim.Core\Sim.Core.csproj" />
     <ProjectReference Include="..\Sim.Ingest\Sim.Ingest.csproj" />
+    <!-- P2a (DDS data path): the replication codecs + CycloneDDS.NET topics. Both are OUT of Traffic.sln
+         (see their own csproj headers), same as this project; pulling them in here does not touch the
+         hermetic gate. -->
+    <ProjectReference Include="..\Sim.Replication\Sim.Replication.csproj" />
+    <ProjectReference Include="..\Sim.Replication.Dds\Sim.Replication.Dds.csproj" />
   </ItemGroup>
 
 </Project>

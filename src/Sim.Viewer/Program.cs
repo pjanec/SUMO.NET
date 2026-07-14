@@ -20,6 +20,7 @@ using Sim.Viewer.Core;
 string? mode = null;
 string? inputPath = null;
 string? screenshotPath = null;
+string? selftestPath = null;
 var frames = 150;
 (double X, double Y)? dropObstacle = null;
 
@@ -29,6 +30,9 @@ for (var i = 0; i < args.Length; i++)
     {
         case "--mode":
             mode = args[++i];
+            break;
+        case "--selftest":
+            selftestPath = args[++i];
             break;
         case "--screenshot":
             screenshotPath = args[++i];
@@ -46,6 +50,25 @@ for (var i = 0; i < args.Length; i++)
             inputPath ??= args[i];
             break;
     }
+}
+
+// docs/SUMOSHARP-NATIVE-VIEWER.md P2 — a headless (no window, no raylib) proof that the DDS data path
+// round-trips: EngineHost -> DdsPublisher -> CycloneDDS -> DdsSubscriber. Accepts either a direct net.xml
+// path or a scenario/sandbox directory, resolved exactly like `--mode local` does below.
+if (selftestPath is not null)
+{
+    string selftestNetPath;
+    if (Directory.Exists(selftestPath))
+    {
+        selftestNetPath = Directory.EnumerateFiles(selftestPath, "*.net.xml").FirstOrDefault()
+            ?? throw new FileNotFoundException($"No *.net.xml found in directory '{selftestPath}'.");
+    }
+    else
+    {
+        selftestNetPath = selftestPath;
+    }
+
+    return LoopbackSelfTest.Run(selftestNetPath);
 }
 
 if (mode != "local")
