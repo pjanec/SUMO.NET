@@ -58,3 +58,6 @@ scaling-results.csv
 scenarios/**/replay.html
 scenarios/**/engine.fcd.xml
 scenarios/**/combined.fcd.xml
+
+# Dear ImGui writes its window layout here (native viewer, Sim.Viewer); local-only.
+imgui.ini
