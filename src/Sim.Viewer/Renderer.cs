@@ -25,9 +25,31 @@ public static class Renderer
     private static readonly Color RoadCasing = new(10, 12, 16, 255);
     private static readonly Color RoadSurface = new(69, 78, 90, 255);
     private static readonly Color RoadInternal = new(42, 48, 56, 255);
-    private static readonly Color VehicleColor = new(63, 185, 80, 255);
+    // HtmlPage.cs draw(): 'rgba(200,210,225,0.14)' dashed centreline, 'rgba(150,170,190,0.30)' chevron.
+    private static readonly Color LaneDash = new(200, 210, 225, 36);
+    private static readonly Color LaneChevron = new(150, 170, 190, 76);
+    private static readonly Color ObstacleColor = new(255, 92, 92, 255); // HtmlPage.cs: '#ff5c5c'
 
     public static Color BackgroundColor => Background;
+
+    // HtmlPage.cs draw()'s speedColor(s): 0 = stopped (red) .. free-flow 13.9 m/s (~50 km/h) = green.
+    private static Color SpeedColor(double speedExact)
+    {
+        var t = Math.Clamp(speedExact / 13.9, 0.0, 1.0);
+        var r = (int)Math.Round(230 * (1 - t) + 40 * t);
+        var g = (int)Math.Round(70 * (1 - t) + 200 * t);
+        return new Color(r, g, 80, 255);
+    }
+
+    // HtmlPage.cs draw()'s tlColor(st): SUMO signal char -> colour.
+    private static Color TlColor(char state) => state switch
+    {
+        'G' or 'g' => new Color(63, 185, 80, 255),
+        'y' or 'Y' => new Color(227, 179, 65, 255),
+        'r' => new Color(248, 81, 73, 255),
+        'o' or 'O' or 'u' => new Color(227, 179, 65, 255),
+        _ => new Color(139, 148, 158, 255),
+    };
 
     // World (x,y, SUMO Y-up) -> the Y-negated space fed to every raylib draw call under BeginMode2D.
     private static Vector2 Flip(double x, double y) => new((float)x, (float)-y);
@@ -52,40 +74,105 @@ public static class Renderer
         };
     }
 
-    public static void DrawWorld(Camera2D camera, NetworkModel network, SimulationSnapshot snapshot)
+    public static void DrawWorld(Camera2D camera, NetworkModel network, SimulationSnapshot snapshot, EngineHost host)
     {
         Raylib.BeginMode2D(camera);
 
         // Roads: a dark casing under a lighter lane fill, each lane drawn as a stroked polyline along its
         // Shape (HtmlPage.cs draw()'s two-pass casing/surface loop). Thickness is in WORLD units (metres)
-        // so the camera's Zoom scales it automatically; the 1.5/2.5 px floors are converted to world units
-        // by dividing by Zoom, mirroring the browser's pixel-space clamp (`Math.max(1.5, lane.w*cam.scale)`).
-        for (var pass = 0; pass < 2; pass++)
+        // so the camera's Zoom scales it automatically; the 2.5 px floor is converted to world units by
+        // dividing by Zoom, mirroring the browser's pixel-space clamp (`Math.max(1.5, lane.w*cam.scale)`)
+        // but bumped from 1.5 to 2.5 px so lanes stay visibly a ROAD (not a hairline) when zoomed way out
+        // on a large net (e.g. scenarios/15-reroute).
+        foreach (var lane in network.LanesByHandle)
         {
-            foreach (var lane in network.LanesByHandle)
+            var shape = lane.Shape;
+            if (shape.Count < 2)
             {
-                var shape = lane.Shape;
-                if (shape.Count < 2)
-                {
-                    continue;
-                }
-
-                var surfaceThick = Math.Max(1.5f / camera.Zoom, (float)lane.Width);
-                var thick = pass == 0 ? surfaceThick + 2.5f / camera.Zoom : surfaceThick;
-                var color = pass == 0 ? RoadCasing : (lane.Id.StartsWith(':') ? RoadInternal : RoadSurface);
-
-                for (var i = 0; i < shape.Count - 1; i++)
-                {
-                    var (x1, y1) = shape[i];
-                    var (x2, y2) = shape[i + 1];
-                    Raylib.DrawLineEx(Flip(x1, y1), Flip(x2, y2), thick, color);
-                }
+                continue;
             }
+
+            var surfaceThick = Math.Max(2.5f / camera.Zoom, (float)lane.Width);
+            var casingThick = surfaceThick + 2.5f / camera.Zoom;
+            var surfaceColor = lane.Id.StartsWith(':') ? RoadInternal : RoadSurface;
+
+            for (var i = 0; i < shape.Count - 1; i++)
+            {
+                var (x1, y1) = shape[i];
+                var (x2, y2) = shape[i + 1];
+                var p1 = Flip(x1, y1);
+                var p2 = Flip(x2, y2);
+                Raylib.DrawLineEx(p1, p2, casingThick, RoadCasing);
+            }
+
+            for (var i = 0; i < shape.Count - 1; i++)
+            {
+                var (x1, y1) = shape[i];
+                var (x2, y2) = shape[i + 1];
+                var p1 = Flip(x1, y1);
+                var p2 = Flip(x2, y2);
+                Raylib.DrawLineEx(p1, p2, surfaceThick, surfaceColor);
+            }
+        }
+
+        // Lane markings (HtmlPage.cs draw()'s "lane markings" section): a dashed centreline + a travel-
+        // direction chevron per DRIVABLE (non-internal) lane -- internal (junction) lanes get neither, same
+        // as the browser. The dash pattern [6,7]px and chevron size floor 3px are pixel-space constants in
+        // HtmlPage.cs; converted to world units by dividing by Zoom so they read as fixed screen sizes.
+        var dashOnWorld = 6f / camera.Zoom;
+        var dashOffWorld = 7f / camera.Zoom;
+        var dashThickWorld = 1f / camera.Zoom;
+        var drawChevrons = camera.Zoom > 1.2f; // HtmlPage.cs: `if(cam.scale > 1.2)`
+        var chevronSize = Math.Max(3f / camera.Zoom, 1.3f);
+
+        foreach (var lane in network.LanesByHandle)
+        {
+            if (lane.Id.StartsWith(':'))
+            {
+                continue;
+            }
+
+            var shape = lane.Shape;
+            if (shape.Count < 2)
+            {
+                continue;
+            }
+
+            DrawDashedPolyline(shape, dashOnWorld, dashOffWorld, dashThickWorld, LaneDash);
+
+            if (drawChevrons)
+            {
+                DrawLaneChevron(shape, chevronSize, LaneChevron);
+            }
+        }
+
+        // Traffic-light signals (HtmlPage.cs draw()'s "traffic-light signals" section): a coloured dot at
+        // the end (stop line) of each controlled approach lane, index-aligned over [0, TlCount).
+        var tlRadius = Math.Max(2.5f / camera.Zoom, 0.9f);
+        for (var i = 0; i < snapshot.TlCount; i++)
+        {
+            var laneHandle = snapshot.TlLaneHandle[i];
+            if (laneHandle < 0 || laneHandle >= network.LanesByHandle.Count)
+            {
+                continue;
+            }
+
+            var tlLane = network.LanesByHandle[laneHandle];
+            var tlShape = tlLane.Shape;
+            if (tlShape.Count < 1)
+            {
+                continue;
+            }
+
+            var (ex, ey) = tlShape[^1];
+            Raylib.DrawCircleV(Flip(ex, ey), tlRadius, TlColor((char)snapshot.TlState[i]));
         }
 
         // Vehicles: oriented rectangles sized Length x Width (world metres), positioned at the SUMO FRONT
         // reference point (SimulationSnapshot.PosX/PosY -- PoseResolver.cs: "Position is the vehicle's
         // front reference, matching SUMO getPosition"), rotated to match Angle (navi-deg, 0=N clockwise).
+        // Fill colour is speed-graded (HtmlPage.cs draw()'s speedColor(pk.s)) -- red = stopped, green =
+        // free-flow.
         for (var i = 0; i < snapshot.Count; i++)
         {
             var front = Flip(snapshot.PosX[i], snapshot.PosY[i]);
@@ -106,22 +193,147 @@ public static class Renderer
             // so origin=(length,width/2) reproduces that same occupied range [-length,0] x [-width/2,width/2].
             var rec = new Rectangle(front.X, front.Y, length, width);
             var origin = new Vector2(length, width / 2f);
-            Raylib.DrawRectanglePro(rec, origin, rotationDeg, VehicleColor);
+            Raylib.DrawRectanglePro(rec, origin, rotationDeg, SpeedColor(snapshot.SpeedExact[i]));
+        }
+
+        // Obstacles: a red X at each injected obstacle's projected world point (HtmlPage.cs draw()'s
+        // "obstacles" section).
+        var obstacleHalf = Math.Max(4f / camera.Zoom, 3f);
+        var obstacleThick = 2.5f / camera.Zoom;
+        foreach (var (ox, oy) in host.ObstaclePoints)
+        {
+            var c = Flip(ox, oy);
+            Raylib.DrawLineEx(new Vector2(c.X - obstacleHalf, c.Y - obstacleHalf), new Vector2(c.X + obstacleHalf, c.Y + obstacleHalf), obstacleThick, ObstacleColor);
+            Raylib.DrawLineEx(new Vector2(c.X + obstacleHalf, c.Y - obstacleHalf), new Vector2(c.X - obstacleHalf, c.Y + obstacleHalf), obstacleThick, ObstacleColor);
         }
 
         Raylib.EndMode2D();
     }
 
-    public static void DrawHud(EngineHost host, SimulationSnapshot snapshot)
+    // Dashed stroke along a polyline's arc length -- ported from HtmlPage.cs draw()'s
+    // `ctx.setLineDash([6,7])` centreline pass. The dash phase resets to "on" at the start of each lane
+    // (canvas resets phase per beginPath(), and each lane is stroked as its own path there), so this
+    // walks `shape` fresh with a local on/off counter rather than a running counter across lanes.
+    private static void DrawDashedPolyline(IReadOnlyList<(double X, double Y)> shape, float dashOn, float dashOff, float thick, Color color)
     {
-        rlImGui.Begin();
-        ImGui.Begin("SumoSharp - native viewer (local)");
+        var onPhase = true;
+        var remaining = dashOn;
+
+        for (var i = 0; i < shape.Count - 1; i++)
+        {
+            var (x1, y1) = shape[i];
+            var (x2, y2) = shape[i + 1];
+            var dx = (float)(x2 - x1);
+            var dy = (float)(y2 - y1);
+            var segLen = MathF.Sqrt(dx * dx + dy * dy);
+            if (segLen < 1e-6f)
+            {
+                continue;
+            }
+
+            var t0 = 0f;
+            while (t0 < segLen)
+            {
+                var take = Math.Min(remaining, segLen - t0);
+                if (onPhase)
+                {
+                    var t1 = t0 + take;
+                    var a = Flip(x1 + dx * (t0 / segLen), y1 + dy * (t0 / segLen));
+                    var b = Flip(x1 + dx * (t1 / segLen), y1 + dy * (t1 / segLen));
+                    Raylib.DrawLineEx(a, b, thick, color);
+                }
+
+                t0 += take;
+                remaining -= take;
+                if (remaining <= 1e-6f)
+                {
+                    onPhase = !onPhase;
+                    remaining = onPhase ? dashOn : dashOff;
+                }
+            }
+        }
+    }
+
+    // A small direction chevron at a lane's midpoint, pointing along travel -- ported from
+    // HtmlPage.cs draw()'s drawLaneArrow(lane).
+    private static void DrawLaneChevron(IReadOnlyList<(double X, double Y)> shape, float size, Color color)
+    {
+        var n = shape.Count;
+        var mi = Math.Max(0, n / 2 - 1);
+        var (x1, y1) = shape[mi];
+        var (x2, y2) = shape[mi + 1];
+        var dx = x2 - x1;
+        var dy = y2 - y1;
+        if (dx * dx + dy * dy < 1e-9)
+        {
+            return;
+        }
+
+        var mid = Flip((x1 + x2) / 2.0, (y1 + y2) / 2.0);
+        // World dir (dx,dy) -> screen dir (dx,-dy) [Flip] -> screen angle, matching HtmlPage.cs's
+        // `a = Math.atan2(-(dy/len), dx/len)` (atan2 is scale-invariant, so the /len normalization there
+        // is inert here).
+        var angle = MathF.Atan2((float)-dy, (float)dx);
+        var cosA = MathF.Cos(angle);
+        var sinA = MathF.Sin(angle);
+
+        // Local (pre-rotation) triangle pointing along +x, matching HtmlPage.cs's
+        // `moveTo(sz,0); lineTo(-sz*0.6,-sz*0.7); lineTo(-sz*0.6,sz*0.7)` -- already in the same Y-down
+        // screen convention this renderer's Flip-space uses, so no further axis flip is needed.
+        var tip = Rotate(new Vector2(size, 0f), cosA, sinA) + mid;
+        var backRight = Rotate(new Vector2(-size * 0.6f, size * 0.7f), cosA, sinA) + mid;
+        var backLeft = Rotate(new Vector2(-size * 0.6f, -size * 0.7f), cosA, sinA) + mid;
+        Raylib.DrawTriangle(tip, backRight, backLeft, color);
+    }
+
+    private static Vector2 Rotate(Vector2 v, float cosA, float sinA) =>
+        new(v.X * cosA - v.Y * sinA, v.X * sinA + v.Y * cosA);
+
+    // P1 controls panel (SUMOSHARP-NATIVE-VIEWER.md P1): mode label, restart, clear obstacles, and the
+    // random-traffic toggle. Sized explicitly (SetNextWindowSize) so its text is never clipped -- P0's HUD
+    // was cut off at the default auto-size. Must be called between rlImGui.Begin()/End() (see Program.cs).
+    public static void DrawControlsPanel(EngineHost host)
+    {
+        ImGui.SetNextWindowPos(new Vector2(10, 10), ImGuiCond.FirstUseEver);
+        ImGui.SetNextWindowSize(new Vector2(360, 175), ImGuiCond.FirstUseEver);
+        ImGui.Begin("SumoSharp - controls");
         ImGui.Text(host.ScenarioMode ? "mode: SCENARIO" : "mode: SANDBOX");
+        ImGui.Separator();
+        if (ImGui.Button("restart"))
+        {
+            host.Restart();
+        }
+
+        ImGui.SameLine();
+        if (ImGui.Button("clear obstacles"))
+        {
+            host.ClearObstacles();
+        }
+
+        var randomTraffic = host.RandomTraffic;
+        if (ImGui.Checkbox("inject random traffic", ref randomTraffic))
+        {
+            host.SetRandomTraffic(randomTraffic);
+        }
+
+        ImGui.TextWrapped("click a road to drop an obstacle - drag to pan - wheel to zoom - 'd' toggles diagnostics");
+        ImGui.End();
+    }
+
+    // P1 perf-diagnostics panel (SUMOSHARP-NATIVE-VIEWER.md P1): fps, frame-time min/avg/p99 (from the
+    // ~120-sample ring buffer Program.cs maintains), vehicle count, sim time + step. Toggled with 'd',
+    // default ON. Sized explicitly so text is never clipped. Must be called between rlImGui.Begin()/End().
+    public static void DrawDiagnosticsPanel(SimulationSnapshot snapshot, FrameStats frameStats)
+    {
+        var (min, avg, p99) = frameStats.Compute();
+        ImGui.SetNextWindowPos(new Vector2(10, 195), ImGuiCond.FirstUseEver);
+        ImGui.SetNextWindowSize(new Vector2(360, 150), ImGuiCond.FirstUseEver);
+        ImGui.Begin("SumoSharp - diagnostics");
+        ImGui.Text($"fps: {Raylib.GetFPS()}");
+        ImGui.Text($"frame ms  min {min * 1000f:F2}  avg {avg * 1000f:F2}  p99 {p99 * 1000f:F2}");
         ImGui.Separator();
         ImGui.Text($"vehicles: {snapshot.Count}");
         ImGui.Text($"sim time: {snapshot.Time:F1}s   step: {snapshot.StepCount}");
-        ImGui.Text($"fps: {Raylib.GetFPS()}");
         ImGui.End();
-        rlImGui.End();
     }
 }

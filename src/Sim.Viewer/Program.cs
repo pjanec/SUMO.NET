@@ -1,21 +1,27 @@
+using System.Globalization;
+using System.Numerics;
 using Raylib_cs;
 using rlImGui_cs;
 using ImGuiNET;
 using Sim.Viewer;
 using Sim.Viewer.Core;
 
-// docs/SUMOSHARP-NATIVE-VIEWER.md P0: the native desktop viewer entry point.
-//   dotnet run --project src/Sim.Viewer -- --mode local <scenarioDir|net.xml> [--screenshot <path>] [--frames <n>]
+// docs/SUMOSHARP-NATIVE-VIEWER.md P0/P1: the native desktop viewer entry point.
+//   dotnet run --project src/Sim.Viewer -- --mode local <scenarioDir|net.xml> [--screenshot <path>] [--frames <n>] [--drop-obstacle <wx>,<wy>]
 // `--mode local` renders the authoritative SimulationSnapshot every frame (no transport, no dead
 // reckoning -- EngineHost owns the Engine + SimulationRunner directly). `remote`/`loopback` are P2/P3
 // scope (SUMOSHARP-NATIVE-VIEWER.md's "Modes" section) and are not implemented yet.
 // `--screenshot`/`--frames` renders headless (no interactive loop) for the Xvfb verification recipe in
 // the design doc: render `frames` frames then TakeScreenshot and exit.
+// `--drop-obstacle <wx>,<wy>` (P1): a headless test hook -- inject one obstacle at the given WORLD point
+// right after startup, so an obstacle + the resulting queue are visible in a `--screenshot` without
+// needing real mouse input under Xvfb.
 
 string? mode = null;
 string? inputPath = null;
 string? screenshotPath = null;
 var frames = 150;
+(double X, double Y)? dropObstacle = null;
 
 for (var i = 0; i < args.Length; i++)
 {
@@ -30,6 +36,12 @@ for (var i = 0; i < args.Length; i++)
         case "--frames":
             frames = int.Parse(args[++i]);
             break;
+        case "--drop-obstacle":
+            var parts = args[++i].Split(',');
+            dropObstacle = (
+                double.Parse(parts[0], CultureInfo.InvariantCulture),
+                double.Parse(parts[1], CultureInfo.InvariantCulture));
+            break;
         default:
             inputPath ??= args[i];
             break;
@@ -38,7 +50,7 @@ for (var i = 0; i < args.Length; i++)
 
 if (mode != "local")
 {
-    Console.Error.WriteLine($"Sim.Viewer: only --mode local is implemented in P0 (got '{mode ?? "(none)"}').");
+    Console.Error.WriteLine($"Sim.Viewer: only --mode local is implemented in P0/P1 (got '{mode ?? "(none)"}').");
     return 1;
 }
 
@@ -62,6 +74,11 @@ else
 }
 
 using var host = new EngineHost(netPath);
+
+if (dropObstacle is { } drop)
+{
+    host.InjectObstacleAtWorld(drop.X, drop.Y);
+}
 
 const int screenW = 1280;
 const int screenH = 800;
@@ -93,15 +110,96 @@ var camera = Renderer.FitCamera(host.MinX, host.MinY, host.MaxX, host.MaxY, scre
 
 var headless = screenshotPath is not null;
 var frameCount = 0;
+var frameStats = new FrameStats();
+var showDiagnostics = true; // P1: diagnostics panel default ON, toggled with 'd'
+
+// P1 drag-vs-click bookkeeping for the world camera (Camera2D pan/zoom/pick -- see Renderer.Flip's
+// doc comment for the world<->screen convention this camera operates in).
+var dragging = false;
+var dragMoved = false;
+var dragStartMouse = Vector2.Zero;
+var dragStartTarget = Vector2.Zero;
+const float DragMoveThreshold = 3f; // px: below this, mouseup is a CLICK (pick), not a pan.
 
 while (!Raylib.WindowShouldClose())
 {
+    frameStats.Add(Raylib.GetFrameTime());
+
+    if (Raylib.IsKeyPressed(KeyboardKey.D))
+    {
+        showDiagnostics = !showDiagnostics;
+    }
+
     Raylib.BeginDrawing();
     Raylib.ClearBackground(Renderer.BackgroundColor);
 
+    // rlImGui.Begin() (ImGui NewFrame) must run before reading io.WantCaptureMouse for this frame's
+    // world-input gate (an ImGui window/button under the cursor should eat clicks/drags/wheel rather
+    // than also panning/picking the world underneath it).
+    rlImGui.Begin();
+    var wantMouse = ImGui.GetIO().WantCaptureMouse;
+
+    if (!wantMouse)
+    {
+        var mouse = Raylib.GetMousePosition();
+
+        if (Raylib.IsMouseButtonPressed(MouseButton.Left))
+        {
+            dragging = true;
+            dragMoved = false;
+            dragStartMouse = mouse;
+            dragStartTarget = camera.Target;
+        }
+
+        if (dragging && Raylib.IsMouseButtonDown(MouseButton.Left))
+        {
+            var delta = mouse - dragStartMouse;
+            if (delta.Length() > DragMoveThreshold)
+            {
+                dragMoved = true;
+            }
+
+            // Pan: drag the WORLD with the cursor (moving the mouse right reveals content to the
+            // left), so Target moves opposite the screen-space drag delta, scaled back to world units.
+            camera.Target = dragStartTarget - delta / camera.Zoom;
+        }
+
+        if (Raylib.IsMouseButtonReleased(MouseButton.Left))
+        {
+            if (dragging && !dragMoved)
+            {
+                // A click, not a pan -> invert the camera (then Flip) to get the WORLD point under the
+                // cursor and inject an obstacle there.
+                var flipSpace = Raylib.GetScreenToWorld2D(mouse, camera);
+                host.InjectObstacleAtWorld(flipSpace.X, -flipSpace.Y);
+            }
+
+            dragging = false;
+        }
+
+        var wheel = Raylib.GetMouseWheelMove();
+        if (wheel != 0f)
+        {
+            // Zoom about the cursor: the world point under the cursor (in Flip-space) must land back
+            // under the cursor after the zoom, so re-derive Target from the pre-zoom world point.
+            var beforeZoom = Raylib.GetScreenToWorld2D(mouse, camera);
+            var zoomFactor = wheel > 0 ? 1.1f : 1f / 1.1f;
+            camera.Zoom *= zoomFactor;
+            var afterZoom = Raylib.GetScreenToWorld2D(mouse, camera);
+            camera.Target += beforeZoom - afterZoom;
+        }
+    }
+
     var snapshot = host.Snapshot;
-    Renderer.DrawWorld(camera, host.Network, snapshot);
-    Renderer.DrawHud(host, snapshot);
+    Renderer.DrawWorld(camera, host.Network, snapshot, host);
+
+    Renderer.DrawControlsPanel(host);
+    if (showDiagnostics)
+    {
+        Renderer.DrawDiagnosticsPanel(snapshot, frameStats);
+    }
+
+    rlImGui.End();
 
     Raylib.EndDrawing();
 
