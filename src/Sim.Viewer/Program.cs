@@ -447,6 +447,8 @@ static int RunPublish(string netPath, double? secondsCap)
     using var publisher = new DdsPublisher(host, participant);
     // Reverse channel: apply commands a view-only remote sends (pause/speed/restart/inject/...).
     using var commandReader = new DdsCommandReader(participant);
+    // Forward channel: publish engine state so remotes reflect it + disable inapplicable controls.
+    using var statusWriter = new DdsStatusWriter(participant);
 
     // DDS discovery is async -- give any already-running readers time to match before the durable geometry
     // publish (LoopbackSelfTest's proven pattern). A LATE reader's TRANSIENT_LOCAL durability means it does
@@ -477,8 +479,10 @@ static int RunPublish(string netPath, double? secondsCap)
             break;
         }
 
-        // Apply any pending remote commands before reading the snapshot this iteration.
+        // Apply any pending remote commands before reading the snapshot this iteration, then publish the
+        // resulting engine state (cheap; KEEP_LAST(1) durable -> a late remote gets it immediately).
         commandReader.PumpApply(host);
+        statusWriter.Publish(host);
 
         // Same gate RunLoopback uses: EngineHost's SimulationRunner ticks on its own real-time-paced
         // background thread, so most polls of this loop see an unchanged snapshot and would otherwise
@@ -608,7 +612,8 @@ static int RunLoopback(string netPath, string? screenshotPath, int frames, float
         // depend on this frame's camera input, so it's hoisted before the input/drawing block into a
         // function shared with `--mode remote` (PumpAndBuildVehicleDraws below) -- same math, same DR
         // resolve, same smoothing, just called from one place instead of duplicated per mode.
-        PumpAndBuildVehicleDraws(subscriber, drClock, delaySlider, smooth, frameStats, smoothed, vehicleDraws);
+        PumpAndBuildVehicleDraws(subscriber, drClock, delaySlider, smooth, frameStats, smoothed, vehicleDraws,
+            paused: host.IsPaused);
 
         Raylib.BeginDrawing();
         Raylib.ClearBackground(Renderer.BackgroundColor);
@@ -706,6 +711,10 @@ static int RunRemote(string? screenshotPath, int frames, float initialDelaySecon
     using var subscriber = new DdsSubscriber(participant);
     // Reverse channel: drive the publisher's engine from this view-only remote (remote control).
     using var commandWriter = new DdsCommandWriter(participant);
+    // Forward channel: the publisher's engine state, so this remote reflects real state (authoritative
+    // pause/speed), disables inapplicable controls (sim-tick-rate on a fixed scenario), and freezes the DR
+    // playout when the host is paused (no coast).
+    using var statusReader = new DdsStatusReader(participant);
 
     var screenW = 1280;
     var screenH = 800;
@@ -749,10 +758,8 @@ static int RunRemote(string? screenshotPath, int frames, float initialDelaySecon
 
     // Optimistic local mirror of the commanded engine state (a view-only remote gets no state feedback, so
     // the control widgets reflect what we've SENT). Initialised to the publisher's own interactive defaults.
-    var remotePaused = false;
     var remoteSpeed = 1f;
     var remoteRandom = false;
-    var remoteHz = 1;
 
     var drClock = new DrClock();
     var delaySlider = initialDelaySeconds;
@@ -778,7 +785,10 @@ static int RunRemote(string? screenshotPath, int frames, float initialDelaySecon
             if (w > 0 && h > 0) { screenW = w; screenH = h; camera.Offset = new Vector2(w / 2f, h / 2f); }
         }
 
-        PumpAndBuildVehicleDraws(subscriber, drClock, delaySlider, smooth, frameStats, smoothed, vehicleDraws);
+        statusReader.Pump();
+        var status = statusReader.Current;
+        PumpAndBuildVehicleDraws(subscriber, drClock, delaySlider, smooth, frameStats, smoothed, vehicleDraws,
+            paused: status.Paused);
 
         if (!cameraFitted && subscriber.Geometry.Count > 0)
         {
@@ -846,8 +856,8 @@ static int RunRemote(string? screenshotPath, int frames, float initialDelaySecon
             Renderer.DrawWaitingOverlay(screenW, screenH, "waiting for publisher... (no geometry yet)");
         }
 
-        Renderer.DrawRemoteControlsPanel(commandWriter, ref remotePaused, ref remoteSpeed, ref remoteRandom,
-            ref remoteHz, ref delaySlider, ref smooth, subscriber.Connected, subscriber.GeometryComplete);
+        Renderer.DrawRemoteControlsPanel(commandWriter, status, ref remoteSpeed, ref remoteRandom,
+            ref delaySlider, ref smooth, subscriber.Connected, subscriber.GeometryComplete);
         if (showDiagnostics)
         {
             var wallElapsed = startWall.Elapsed.TotalSeconds;
@@ -884,10 +894,11 @@ static void PumpAndBuildVehicleDraws(
     bool smooth,
     FrameStats frameStats,
     Dictionary<VehicleHandle, (float X, float Y, float Deg)> smoothed,
-    List<Renderer.DrVehicleDraw> vehicleDraws)
+    List<Renderer.DrVehicleDraw> vehicleDraws,
+    bool paused)
 {
     subscriber.Pump();
-    drClock.Pump(subscriber.LatestVehicleSampleTime);
+    drClock.Pump(subscriber.LatestVehicleSampleTime, hold: paused);
 
     vehicleDraws.Clear();
     var geoSource = new DdsGeometryLaneSource(subscriber.Geometry);

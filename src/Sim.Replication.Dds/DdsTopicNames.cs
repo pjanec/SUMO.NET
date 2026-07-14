@@ -15,4 +15,7 @@ public static class DdsTopicNames
     // Reverse channel: a view-only remote publishes commands here; the publisher subscribes and applies them
     // to its EngineHost (pause/speed/restart/inject/...). See DdsViewerCommand + Sim.Viewer.Core command link.
     public const string Commands = "sumo/commands";
+    // Forward status: the publisher publishes its engine state (mode/paused/speed/step/time/count) here so a
+    // remote can reflect real state and disable inapplicable controls. See DdsViewerStatus.
+    public const string Status = "sumo/status";
 }

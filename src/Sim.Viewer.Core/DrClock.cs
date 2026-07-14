@@ -64,12 +64,26 @@ public sealed class DrClock
     // is the newest per-vehicle DDS sample timestamp seen so far (DdsSubscriber.LatestVehicleSampleTime);
     // repeated/unchanged values between DDS arrivals are ignored for the rate fit (mirrors HtmlPage.cs
     // ingestFrame's `if(m.step === lastStep) return` dedupe) but the render clock still advances every call.
-    public void Pump(double? newestSampleTime)
+    // `hold` (the sim is paused): freeze the render clock -- do NOT advance renderSim past the newest sample,
+    // so a paused publisher's vehicles stop immediately instead of coasting on extrapolation for ~3s. The
+    // sample-time ingest still runs (so the rate fit + restart detection stay live for when it resumes).
+    public void Pump(double? newestSampleTime, bool hold = false)
     {
         var nowWall = _wall.Elapsed.TotalSeconds;
 
         if (newestSampleTime is { } sim && sim != _lastIngestedSim)
         {
+            // Restart detection: the sim-axis timestamp jumping BACKWARD (the publisher rebuilt at t=0) breaks
+            // the long-baseline fit and would strand renderSim far ahead of the stream -> wild forward
+            // extrapolation (vehicles racing off after a restart). Re-anchor the fit + clock to the new
+            // timeline. A small backward wobble is normal jitter; only a real reset trips this.
+            if (!double.IsNaN(_lastIngestedSim) && sim < _lastIngestedSim - 2.0)
+            {
+                _firstWallSec = null;
+                _renderSim = 0.0;
+                _simRate = 1.0;
+            }
+
             _lastIngestedSim = sim;
 
             // Long-baseline playback rate: total sim advanced / total wall elapsed since the first sample.
@@ -94,6 +108,14 @@ public sealed class DrClock
             }
 
             _latestSim = sim;
+        }
+
+        if (hold)
+        {
+            // Paused: hold renderSim where it is (no advance -> no extrapolation coast). Keep the frame-dt
+            // anchor current so the first frame after resume doesn't see a huge dt.
+            _lastPumpWallSec = nowWall;
+            return;
         }
 
         // Render clock: advance MONOTONICALLY toward the smooth wall->sim estimate (floored at the newest

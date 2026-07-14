@@ -683,29 +683,37 @@ public static class Renderer
     // view-only). Adds the two indicators a remote viewer needs that a loopback viewer doesn't: whether the
     // Vehicles topic currently has a matched (live) writer, and whether the durable geometry topic has
     // delivered the whole network yet -- both meaningful only when there's no local publisher to fall back on.
+    // `status` is the publisher's live engine state (DdsViewerStatus). It makes the command widgets
+    // AUTHORITATIVE (pause label, speed value, tick rate reflect the real host) instead of optimistic, and
+    // disables what can't act: all commands until a host is present, and the sim-tick-rate radios unless the
+    // host is a sandbox (a scenario's step-length is fixed). `speed`/`random` stay refs -- speed is
+    // draggable and re-synced to the host value when idle; random has no status field yet.
     public static void DrawRemoteControlsPanel(
-        DdsCommandWriter cmd, ref bool paused, ref float speed, ref bool random, ref int hz,
+        DdsCommandWriter cmd, ViewerStatus status, ref float speed, ref bool random,
         ref float delaySeconds, ref bool smooth, bool connected, bool geometryComplete)
     {
         ImGui.SetNextWindowPos(new Vector2(10, 10), ImGuiCond.FirstUseEver);
-        ImGui.SetNextWindowSize(new Vector2(380, 360), ImGuiCond.FirstUseEver);
+        ImGui.SetNextWindowSize(new Vector2(380, 380), ImGuiCond.FirstUseEver);
         ImGui.Begin("SumoSharp - controls (remote)");
         ImGui.Text("mode: REMOTE (drives the publisher via DDS)");
         ImGui.Separator();
         ImGui.Text(connected ? "connected: yes" : "connected: NO (waiting for a publisher)");
         ImGui.Text(geometryComplete ? "geometry: received" : "geometry: waiting...");
+        ImGui.Text(status.Present
+            ? $"host: {(status.Sandbox ? "SANDBOX" : "SCENARIO")}  {(status.Paused ? "PAUSED" : "running")}  sim {status.SimTime:F0}s  veh {status.VehicleCount}"
+            : "host: (no status yet)");
         ImGui.Separator();
 
-        // Remote-control commands -> sent over DDS to the publisher's engine. Optimistic: a view-only remote
-        // gets no state feedback, so the widgets reflect what we've SENT, not confirmed engine state.
+        // Command controls need a live host -> disabled until status arrives (nothing to drive otherwise).
+        ImGui.BeginDisabled(!status.Present);
+
         if (ImGui.Button("restart")) cmd.Send(ViewerCommandKind.Restart);
         ImGui.SameLine();
         if (ImGui.Button("clear obstacles")) cmd.Send(ViewerCommandKind.ClearObstacles);
         ImGui.SameLine();
-        if (ImGui.Button(paused ? "resume" : "pause"))
+        if (ImGui.Button(status.Paused ? "resume" : "pause")) // label from the HOST's real pause state
         {
-            paused = !paused;
-            cmd.Send(ViewerCommandKind.Pause, flag: paused);
+            cmd.Send(ViewerCommandKind.Pause, flag: !status.Paused);
         }
 
         if (ImGui.Checkbox("inject random traffic", ref random))
@@ -713,22 +721,34 @@ public static class Renderer
             cmd.Send(ViewerCommandKind.SetRandomTraffic, flag: random);
         }
 
-        if (ImGui.SliderFloat("speed", ref speed, 0.25f, 10f, "%.2fx real-time"))
+        var speedChanged = ImGui.SliderFloat("speed", ref speed, 0.25f, 10f, "%.2fx real-time");
+        var speedActive = ImGui.IsItemActive();
+        if (speedChanged)
         {
             cmd.Send(ViewerCommandKind.SetSpeed, value: speed);
         }
 
-        // Sim tick rate (= 1/step-length), radios matching the local/loopback panels. Optimistic (`hz` is the
-        // last value we SENT, not confirmed state). Only takes effect on a SANDBOX publisher -- a scenario
-        // publisher's step-length is fixed by its .sumocfg, so it no-ops the command.
-        ImGui.Text("sim tick rate (sandbox):");
-        if (ImGui.RadioButton("1Hz", hz == 1)) { hz = 1; cmd.Send(ViewerCommandKind.SetStepLength, value: 1.0); }
+        // Sim tick rate (= 1/step-length): disabled unless the host is a sandbox (scenario step-length is
+        // fixed). Reflects the host's actual step, not an optimistic guess.
+        var hz = status.StepLength > 1e-6 ? (int)Math.Round(1.0 / status.StepLength) : 1;
+        ImGui.BeginDisabled(!status.Sandbox);
+        ImGui.Text("sim tick rate:");
+        if (ImGui.RadioButton("1Hz", hz == 1)) cmd.Send(ViewerCommandKind.SetStepLength, value: 1.0);
         ImGui.SameLine();
-        if (ImGui.RadioButton("2Hz", hz == 2)) { hz = 2; cmd.Send(ViewerCommandKind.SetStepLength, value: 0.5); }
+        if (ImGui.RadioButton("2Hz", hz == 2)) cmd.Send(ViewerCommandKind.SetStepLength, value: 0.5);
         ImGui.SameLine();
-        if (ImGui.RadioButton("5Hz", hz == 5)) { hz = 5; cmd.Send(ViewerCommandKind.SetStepLength, value: 0.2); }
+        if (ImGui.RadioButton("5Hz", hz == 5)) cmd.Send(ViewerCommandKind.SetStepLength, value: 0.2);
         ImGui.SameLine();
-        if (ImGui.RadioButton("10Hz", hz == 10)) { hz = 10; cmd.Send(ViewerCommandKind.SetStepLength, value: 0.1); }
+        if (ImGui.RadioButton("10Hz", hz == 10)) cmd.Send(ViewerCommandKind.SetStepLength, value: 0.1);
+        ImGui.EndDisabled();
+
+        ImGui.EndDisabled(); // command controls
+
+        // Re-sync the speed slider to the host's actual value when the user isn't actively dragging it.
+        if (!speedActive && status.Present)
+        {
+            speed = (float)status.Speed;
+        }
 
         // --- these two are LOCAL to this viewer (client-side dead-reckoning playout, not engine state) ---
         ImGui.Separator();
