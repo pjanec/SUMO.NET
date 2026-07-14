@@ -77,6 +77,16 @@ public sealed class DdsSubscriber : IDisposable
     // Latest TL signal char per controlled lane handle.
     public IReadOnlyDictionary<int, byte> TlStateByLane => _tlState;
 
+    // P2b (DrClock) — the newest per-vehicle sample timestamp seen so far across every decoded vehicle
+    // frame (max of VehicleSample.TimestampSeconds); null until the first vehicle frame arrives. All
+    // vehicle records decoded from the SAME DDS sample share one timestamp, so this is exactly the
+    // "current frame's sim-axis time" DrClock.Pump paces its render clock off.
+    public double? LatestVehicleSampleTime { get; private set; }
+
+    // P2b diagnostics — total vehicle records decoded across every Pump call so far (a monotonically
+    // increasing counter; divide by elapsed wall time for a "DDS samples/s" HUD readout).
+    public long TotalVehicleSamplesReceived { get; private set; }
+
     public bool TryGetLatest(VehicleHandle handle, out VehicleSample sample)
     {
         if (_history.TryGetValue(handle, out var list) && list.Count > 0)
@@ -165,6 +175,11 @@ public sealed class DdsSubscriber : IDisposable
             var ts = sample.Info.SourceTimestamp;
             var timestampSeconds = ts > 0 ? ts / 1_000_000_000.0 : (double)f.Time;
 
+            if (LatestVehicleSampleTime is null || timestampSeconds > LatestVehicleSampleTime.Value)
+            {
+                LatestVehicleSampleTime = timestampSeconds;
+            }
+
             for (var i = 0; i < count; i++)
             {
                 var rec = _vehicleRecs[i];
@@ -180,6 +195,8 @@ public sealed class DdsSubscriber : IDisposable
                     list.RemoveAt(0);
                 }
             }
+
+            TotalVehicleSamplesReceived += count;
         }
     }
 

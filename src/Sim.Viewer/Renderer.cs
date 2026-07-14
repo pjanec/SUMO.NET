@@ -4,6 +4,7 @@ using rlImGui_cs;
 using ImGuiNET;
 using Sim.Core;
 using Sim.Ingest;
+using Sim.Replication;
 using Sim.Viewer.Core;
 
 namespace Sim.Viewer;
@@ -334,6 +335,239 @@ public static class Renderer
         ImGui.Separator();
         ImGui.Text($"vehicles: {snapshot.Count}");
         ImGui.Text($"sim time: {snapshot.Time:F1}s   step: {snapshot.StepCount}");
+        ImGui.End();
+    }
+
+    // --- P2b: --mode loopback (DDS geometry + dead-reckoned vehicles) ---
+
+    // One vehicle's already-resolved (dead-reckoned) draw pose -- Program.cs builds this from
+    // DrClock.Resolve + PoseResolver.Resolve(dt=0) before calling DrawWorldDds; this method only draws.
+    public readonly struct DrVehicleDraw
+    {
+        public DrVehicleDraw(double frontX, double frontY, float headingDeg, float length, float width, double speedExact)
+        {
+            FrontX = frontX;
+            FrontY = frontY;
+            HeadingDeg = headingDeg;
+            Length = length;
+            Width = width;
+            SpeedExact = speedExact;
+        }
+
+        public double FrontX { get; }
+        public double FrontY { get; }
+        public float HeadingDeg { get; }
+        public float Length { get; }
+        public float Width { get; }
+        public double SpeedExact { get; }
+    }
+
+    // Draws the LOOPBACK-mode world from DECODED DDS state (subscriber geometry + TL-by-lane + already
+    // dead-reckoned vehicle poses) rather than the authoritative Snapshot -- mirrors DrawWorld's visual
+    // style (same casing/surface/dash/chevron/speed-colour/TL-dot conventions) so a loopback screenshot
+    // reads as visually equivalent to `--mode local` on the same net.
+    public static void DrawWorldDds(
+        Camera2D camera,
+        IReadOnlyDictionary<int, GeometryCodec.LaneGeo> geometry,
+        IReadOnlyDictionary<int, byte> tlByLane,
+        IReadOnlyList<DrVehicleDraw> vehicles)
+    {
+        Raylib.BeginMode2D(camera);
+
+        foreach (var lane in geometry.Values)
+        {
+            var pts = lane.Points;
+            if (pts.Length < 2)
+            {
+                continue;
+            }
+
+            var surfaceThick = Math.Max(2.5f / camera.Zoom, lane.Width);
+            var casingThick = surfaceThick + 2.5f / camera.Zoom;
+            var surfaceColor = lane.IsInternal ? RoadInternal : RoadSurface;
+
+            for (var i = 0; i < pts.Length - 1; i++)
+            {
+                var p1 = Flip(pts[i].X, pts[i].Y);
+                var p2 = Flip(pts[i + 1].X, pts[i + 1].Y);
+                Raylib.DrawLineEx(p1, p2, casingThick, RoadCasing);
+            }
+
+            for (var i = 0; i < pts.Length - 1; i++)
+            {
+                var p1 = Flip(pts[i].X, pts[i].Y);
+                var p2 = Flip(pts[i + 1].X, pts[i + 1].Y);
+                Raylib.DrawLineEx(p1, p2, surfaceThick, surfaceColor);
+            }
+        }
+
+        var dashOnWorld = 6f / camera.Zoom;
+        var dashOffWorld = 7f / camera.Zoom;
+        var dashThickWorld = 1f / camera.Zoom;
+        var drawChevrons = camera.Zoom > 1.2f;
+        var chevronSize = Math.Max(3f / camera.Zoom, 1.3f);
+
+        foreach (var lane in geometry.Values)
+        {
+            if (lane.IsInternal || lane.Points.Length < 2)
+            {
+                continue;
+            }
+
+            DrawDashedPolyline(lane.Points, dashOnWorld, dashOffWorld, dashThickWorld, LaneDash);
+
+            if (drawChevrons)
+            {
+                DrawLaneChevron(lane.Points, chevronSize, LaneChevron);
+            }
+        }
+
+        var tlRadius = Math.Max(2.5f / camera.Zoom, 0.9f);
+        foreach (var (laneHandle, signal) in tlByLane)
+        {
+            if (!geometry.TryGetValue(laneHandle, out var tlLane) || tlLane.Points.Length < 1)
+            {
+                continue;
+            }
+
+            var (ex, ey) = tlLane.Points[^1];
+            Raylib.DrawCircleV(Flip(ex, ey), tlRadius, TlColor((char)signal));
+        }
+
+        foreach (var v in vehicles)
+        {
+            var front = Flip(v.FrontX, v.FrontY);
+            var length = Math.Max(0.5f / camera.Zoom, v.Length);
+            var width = Math.Max(0.3f / camera.Zoom, v.Width);
+
+            var nr = v.HeadingDeg * MathF.PI / 180f;
+            var sa = MathF.Atan2(-MathF.Cos(nr), MathF.Sin(nr));
+            var rotationDeg = sa * 180f / MathF.PI;
+
+            var rec = new Rectangle(front.X, front.Y, length, width);
+            var origin = new Vector2(length, width / 2f);
+            Raylib.DrawRectanglePro(rec, origin, rotationDeg, SpeedColor(v.SpeedExact));
+        }
+
+        Raylib.EndMode2D();
+    }
+
+    // (float X, float Y)[] overloads of DrawDashedPolyline/DrawLaneChevron -- GeometryCodec.LaneGeo.Points
+    // is a float array (the wire precision), while the local-mode NetworkModel.Shape is
+    // IReadOnlyList<(double X, double Y)>; same drawing logic, adapted to avoid a per-lane conversion alloc.
+    private static void DrawDashedPolyline((float X, float Y)[] shape, float dashOn, float dashOff, float thick, Color color)
+    {
+        var onPhase = true;
+        var remaining = dashOn;
+
+        for (var i = 0; i < shape.Length - 1; i++)
+        {
+            var (x1, y1) = shape[i];
+            var (x2, y2) = shape[i + 1];
+            var dx = x2 - x1;
+            var dy = y2 - y1;
+            var segLen = MathF.Sqrt(dx * dx + dy * dy);
+            if (segLen < 1e-6f)
+            {
+                continue;
+            }
+
+            var t0 = 0f;
+            while (t0 < segLen)
+            {
+                var take = Math.Min(remaining, segLen - t0);
+                if (onPhase)
+                {
+                    var t1 = t0 + take;
+                    var a = Flip(x1 + dx * (t0 / segLen), y1 + dy * (t0 / segLen));
+                    var b = Flip(x1 + dx * (t1 / segLen), y1 + dy * (t1 / segLen));
+                    Raylib.DrawLineEx(a, b, thick, color);
+                }
+
+                t0 += take;
+                remaining -= take;
+                if (remaining <= 1e-6f)
+                {
+                    onPhase = !onPhase;
+                    remaining = onPhase ? dashOn : dashOff;
+                }
+            }
+        }
+    }
+
+    private static void DrawLaneChevron((float X, float Y)[] shape, float size, Color color)
+    {
+        var n = shape.Length;
+        var mi = Math.Max(0, n / 2 - 1);
+        var (x1, y1) = shape[mi];
+        var (x2, y2) = shape[mi + 1];
+        var dx = x2 - x1;
+        var dy = y2 - y1;
+        if (dx * dx + dy * dy < 1e-9)
+        {
+            return;
+        }
+
+        var mid = Flip((x1 + x2) / 2.0, (y1 + y2) / 2.0);
+        var angle = MathF.Atan2(-dy, dx);
+        var cosA = MathF.Cos(angle);
+        var sinA = MathF.Sin(angle);
+
+        var tip = Rotate(new Vector2(size, 0f), cosA, sinA) + mid;
+        var backRight = Rotate(new Vector2(-size * 0.6f, size * 0.7f), cosA, sinA) + mid;
+        var backLeft = Rotate(new Vector2(-size * 0.6f, -size * 0.7f), cosA, sinA) + mid;
+        Raylib.DrawTriangle(tip, backRight, backLeft, color);
+    }
+
+    // P2b controls panel: mode label, restart/clear/random (identical semantics to DrawControlsPanel,
+    // driving the SAME publisher-owned EngineHost), plus the DR delay slider (0 = extrapolate, higher =
+    // interpolate) and the smoothing toggle (extrapolation-only low-pass, HtmlPage.cs's `smooth`).
+    public static void DrawLoopbackControlsPanel(EngineHost host, ref float delaySeconds, ref bool smooth)
+    {
+        ImGui.SetNextWindowPos(new Vector2(10, 10), ImGuiCond.FirstUseEver);
+        ImGui.SetNextWindowSize(new Vector2(380, 230), ImGuiCond.FirstUseEver);
+        ImGui.Begin("SumoSharp - controls (loopback)");
+        ImGui.Text(host.ScenarioMode ? "mode: SCENARIO" : "mode: SANDBOX");
+        ImGui.Separator();
+        if (ImGui.Button("restart"))
+        {
+            host.Restart();
+        }
+
+        ImGui.SameLine();
+        if (ImGui.Button("clear obstacles"))
+        {
+            host.ClearObstacles();
+        }
+
+        var randomTraffic = host.RandomTraffic;
+        if (ImGui.Checkbox("inject random traffic", ref randomTraffic))
+        {
+            host.SetRandomTraffic(randomTraffic);
+        }
+
+        ImGui.Separator();
+        ImGui.SliderFloat("DR delay (s)", ref delaySeconds, 0f, 1.5f, "%.2f");
+        ImGui.Checkbox("smooth (extrap only)", ref smooth);
+        ImGui.TextWrapped("delay 0 = extrapolate (predict ahead, may snap); raise = interpolate between DDS packets (smooth, delayed)");
+        ImGui.End();
+    }
+
+    // P2b diagnostics panel: fps/frame-time (same ring buffer as local), plus the DR-clock health readout
+    // (renderSim / simRate / back-steps -- should stay 0) and the DDS-path counters.
+    public static void DrawDdsDiagnosticsPanel(FrameStats frameStats, DrClock clock, double ddsSamplesPerSecond, int vehicleCount)
+    {
+        var (min, avg, p99) = frameStats.Compute();
+        ImGui.SetNextWindowPos(new Vector2(10, 250), ImGuiCond.FirstUseEver);
+        ImGui.SetNextWindowSize(new Vector2(380, 190), ImGuiCond.FirstUseEver);
+        ImGui.Begin("SumoSharp - diagnostics (loopback)");
+        ImGui.Text($"fps: {Raylib.GetFPS()}");
+        ImGui.Text($"frame ms  min {min * 1000f:F2}  avg {avg * 1000f:F2}  p99 {p99 * 1000f:F2}");
+        ImGui.Separator();
+        ImGui.Text($"dds samples/s: {ddsSamplesPerSecond:F1}");
+        ImGui.Text($"renderSim: {clock.RenderSim:F2}s   simRate: {clock.SimRate:F2}/s");
+        ImGui.Text($"clock back-steps: {clock.BackSteps}   delay: {clock.EffectiveDelay:F2}s");
+        ImGui.Text($"vehicles: {vehicleCount}");
         ImGui.End();
     }
 }
