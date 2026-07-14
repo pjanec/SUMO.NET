@@ -23,10 +23,20 @@ public static class EvacOrganicScenario
     // Incident: junction "415" (traffic_light, x=1083.17, y=1229.14) -- the real, non-internal junction
     // closest to the net's centroid, with 8 incoming lanes (a 4-way, 2-lanes-per-approach signalized
     // intersection: the busiest kind of interior junction in this net), so it carries real
-    // boundary-to-boundary through-traffic. Radius 70 is comfortably inside a single intersection's
-    // footprint; StartTime 90 lands after ~90s/~18% of the uniformly-spread 618 departures (see
-    // NOTES.md/rou.rou.xml) so real congestion already exists near the junction when the incident fires.
-    public static Incident DefaultIncident => new(X: 1083.17, Y: 1229.14, StartTime: 90.0, Radius: 70.0);
+    // boundary-to-boundary through-traffic. StartTime 90 lands after ~90s/~18% of the uniformly-spread
+    // 618 departures (see NOTES.md/rou.rou.xml) so real congestion already exists near the junction when
+    // the incident fires.
+    //
+    // Radius 400 is deliberately LARGE (a major incident whose panic blankets the town centre, not a
+    // single-intersection scare) -- the demo's whole point is to SHOW a large-scale evac: mass panic ->
+    // gridlock on the few town-edge exits -> mass abandonment -> a massive foot exodus (measured: ~174
+    // panic, ~151 cars abandoned, ~600 pedestrians). The town is sparse (~370 vehicles over 274
+    // junctions), so a small radius catches only a handful of cars (radius 70 gave just 5 pedestrians);
+    // the large radius is what turns the sparse mesh into a dramatic exodus. Locality still holds: the
+    // town's far edges/corners are all > WorkingRadius from the incident and stay pure parity traffic
+    // (EvacOrganicDemoTests.EvacStaysLocal: ~159 of ~371 vehicles never tracked), which is the property
+    // that keeps the evac layer's cost bounded regardless of city size (design §1).
+    public static Incident DefaultIncident => new(X: 1083.17, Y: 1229.14, StartTime: 90.0, Radius: 400.0);
 
     // A handful of true boundary edges (each leads to a real "dead_end" junction, i.e. the edge of the
     // generated mesh), picked to spread around the compass from the incident so a fleeing car has a
@@ -46,7 +56,12 @@ public static class EvacOrganicScenario
     public static EvacConfig DefaultConfig() => new()
     {
         AutoTrackInWorkingRegion = true,
-        WorkingRadius = 250.0,
+        WorkingRadius = 550.0,           // track the whole jam that backs up around the larger incident
+        EnableLineOfSight = false,       // a security incident is HEARD, not just seen: everyone in the
+                                         // blast radius panics regardless of cars occluding the view
+        PedestriansPerCar = 4,           // multi-occupant cars -> a visibly massive foot crowd on abandonment
+        SafeRadius = 200.0,              // peds must jog farther out -> a wider, more legible exodus ring
+        BlockedDwellSeconds = 1.5,       // boxed-in panicked drivers give up and bail sooner
         ExitEdges = ExitEdges,
     };
 
