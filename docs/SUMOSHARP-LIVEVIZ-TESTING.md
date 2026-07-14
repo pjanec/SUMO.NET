@@ -42,6 +42,15 @@ test is only about the live viewer, `Sim.LiveHost`.
 - `chord` — SUMO back→front chord heading (correct for long vehicles on curves).
 - `corner` (or `offtrack`) — chord + swept-path off-tracking ("trucks swing wide").
 
+> **Known limitation (verified 2026-07, live-viz test pass):** this arg currently has **no effect on
+> the live viewer**. `Engine.RenderMode` only overrides the engine's derived world-pose floats
+> (`X`/`Y`/`Angle`), but `SimHost.BuildFrameJson` streams only *lane-relative* state (`p`/`pl`/`s`/`a`/`lw`)
+> — never the angle. The browser (`HtmlPage.resolvePose`) therefore **always** reconstructs the chord
+> heading + off-tracking bow client-side, in every mode. So default and `corner`/`chord` runs render
+> **identically**: long vehicles always swing wide; there is no "rides-the-centreline" default to compare
+> against. To wire the arg through, `BuildFrameJson` would need to send the pose/angle (or gate the client
+> bow on a mode flag).
+
 ---
 
 ## Run
@@ -56,8 +65,13 @@ git fetch origin main; git checkout main      # or clone fresh
 dotnet run --project src\Sim.LiveHost -- scenarios\15-reroute
 
 # SCENARIO mode — sublane scenarios show LATERAL movement live (config sets lateral-resolution>0):
-dotnet run --project src\Sim.LiveHost -- scenarios\62-sublane-overtake
-#   others: 60-sublane-drift, 61-sublane-sidebyside, 63-sublane-overtake-wide, 64-sublane-keeplatgap, 65-mixed-sublane
+dotnet run --project src\Sim.LiveHost -- scenarios\60-sublane-drift
+#   good lateral demos (LANDED, visible drift/offset): 60-sublane-drift, 61-sublane-sidebyside, 65-mixed-sublane
+#   NOTE: 62-sublane-overtake shows NO lateral motion — its golden keeps both vehicles centred (posLat=0)
+#         by design (it's the follow-*no*-overtake parity case), so don't use it to check lateral movement.
+#   NOTE: 63/64 (overtake-wide / keep-lat-gap): the sublane speed-gain OVERTAKE decision (rung P2.4) is
+#         DEFERRED/unlanded — its parity test is skipped and the engine mainline emits posLat=0, so the
+#         viewer faithfully shows no drift there. Not a viewer bug; just not a lateral demo yet.
 
 # SANDBOX mode — junction off-tracking demos (corner mode = swept-path swing):
 dotnet run --project src\Sim.LiveHost -- samples\junctions\acute\net.net.xml corner
@@ -79,8 +93,10 @@ dotnet run --project src\Sim.LiveHost -- samples\junctions\acute\net.net.xml cor
 4. **Vehicles** are oriented rectangles **sized per vehicle** (in sandbox ~1/3 are 12 m trucks, visibly longer).
 5. **Motion is smooth** (~60 fps) despite the ~2 Hz sim — that's the dead reckoning filling the gaps. No
    stutter, no teleporting, no vehicles vanishing then reappearing (no ghosting).
-6. **`corner` mode** (sandbox junctions): long vehicles swing **wide** of the lane centreline through the
-   turn (rear tracks inside); in default mode they ride the centreline. Compare `bend`/`acute`.
+6. **Off-tracking** (sandbox junctions `bend`/`acute`): long (12 m) vehicles swing **wide** of the lane
+   centreline through the turn (rear tracks inside). NOTE: this is **always on** in the live viewer,
+   reconstructed client-side — the `corner`/`chord` CLI arg does **not** change it (see the render-mode
+   "Known limitation" above), so there is no default-vs-corner comparison to make here.
 7. **`cross`** (sandbox, signalized): coloured traffic-light **dots** per controlled approach; cars queue on
    red, go on green.
 8. **HUD stat**: e.g. `N vehicles · sent X/Y states/step (Z%) · sim 2.0/s → 60fps DR`. Confirm **X < Y** when
