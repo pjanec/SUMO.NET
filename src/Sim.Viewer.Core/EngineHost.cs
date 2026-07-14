@@ -363,7 +363,11 @@ public sealed class EngineHost : IDisposable
 
         try
         {
-            runner.Invoke(e => e.AddObstacle(e.GetLane(laneId), frontPos: pos, length: 2.0));
+            // Post (fire-and-forget), NOT Invoke: Invoke blocks until the next Tick, which never comes while
+            // the sim is PAUSED -> it would deadlock the caller (e.g. the remote-command pump) forever. Post
+            // just queues the mutation; it applies at the next tick (immediately if running, on resume if
+            // paused). The obstacle marker below is optimistic, same as before.
+            runner.Post(e => e.AddObstacle(e.GetLane(laneId), frontPos: pos, length: 2.0));
         }
         catch
         {
@@ -386,7 +390,8 @@ public sealed class EngineHost : IDisposable
 
         try
         {
-            runner.Invoke<object?>(e => { e.ClearObstacles(); return null; });
+            // Post, not Invoke -- see InjectObstacleAtWorld (Invoke deadlocks while paused).
+            runner.Post(e => e.ClearObstacles());
         }
         catch
         {
