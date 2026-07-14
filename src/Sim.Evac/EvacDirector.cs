@@ -72,6 +72,7 @@ public sealed class EvacDirector
     private readonly List<(string Edge, Vec2 End)> _exits = new();
 
     private WorldDisc[] _discScratch = new WorldDisc[16];
+    private readonly List<VehicleHandle> _autoTrackScratch = new();
     private double _time;
 
     public EvacDirector(Engine engine, NetworkModel net, Incident incident, EvacConfig cfg, double stepLength)
@@ -127,11 +128,53 @@ public sealed class EvacDirector
         PostStep();
     }
 
+    // PANIC-EVAC-PHASE5-DESIGN.md §3 (T1.2): opt-in auto-attach for `LoadScenario` demand -- vehicles
+    // are never individually `Track`ed by the caller on a realistic town, so the director scans the
+    // engine's published read surface itself and starts watching anything that drives into the working
+    // region. Runs every tick (a vehicle can drive INTO the region mid-run); vehicles that never enter
+    // stay pure parity traffic at zero evac cost (design §1). Off unless AutoTrackInWorkingRegion is set,
+    // so the grid/TLS demos (explicit Track only) are unaffected.
+    private void AutoTrackWorkingRegion()
+    {
+        if (!_cfg.AutoTrackInWorkingRegion)
+        {
+            return;
+        }
+
+        var handles = _engine.VehicleHandles;
+        var px = _engine.PosX;
+        var py = _engine.PosY;
+
+        _autoTrackScratch.Clear();
+        for (var i = 0; i < handles.Length; i++)
+        {
+            var handle = handles[i];
+            if (_veh.ContainsKey(handle))
+            {
+                continue;
+            }
+
+            if (_incident.DistanceTo(px[i], py[i]) <= _cfg.WorkingRadius)
+            {
+                _autoTrackScratch.Add(handle);
+            }
+        }
+
+        // Deterministic regardless of read-buffer slot order: sort by handle.Index before Track()ing.
+        _autoTrackScratch.Sort((a, b) => a.Index.CompareTo(b.Index));
+        foreach (var handle in _autoTrackScratch)
+        {
+            Track(handle);
+        }
+    }
+
     // PANIC-EVAC-PHASE2-DESIGN.md §5: instead of a radius-only instant latch, drive the per-vehicle
     // fear field every tick (it is inert pre-incident: FearField gates the direct term on incident
     // activity/radius internally, so nothing seeds without a live, in-range, visible incident).
     private void PreStep()
     {
+        AutoTrackWorkingRegion();
+
         FeedVehicleDiscsToPeds();
 
         var obs = new List<FearField.VehicleObs>();
@@ -462,6 +505,11 @@ public sealed class EvacDirector
     public WorldDisc AbandonedCar(int i) => _abandoned[i];
 
     public double Fear(VehicleHandle h) => _fearField.Fear(h);
+
+    // PANIC-EVAC-PHASE5-DESIGN.md §3: whether `h` is under the evac layer's watch at all (explicitly
+    // `Track`ed, or auto-tracked into the working region) -- distinguishes "never entered the region"
+    // from "tracked, then despawned/converted" (IsAlive is false for both).
+    public bool IsTracked(VehicleHandle h) => _veh.ContainsKey(h);
 
     public bool IsPanicked(VehicleHandle h) => _veh.TryGetValue(h, out var s) && s.Panicked;
     public bool IsConverted(VehicleHandle h) => _veh.TryGetValue(h, out var s) && s.Converted;

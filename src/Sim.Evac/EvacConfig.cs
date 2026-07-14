@@ -71,6 +71,17 @@ public sealed record EvacConfig
     // the reachable exit whose far end is farthest from the incident.
     public string[] ExitEdges { get; init; } = Array.Empty<string>();
 
+    // PANIC-EVAC-PHASE5-DESIGN.md §3: opt-in working-region auto-attach for `LoadScenario` demand (a
+    // large realistic town where cars are never individually `Track`ed by the caller). Off by default
+    // so the grid/TLS demos (which rely on explicit `Track`) are unaffected.
+    public bool AutoTrackInWorkingRegion { get; init; } = false;
+
+    // PANIC-EVAC-PHASE5-DESIGN.md §3: the working-region disc radius (m) around the incident inside
+    // which a vehicle becomes evac-relevant and is auto-`Track`ed. Must be >= the incident radius plus
+    // a jam margin (congestion backs up beyond the incident's own influence radius, and those queued
+    // vehicles still need fear/flee/blocked treatment once they enter the region).
+    public double WorkingRadius { get; init; } = 250.0;
+
     // PANIC-EVAC-PHASE3-DESIGN.md §4: Orca-push tunables (Option A, external shaped-mover handoff).
     // All ON/first-cut by default so the grid demo actually pushes; EnableOrcaPush=false recovers
     // exact Phase-1/2 behaviour (blocked+panicked converts straight to pedestrian, unchanged).
