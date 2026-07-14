@@ -31,10 +31,15 @@ doesn't have. Highlights below; precise scope after that.
   zipper merge), static **and** actuated traffic lights, and **first-class rail** (signals, level
   crossings, bidirectional single track, traction).
 - **➕ Beyond SUMO.** Live external agents (pedestrians / crowds / detections that cars *react* to),
-  emergency-vehicle give-way, opposite-direction overtaking, laneless/shaped mixed traffic, a full
+  emergency-vehicle give-way, opposite-direction overtaking, laneless/shaped mixed traffic, and a full
   **panic-evacuation** model (localized incident → flee → jam → abandon car → foot exodus, layered on
-  the unchanged parity core), and a self-contained **offline HTML replay visualizer** — no server, no
-  SUMO needed.
+  the unchanged parity core).
+- **👁️ Three ways to watch it run.** A self-contained **offline HTML replay** (Canvas 2D, no server, no
+  SUMO); a **live dead-reckoned browser viewer** (`Sim.LiveHost` — the zero-install shareable demo,
+  poses extrapolated between low-rate updates); and a **native 10k-scale C# viewer** (`Sim.Viewer` —
+  raylib + Dear ImGui) that renders either the authoritative snapshot locally or a **dead-reckoned
+  stream over DDS** (RTPS pub/sub, durable network geometry + low-rate traffic-light topics, view-only
+  late-joining remote clients).
 
 ## Scope
 
@@ -71,7 +76,7 @@ Then build and run the offline parity suite (no SUMO, no network):
 ```bash
 git clone <this-repo> && cd Traffic
 dotnet build -c Release
-dotnet test                     # 229 passed, 1 skipped
+dotnet test                     # 440 passed, 3 skipped
 ```
 
 ---
@@ -293,6 +298,31 @@ cars as obstacles.
 - Behavioral/property-tested (cascade emerges, containment, locality, determinism), not goldens.
 - **Full feature index, per-phase design docs, and how to run the demos: `docs/PANIC-EVAC-OVERVIEW.md`.**
 
+### Live & native viewers (dead-reckoned streaming)
+
+Three visualizers share one engine; all are **out of the parity solution** (`Traffic.sln`), so the
+hermetic `dotnet test` gate never touches them and the determinism hash is unaffected.
+
+- **Offline HTML replay** (`Sim.Viz`) — reads a network + FCD trajectory and writes a single
+  self-contained `replay.html` (Canvas 2D). No server, no SUMO. The everything-committed-scenario path.
+- **Live browser viewer** (`Sim.LiveHost`) — a running engine streamed to a browser over WebSocket at a
+  low update rate, with **client-side dead reckoning** (poses extrapolated/interpolated between packets)
+  for smooth 60 fps playback. The zero-install shareable demo.
+- **Native C# viewer** (`Sim.Viewer` + `Sim.Viewer.Core`) — a desktop window (**raylib-cs** for the
+  world, **Dear ImGui** for the controls + a perf-diagnostics overlay) built for **10k-vehicle** scale.
+  Four modes: `local` (renders the authoritative `Snapshot` every frame — no transport, no jitter),
+  `loopback` (one process: publish → DDS → subscribe → dead-reckon → render), `publish` (headless
+  engine + DDS writer), and `remote` (**view-only** DDS subscriber + renderer; a late joiner gets the
+  road network via durable QoS).
+
+The remote transport is **binary DDS** (RTPS), not JSON — a `Sim.Replication` layer (transport-agnostic
+frame codec + an **adaptive publish-rate policy** that sends fast-changing vehicles more often and
+predictable ones less) feeds `Sim.Replication.Dds` topics: high-rate vehicle state, a **durable,
+chunked network-geometry** topic (so a remote client draws roads without the net file), and a
+**low-rate traffic-light** topic. The subscriber's `DrClock` paces the render clock off each sample's
+source timestamp with playout-delay interpolation and an extrapolation fallback, so a 2 Hz feed renders
+as smooth motion. Design: `docs/SUMOSHARP-NATIVE-VIEWER.md`, `docs/SUMOSHARP-DEADRECKONING.md`.
+
 ### Demand insertion & warm-start snapshots
 
 - **Flow demand:** `<flow>` (period/vehsPerHour/number, exact parity) and probabilistic
@@ -471,6 +501,28 @@ dotnet run -c Release --project src/Sim.Viz -- --evac-city evac-city.html
 dotnet run -c Release --project src/Sim.EvacProfile
 ```
 
+### Live & native viewers
+
+The **live browser viewer** streams a running engine over WebSocket with client-side dead reckoning:
+```bash
+dotnet run -c Release --project src/Sim.LiveHost -- scenarios/_bench/city-organic-L2   # then open the printed http URL
+```
+
+The **native desktop viewer** (raylib + Dear ImGui, 10k-scale; both it and `Sim.Viewer.Core` are out of
+`Traffic.sln`, so build/run them directly):
+```bash
+# local: owns the engine, renders the authoritative snapshot (no transport, no jitter)
+dotnet run -c Release --project src/Sim.Viewer -- --mode local samples/junctions/cross/net.net.xml
+# loopback: one process — publish → DDS → subscribe → dead-reckon → render (delay 0 = extrapolate, >0 = interpolate)
+dotnet run -c Release --project src/Sim.Viewer -- --mode loopback scenarios/15-reroute --delay 0.4
+# two processes: a headless publisher, then a late-joining view-only remote client
+dotnet run -c Release --project src/Sim.Viewer -- --mode publish samples/junctions/cross/net.net.xml   # terminal A
+dotnet run -c Release --project src/Sim.Viewer -- --mode remote                                        # terminal B
+```
+Controls (local/loopback): drag = pan, wheel = zoom, click a road = drop an obstacle, `d` = toggle the
+diagnostics overlay; the ImGui panel has restart / clear-obstacles / inject-traffic / DR-delay. On a
+headless box, render to a PNG with `--screenshot out.png --frames 120` (software GL under `xvfb-run`).
+
 ### Benchmarks (metrics, not pictures)
 
 ```bash
@@ -491,6 +543,11 @@ src/
   Sim.ParityTests/ the offline test suite (engine vs committed goldens)
   Sim.Run/        engine → FCD dumper (feeds the visualizer)
   Sim.Viz/        offline HTML replay generator (Canvas 2D; incl. the evac scenes)
+  Sim.LiveHost/   live dead-reckoned browser viewer (WebSocket; the zero-install demo)
+  Sim.Replication/     transport-agnostic frame codec + adaptive publish policy + DR model
+  Sim.Replication.Dds/ CycloneDDS topic types (state / geometry / traffic-light) — out of Traffic.sln
+  Sim.Viewer.Core/ native-viewer engine host + DDS pub/sub + DrClock (headless-testable)
+  Sim.Viewer/     native 10k-scale desktop viewer (raylib-cs + Dear ImGui) — out of Traffic.sln
   Sim.ExtDemo/    external-agent demo runner (combined FCD)
   Sim.Evac/       panic-evacuation layer (parity-exempt; drives the core via public seams)
   Sim.EvacProfile/ evac per-phase cost profiler + crowd-solver micro-benchmark
@@ -506,14 +563,15 @@ LICENSE           EPL-2.0 OR GPL-2.0-or-later (dual); version.json — project v
 Key docs: **`docs/DESIGN.md`** (architecture of record — read this for the "why"), **`docs/TASKS.md`** (the work
 queue / feature ledger), **`CLAUDE.md`** (contributor rules), **`docs/RAIL-SUPPORT.md`**,
 **`docs/EXTERNAL-AGENTS-VIZ.md`**, **`docs/BENCHMARK_SPEC.md`**, **`docs/C4-VII-REMAINING.md`** (open junction work),
-**`docs/PANIC-EVAC-OVERVIEW.md`** (the panic-evacuation feature index).
+**`docs/PANIC-EVAC-OVERVIEW.md`** (the panic-evacuation feature index), **`docs/SUMOSHARP-NATIVE-VIEWER.md`**
+(native raylib + DDS viewer) and **`docs/SUMOSHARP-DEADRECKONING.md`** (the dead-reckoning / replication stack).
 
 ---
 
 ## Status
 
 The car-following, lane-change, junction/right-of-way, traffic-light, rail, emergency-vehicle and
-external-agent subsystems are implemented and parity-tested (**229 passing scenarios/checks**). Known
+external-agent subsystems are implemented and parity-tested (**440 passing scenarios/checks**). Known
 open item: box-blocking on *pathological* tight unmarked single-lane rings under saturation (diagnosed,
 deferred — normal roundabouts flow fine). Phase 2 (the laneless/sublane heterogeneous model) is
 designed-for but not built.
