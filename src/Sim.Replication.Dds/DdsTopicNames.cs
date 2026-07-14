@@ -12,4 +12,7 @@ public static class DdsTopicNames
     public const string Lifecycle = "sumo/lifecycle";
     public const string Geometry = "sumo/geometry";
     public const string Tl = "sumo/tl";
+    // Reverse channel: a view-only remote publishes commands here; the publisher subscribes and applies them
+    // to its EngineHost (pause/speed/restart/inject/...). See DdsViewerCommand + Sim.Viewer.Core command link.
+    public const string Commands = "sumo/commands";
 }

@@ -683,19 +683,46 @@ public static class Renderer
     // view-only). Adds the two indicators a remote viewer needs that a loopback viewer doesn't: whether the
     // Vehicles topic currently has a matched (live) writer, and whether the durable geometry topic has
     // delivered the whole network yet -- both meaningful only when there's no local publisher to fall back on.
-    public static void DrawRemoteControlsPanel(ref float delaySeconds, ref bool smooth, bool connected, bool geometryComplete)
+    public static void DrawRemoteControlsPanel(
+        DdsCommandWriter cmd, ref bool paused, ref float speed, ref bool random,
+        ref float delaySeconds, ref bool smooth, bool connected, bool geometryComplete)
     {
         ImGui.SetNextWindowPos(new Vector2(10, 10), ImGuiCond.FirstUseEver);
-        ImGui.SetNextWindowSize(new Vector2(380, 200), ImGuiCond.FirstUseEver);
-        ImGui.Begin("SumoSharp - controls (remote, view-only)");
-        ImGui.Text("mode: REMOTE (view-only -- no engine here)");
+        ImGui.SetNextWindowSize(new Vector2(380, 300), ImGuiCond.FirstUseEver);
+        ImGui.Begin("SumoSharp - controls (remote)");
+        ImGui.Text("mode: REMOTE (drives the publisher via DDS)");
         ImGui.Separator();
         ImGui.Text(connected ? "connected: yes" : "connected: NO (waiting for a publisher)");
         ImGui.Text(geometryComplete ? "geometry: received" : "geometry: waiting...");
         ImGui.Separator();
+
+        // Remote-control commands -> sent over DDS to the publisher's engine. Optimistic: a view-only remote
+        // gets no state feedback, so the widgets reflect what we've SENT, not confirmed engine state.
+        if (ImGui.Button("restart")) cmd.Send(ViewerCommandKind.Restart);
+        ImGui.SameLine();
+        if (ImGui.Button("clear obstacles")) cmd.Send(ViewerCommandKind.ClearObstacles);
+        ImGui.SameLine();
+        if (ImGui.Button(paused ? "resume" : "pause"))
+        {
+            paused = !paused;
+            cmd.Send(ViewerCommandKind.Pause, flag: paused);
+        }
+
+        if (ImGui.Checkbox("inject random traffic", ref random))
+        {
+            cmd.Send(ViewerCommandKind.SetRandomTraffic, flag: random);
+        }
+
+        if (ImGui.SliderFloat("speed", ref speed, 0.25f, 10f, "%.2fx real-time"))
+        {
+            cmd.Send(ViewerCommandKind.SetSpeed, value: speed);
+        }
+
+        // --- these two are LOCAL to this viewer (client-side dead-reckoning playout, not engine state) ---
+        ImGui.Separator();
         ImGui.SliderFloat("DR delay (s)", ref delaySeconds, 0f, 1.5f, "%.2f");
         ImGui.Checkbox("smooth (extrap only)", ref smooth);
-        ImGui.TextWrapped("delay 0 = extrapolate (predict ahead, may snap); raise = interpolate between DDS packets (smooth, delayed)");
+        ImGui.TextWrapped("click a road to drop an obstacle (remote). delay 0 = extrapolate; raise = interpolate");
         ImGui.End();
     }
 

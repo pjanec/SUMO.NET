@@ -445,6 +445,8 @@ static int RunPublish(string netPath, double? secondsCap)
     using var host = new EngineHost(netPath);
     using var participant = new DdsParticipant();
     using var publisher = new DdsPublisher(host, participant);
+    // Reverse channel: apply commands a view-only remote sends (pause/speed/restart/inject/...).
+    using var commandReader = new DdsCommandReader(participant);
 
     // DDS discovery is async -- give any already-running readers time to match before the durable geometry
     // publish (LoopbackSelfTest's proven pattern). A LATE reader's TRANSIENT_LOCAL durability means it does
@@ -474,6 +476,9 @@ static int RunPublish(string netPath, double? secondsCap)
         {
             break;
         }
+
+        // Apply any pending remote commands before reading the snapshot this iteration.
+        commandReader.PumpApply(host);
 
         // Same gate RunLoopback uses: EngineHost's SimulationRunner ticks on its own real-time-paced
         // background thread, so most polls of this loop see an unchanged snapshot and would otherwise
@@ -699,6 +704,8 @@ static int RunRemote(string? screenshotPath, int frames, float initialDelaySecon
 {
     using var participant = new DdsParticipant();
     using var subscriber = new DdsSubscriber(participant);
+    // Reverse channel: drive the publisher's engine from this view-only remote (remote control).
+    using var commandWriter = new DdsCommandWriter(participant);
 
     var screenW = 1280;
     var screenH = 800;
@@ -732,11 +739,19 @@ static int RunRemote(string? screenshotPath, int frames, float initialDelaySecon
     var frameStats = new FrameStats();
     var showDiagnostics = true;
 
-    // Remote is view-only (no InjectObstacleAtWorld to call), so unlike local/loopback there's no need to
-    // distinguish a click from a drag -- only pan (drag) + zoom are tracked.
+    // With the reverse command channel, a plain click now commands the publisher to drop an obstacle at that
+    // world point, so (like local/loopback) a click must be distinguished from a pan-drag.
     var dragging = false;
+    var dragMoved = false;
     var dragStartMouse = Vector2.Zero;
     var dragStartTarget = Vector2.Zero;
+    const float DragMoveThreshold = 3f;
+
+    // Optimistic local mirror of the commanded engine state (a view-only remote gets no state feedback, so
+    // the control widgets reflect what we've SENT). Initialised to the publisher's own interactive defaults.
+    var remotePaused = false;
+    var remoteSpeed = 1f;
+    var remoteRandom = false;
 
     var drClock = new DrClock();
     var delaySlider = initialDelaySeconds;
@@ -784,6 +799,7 @@ static int RunRemote(string? screenshotPath, int frames, float initialDelaySecon
             if (Raylib.IsMouseButtonPressed(MouseButton.Left))
             {
                 dragging = true;
+                dragMoved = false;
                 dragStartMouse = mouse;
                 dragStartTarget = camera.Target;
             }
@@ -791,13 +807,23 @@ static int RunRemote(string? screenshotPath, int frames, float initialDelaySecon
             if (dragging && Raylib.IsMouseButtonDown(MouseButton.Left))
             {
                 var delta = mouse - dragStartMouse;
+                if (delta.Length() > DragMoveThreshold)
+                {
+                    dragMoved = true;
+                }
+
                 camera.Target = dragStartTarget - delta / camera.Zoom;
             }
 
             if (Raylib.IsMouseButtonReleased(MouseButton.Left))
             {
-                // View-only: a plain click (not a pan) is intentionally a no-op here -- see the method
-                // doc comment.
+                if (dragging && !dragMoved)
+                {
+                    // Click (not a pan) -> command the publisher to drop an obstacle at this world point.
+                    var flipSpace = Raylib.GetScreenToWorld2D(mouse, camera);
+                    commandWriter.Send(ViewerCommandKind.InjectObstacle, x: flipSpace.X, y: -flipSpace.Y);
+                }
+
                 dragging = false;
             }
 
@@ -819,7 +845,8 @@ static int RunRemote(string? screenshotPath, int frames, float initialDelaySecon
             Renderer.DrawWaitingOverlay(screenW, screenH, "waiting for publisher... (no geometry yet)");
         }
 
-        Renderer.DrawRemoteControlsPanel(ref delaySlider, ref smooth, subscriber.Connected, subscriber.GeometryComplete);
+        Renderer.DrawRemoteControlsPanel(commandWriter, ref remotePaused, ref remoteSpeed, ref remoteRandom,
+            ref delaySlider, ref smooth, subscriber.Connected, subscriber.GeometryComplete);
         if (showDiagnostics)
         {
             var wallElapsed = startWall.Elapsed.TotalSeconds;
