@@ -77,6 +77,30 @@ LIBGL_ALWAYS_SOFTWARE=1 GALLIUM_DRIVER=llvmpipe xvfb-run -a -s "-screen 0 1280x8
 So both the DDS/DR data path (console, `Sim.Viewer.Core`) **and** the rendered visuals (Xvfb screenshot) are
 self-verifiable here; live interactive use + 10k perf are verified on a real GPU (Windows).
 
+## Status (2026-07)
+**P0, P1, P2 (a+b), and the functional half of P3 are DONE and on `main`** (commits `58d1ed4`, `a8df812`,
+`1f269f5`, `69e682a`, `eb6449f`) — each Sonnet-built + Opus-reviewed (build + Xvfb screenshot + code read;
+the DDS/DR paths run headlessly here). Working today: `--mode local` (authoritative render), `--mode
+loopback` (single-process DR over DDS), `--mode publish` + `--mode remote` (two-process, view-only, with
+`TRANSIENT_LOCAL` QoS so a late joiner gets the network), `--selftest`. **Only remaining: the 10k-vehicle
+60 fps perf pass — needs a real GPU** (this VM is software-GL only), so it is a Windows task, not done here.
+
+### Running it
+```bash
+# local (owns the engine, no DR):
+dotnet run --project src/Sim.Viewer -- --mode local samples/junctions/cross/net.net.xml
+# single-process loopback DR over DDS (delay 0=extrapolate, >0=interpolate):
+dotnet run --project src/Sim.Viewer -- --mode loopback scenarios/15-reroute --delay 0.4
+# two processes: publisher (headless) then a late-joining view-only remote viewer:
+dotnet run --project src/Sim.Viewer -- --mode publish samples/junctions/cross/net.net.xml   # terminal A
+dotnet run --project src/Sim.Viewer -- --mode remote                                         # terminal B
+# headless screenshot (this VM): LIBGL_ALWAYS_SOFTWARE=1 GALLIUM_DRIVER=llvmpipe xvfb-run -a <cmd> --screenshot out.png --frames 200
+```
+### Remaining Windows-GPU task (10k perf)
+Run `--mode local` (and `loopback`) with ~10k vehicles on a real GPU, profile the frame time, and add GPU
+instancing/batching for the vehicle quads if raylib's immediate-mode `DrawRectanglePro` loop doesn't hold
+60 fps. Everything else (DDS transport, DR pacing, QoS late-join, the whole render feature set) is verified.
+
 ## Build phases (each = one Sonnet delegation, Opus reviews)
 - **P0 — scaffold + local render.** `Sim.Viewer.Core` (`EngineHost`) + `Sim.Viewer` (raylib window +
   rlImgui + bundled TTF; `Camera2D` fit; roads; authoritative vehicles from `Snapshot.PosX/Y/Angle/
