@@ -19,6 +19,14 @@ public sealed class EngineHost : IDisposable
     private readonly bool _scenarioMode;
     private readonly string[] _normalEdges;
 
+    // Native-viewer perf pass (docs/SUMOSHARP-NATIVE-VIEWER-TESTING.md TASK 1): the sandbox random-traffic
+    // spawner's concurrency ceiling. Was a hardcoded 80 (a demo-sized fleet); now the `--fleet N` CLI raises
+    // it so a large grid net (e.g. scenarios/_bench/city-15000) can be filled to ~10k for the 60 fps pass.
+    private readonly int _spawnCap;
+    // Per-timer-fire spawn batch: 1 preserves the original demo cadence for small fleets; a large fleet needs
+    // a batch so a warm-up (and replenishment of despawned vehicles) reaches the cap in seconds, not minutes.
+    private readonly int _spawnBatch;
+
     // P1: the runner is rebuilt in place on Restart() (SimHost's BuildSim pattern), so every
     // cross-thread read/rebuild of _engine/_runner is guarded by this lock exactly like SimHost.
     private readonly object _lock = new();
@@ -74,16 +82,21 @@ public sealed class EngineHost : IDisposable
         }
     }
 
-    public EngineHost(string netPath)
+    // `spawnCap` is the sandbox random-traffic concurrency ceiling (default 80 = the original demo fleet;
+    // `--fleet N` passes a large value for the 10k perf pass). `forceSandbox` ignores an adjacent
+    // rou.rou.xml/.sumocfg and drives the net as a random-traffic sandbox even inside a committed scenario
+    // dir -- the perf pass points at scenarios/_bench/city-15000 (a large grid) purely for its geometry and
+    // fills it with a controllable `--fleet` count rather than replaying that scenario's fixed demand.
+    public EngineHost(string netPath, int spawnCap = 80, bool forceSandbox = false)
     {
         _netPath = netPath;
         Network = NetworkParser.Parse(netPath);
         _normalEdges = Network.EdgesById.Keys.Where(e => !e.StartsWith(':')).ToArray();
 
         // Scenario mode iff the net sits beside a rou.rou.xml AND a .sumocfg (a committed scenario dir) --
-        // same detection SimHost uses.
+        // same detection SimHost uses. `forceSandbox` overrides this to sandbox regardless (see ctor doc).
         var dir = Path.GetDirectoryName(Path.GetFullPath(netPath));
-        if (dir is not null)
+        if (dir is not null && !forceSandbox)
         {
             _rouPath = Directory.EnumerateFiles(dir, "*.rou.xml").FirstOrDefault();
             _cfgPath = Directory.EnumerateFiles(dir, "*.sumocfg").FirstOrDefault();
@@ -91,6 +104,11 @@ public sealed class EngineHost : IDisposable
 
         _scenarioMode = _rouPath is not null && _cfgPath is not null;
         _randomTraffic = !_scenarioMode; // sandbox: random traffic is the traffic; scenario: off by default
+
+        _spawnCap = spawnCap;
+        // A big fleet needs a batched replenish (spawnCap/50, min 1) so warm-up/top-up reaches the cap in a
+        // few timer fires; the default 80-vehicle demo keeps the original one-at-a-time cadence.
+        _spawnBatch = spawnCap > 80 ? Math.Max(1, spawnCap / 50) : 1;
 
         double minX = double.PositiveInfinity, minY = double.PositiveInfinity;
         double maxX = double.NegativeInfinity, maxY = double.NegativeInfinity;
@@ -123,14 +141,22 @@ public sealed class EngineHost : IDisposable
         // boundary exactly like the timer's own calls -- purely additive, same code path.
         if (_randomTraffic)
         {
-            for (var i = 0; i < 60; i++)
+            // Front-load ~one burst per cap slot. All these posts queue before the first tick advances the
+            // count, so the cap gate can't yet throttle them -- posting exactly `_spawnCap` (not more) keeps
+            // the initial fill from overshooting the target fleet; routing failures leave it slightly under
+            // and the batched timer below tops it up to the cap.
+            var burst = _spawnCap > 80 ? _spawnCap : 60;
+            for (var i = 0; i < burst; i++)
             {
                 SpawnOne();
             }
         }
 
-        // Keep replenishing traffic thereafter (vehicles that reach their destination despawn).
-        _spawnTimer = new Timer(_ => SpawnOne(), null, dueTime: 500, period: 900);
+        // Keep replenishing traffic thereafter (vehicles that reach their destination despawn). Fires a
+        // batch of `_spawnBatch` attempts (1 for the small demo, spawnCap/50 for a large fleet).
+        _spawnTimer = new Timer(
+            _ => { for (var i = 0; i < _spawnBatch; i++) SpawnOne(); },
+            null, dueTime: 500, period: 900);
     }
 
     // (Re)build the engine + runner from scratch, at t=0 -- SimHost's BuildSim pattern. Under _lock so
@@ -291,7 +317,7 @@ public sealed class EngineHost : IDisposable
 
         lock (_lock)
         {
-            if (_runner.Snapshot.Count > 80)
+            if (_runner.Snapshot.Count > _spawnCap)
             {
                 return;
             }

@@ -75,8 +75,23 @@ public static class Renderer
         };
     }
 
+    // Full-world draw (roads + dynamic overlay). Retained for any non-cached caller; the interactive/perf
+    // loop instead calls DrawStaticWorld (once per camera change, into a RoadLayerCache RenderTexture) plus
+    // DrawDynamicWorld (every frame) so a huge static net (e.g. scenarios/_bench/city-15000, ~13k edges) is
+    // not re-stroked every frame -- docs/SUMOSHARP-NATIVE-VIEWER-TESTING.md TASK 1.
     public static void DrawWorld(Camera2D camera, NetworkModel network, SimulationSnapshot snapshot, EngineHost host)
     {
+        DrawStaticWorld(camera, network);
+        DrawDynamicWorld(camera, network, snapshot, host);
+    }
+
+    // The camera-static half of the world: background + roads + lane markings. Identical output to the road
+    // passes DrawWorld used to inline -- factored out so RoadLayerCache can bake it into a RenderTexture and
+    // re-run it ONLY when the camera changes (pan/zoom), not every frame. Clears the background itself so the
+    // baked texture is opaque and its blit fully replaces the frame's ClearBackground.
+    public static void DrawStaticWorld(Camera2D camera, NetworkModel network)
+    {
+        Raylib.ClearBackground(Background);
         Raylib.BeginMode2D(camera);
 
         // Roads: a dark casing under a lighter lane fill, each lane drawn as a stroked polyline along its
@@ -146,6 +161,16 @@ public static class Renderer
                 DrawLaneChevron(shape, chevronSize, LaneChevron);
             }
         }
+
+        Raylib.EndMode2D();
+    }
+
+    // The per-frame-dynamic half of the world: traffic-light dots (colour changes every step), vehicles, and
+    // injected obstacles. Drawn live every frame over the baked static road layer -- same output as the tail
+    // of the old monolithic DrawWorld.
+    public static void DrawDynamicWorld(Camera2D camera, NetworkModel network, SimulationSnapshot snapshot, EngineHost host)
+    {
+        Raylib.BeginMode2D(camera);
 
         // Traffic-light signals (HtmlPage.cs draw()'s "traffic-light signals" section): a coloured dot at
         // the end (stop line) of each controlled approach lane, index-aligned over [0, TlCount).

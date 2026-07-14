@@ -42,6 +42,8 @@ var frames = 150;
 var delaySeconds = 0.0f;
 (double X, double Y)? dropObstacle = null;
 double? secondsCap = null;
+int? fleet = null;
+var perf = false;
 
 for (var i = 0; i < args.Length; i++)
 {
@@ -64,6 +66,18 @@ for (var i = 0; i < args.Length; i++)
             break;
         case "--seconds":
             secondsCap = double.Parse(args[++i], CultureInfo.InvariantCulture);
+            break;
+        // docs/SUMOSHARP-NATIVE-VIEWER-TESTING.md TASK 1: raise the sandbox spawn cap so a large net can be
+        // filled to ~10k for the 60 fps perf pass. `--fleet` and `--spawn-cap` are aliases.
+        case "--fleet":
+        case "--spawn-cap":
+            fleet = int.Parse(args[++i], CultureInfo.InvariantCulture);
+            break;
+        // Perf-measurement mode for `--mode local`: uncaps the frame rate (so the true render frame time is
+        // measured, not clamped to 16.6 ms) and prints a periodic PERF line (wall / sim time / veh count /
+        // fps / frame-ms avg+p99). Pair with `--seconds N` to auto-exit after the sweep.
+        case "--perf":
+            perf = true;
             break;
         case "--drop-obstacle":
             var parts = args[++i].Split(',');
@@ -100,7 +114,7 @@ if (inputPath is null)
 
 if (mode == "local")
 {
-    return RunLocal(ResolveNetPath(inputPath), screenshotPath, frames, dropObstacle);
+    return RunLocal(ResolveNetPath(inputPath), screenshotPath, frames, dropObstacle, fleet, perf, secondsCap);
 }
 
 if (mode == "loopback")
@@ -129,9 +143,12 @@ static string ResolveNetPath(string path)
     return path;
 }
 
-static int RunLocal(string netPath, string? screenshotPath, int frames, (double X, double Y)? dropObstacle)
+static int RunLocal(string netPath, string? screenshotPath, int frames, (double X, double Y)? dropObstacle,
+    int? fleet, bool perf, double? secondsCap)
 {
-    using var host = new EngineHost(netPath);
+    using var host = fleet is { } cap
+        ? new EngineHost(netPath, spawnCap: cap, forceSandbox: true)
+        : new EngineHost(netPath);
 
     if (dropObstacle is { } drop)
     {
@@ -155,7 +172,13 @@ static int RunLocal(string netPath, string? screenshotPath, int frames, (double 
     // under Xvfb/software GL, finishing before either has had a chance to run even once. Pacing the render
     // loop to a real frame rate gives both wall-clock-driven systems time to actually produce traffic before
     // the screenshot is taken.
-    Raylib.SetTargetFPS(60);
+    // Perf mode measures the TRUE render frame time, so it must NOT clamp to 60 fps (a capped loop would
+    // report a flat 16.6 ms and hide all headroom). Every other run keeps the 60 fps cap for the reasons in
+    // the comment that used to sit here (giving the wall-clock-driven sim/spawner time to produce traffic).
+    if (!perf)
+    {
+        Raylib.SetTargetFPS(60);
+    }
 
     rlImGui.Setup(darkTheme: true, enableDocking: false);
     var io = ImGui.GetIO();
@@ -166,10 +189,16 @@ static int RunLocal(string netPath, string? screenshotPath, int frames, (double 
 
     var camera = Renderer.FitCamera(host.MinX, host.MinY, host.MaxX, host.MaxY, screenW, screenH);
 
+    // TASK 1: cache the static road layer in a RenderTexture, re-baked only on camera change (see
+    // RoadLayerCache) -- the ~13k-edge net is otherwise re-stroked every frame.
+    using var roadLayer = new RoadLayerCache(screenW, screenH);
+
     var headless = screenshotPath is not null;
     var frameCount = 0;
     var frameStats = new FrameStats();
     var showDiagnostics = true; // P1: diagnostics panel default ON, toggled with 'd'
+    var perfWall = Stopwatch.StartNew();
+    var lastPerfLog = 0.0;
 
     // P1 drag-vs-click bookkeeping for the world camera (Camera2D pan/zoom/pick -- see Renderer.Flip's
     // doc comment for the world<->screen convention this camera operates in).
@@ -249,7 +278,8 @@ static int RunLocal(string netPath, string? screenshotPath, int frames, (double 
         }
 
         var snapshot = host.Snapshot;
-        Renderer.DrawWorld(camera, host.Network, snapshot, host);
+        roadLayer.EnsureAndBlit(camera, cam => Renderer.DrawStaticWorld(cam, host.Network));
+        Renderer.DrawDynamicWorld(camera, host.Network, snapshot, host);
 
         Renderer.DrawControlsPanel(host);
         if (showDiagnostics)
@@ -266,6 +296,25 @@ static int RunLocal(string netPath, string? screenshotPath, int frames, (double 
         {
             ExportScreenshot(screenshotPath!);
             break;
+        }
+
+        if (perf)
+        {
+            var wall = perfWall.Elapsed.TotalSeconds;
+            if (wall - lastPerfLog >= 1.0)
+            {
+                var (min, avg, p99) = frameStats.Compute();
+                var snap = host.Snapshot;
+                Console.WriteLine(
+                    $"PERF wall={wall,6:F1}s sim={snap.Time,6:F1}s veh={snap.Count,6} " +
+                    $"fps={Raylib.GetFPS(),4} ms[min={min * 1000f,6:F2} avg={avg * 1000f,6:F2} p99={p99 * 1000f,6:F2}]");
+                lastPerfLog = wall;
+            }
+
+            if (secondsCap is { } capS && wall >= capS)
+            {
+                break;
+            }
         }
     }
 
