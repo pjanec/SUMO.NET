@@ -528,10 +528,11 @@ static int RunLoopback(string netPath, string? screenshotPath, int frames, float
         Thread.Sleep(20);
     }
 
-    const int screenW = 1280;
-    const int screenH = 800;
+    var screenW = 1280;
+    var screenH = 800;
 
     Raylib.SetTraceLogLevel(TraceLogLevel.Warning);
+    Raylib.SetConfigFlags(ConfigFlags.ResizableWindow);
     Raylib.InitWindow(screenW, screenH, "SumoSharp - native viewer (loopback DR)");
     if (!Raylib.IsWindowReady())
     {
@@ -579,6 +580,13 @@ static int RunLoopback(string netPath, string? screenshotPath, int frames, float
         if (Raylib.IsKeyPressed(KeyboardKey.D))
         {
             showDiagnostics = !showDiagnostics;
+        }
+
+        if (Raylib.IsWindowResized() && !Raylib.IsWindowMinimized())
+        {
+            var w = Raylib.GetScreenWidth();
+            var h = Raylib.GetScreenHeight();
+            if (w > 0 && h > 0) { screenW = w; screenH = h; camera.Offset = new Vector2(w / 2f, h / 2f); }
         }
 
         // Publish at the SIM cadence (gated on the snapshot's own Time advancing), not the 60 Hz render
@@ -692,10 +700,11 @@ static int RunRemote(string? screenshotPath, int frames, float initialDelaySecon
     using var participant = new DdsParticipant();
     using var subscriber = new DdsSubscriber(participant);
 
-    const int screenW = 1280;
-    const int screenH = 800;
+    var screenW = 1280;
+    var screenH = 800;
 
     Raylib.SetTraceLogLevel(TraceLogLevel.Warning);
+    Raylib.SetConfigFlags(ConfigFlags.ResizableWindow);
     Raylib.InitWindow(screenW, screenH, "SumoSharp - native viewer (remote)");
     if (!Raylib.IsWindowReady())
     {
@@ -744,6 +753,13 @@ static int RunRemote(string? screenshotPath, int frames, float initialDelaySecon
         if (Raylib.IsKeyPressed(KeyboardKey.D))
         {
             showDiagnostics = !showDiagnostics;
+        }
+
+        if (Raylib.IsWindowResized() && !Raylib.IsWindowMinimized())
+        {
+            var w = Raylib.GetScreenWidth();
+            var h = Raylib.GetScreenHeight();
+            if (w > 0 && h > 0) { screenW = w; screenH = h; camera.Offset = new Vector2(w / 2f, h / 2f); }
         }
 
         PumpAndBuildVehicleDraws(subscriber, drClock, delaySlider, smooth, frameStats, smoothed, vehicleDraws);

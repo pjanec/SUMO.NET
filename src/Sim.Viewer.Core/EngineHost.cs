@@ -44,6 +44,7 @@ public sealed class EngineHost : IDisposable
 
     private Timer? _spawnTimer;
     private volatile bool _randomTraffic;
+    private volatile bool _paused;
     private string? _stepCfgPath; // temp .sumocfg for a non-default sandbox step length (see WriteStepLengthConfig)
 
     // Two decoupled viewer knobs (native-viewer controls panel):
@@ -100,6 +101,20 @@ public sealed class EngineHost : IDisposable
     // Turn the runtime random-traffic spawner on/off (independent of mode) -- SimHost's SetRandomTraffic.
     public void SetRandomTraffic(bool on) => _randomTraffic = on;
 
+    // Pause/resume the background sim tick (SimulationRunner.Pause/Resume). Remembered so a Restart's fresh
+    // runner re-applies it. Rendering keeps running while paused -- the view just holds the last frame.
+    public bool IsPaused => _paused;
+
+    public void SetPaused(bool paused)
+    {
+        _paused = paused;
+        lock (_lock)
+        {
+            if (paused) _runner.Pause();
+            else _runner.Resume();
+        }
+    }
+
     // Playback speed (x real-time) and sim step length (s), for the UI + diagnostics.
     public double Speed => _speed;
     public double StepLength => _stepLength;
@@ -124,6 +139,13 @@ public sealed class EngineHost : IDisposable
     // (scenario mode keeps its own .sumocfg step-length). No-op if unchanged.
     public void SetStepLength(double stepLength)
     {
+        // Scenario mode's step-length is fixed by its own .sumocfg -- don't override it (and keep _stepLength
+        // at the value the speed formula assumes). The resolution knob is a sandbox-only control.
+        if (_scenarioMode)
+        {
+            return;
+        }
+
         var clamped = Math.Clamp(stepLength, 0.05, 1.0);
         if (Math.Abs(clamped - _stepLength) < 1e-9)
         {
@@ -268,6 +290,7 @@ public sealed class EngineHost : IDisposable
             // the user's chosen rate).
             runner.Start(targetHz: BaseTickHz);
             runner.SpeedMultiplier = _speed / (BaseTickHz * _stepLength);
+            if (_paused) runner.Pause();
 
             _engine = engine;
             _runner = runner;

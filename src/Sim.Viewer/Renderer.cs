@@ -311,6 +311,12 @@ public static class Renderer
             host.ClearObstacles();
         }
 
+        ImGui.SameLine();
+        if (ImGui.Button(host.IsPaused ? "resume" : "pause"))
+        {
+            host.SetPaused(!host.IsPaused);
+        }
+
         var randomTraffic = host.RandomTraffic;
         if (ImGui.Checkbox("inject random traffic", ref randomTraffic))
         {
@@ -589,7 +595,7 @@ public static class Renderer
     public static void DrawLoopbackControlsPanel(EngineHost host, ref float delaySeconds, ref bool smooth)
     {
         ImGui.SetNextWindowPos(new Vector2(10, 10), ImGuiCond.FirstUseEver);
-        ImGui.SetNextWindowSize(new Vector2(380, 230), ImGuiCond.FirstUseEver);
+        ImGui.SetNextWindowSize(new Vector2(380, 370), ImGuiCond.FirstUseEver);
         ImGui.Begin("SumoSharp - controls (loopback)");
         ImGui.Text(host.ScenarioMode ? "mode: SCENARIO" : "mode: SANDBOX");
         ImGui.Separator();
@@ -604,10 +610,43 @@ public static class Renderer
             host.ClearObstacles();
         }
 
+        ImGui.SameLine();
+        if (ImGui.Button(host.IsPaused ? "resume" : "pause"))
+        {
+            host.SetPaused(!host.IsPaused);
+        }
+
         var randomTraffic = host.RandomTraffic;
         if (ImGui.Checkbox("inject random traffic", ref randomTraffic))
         {
             host.SetRandomTraffic(randomTraffic);
+        }
+
+        // Sim controls (loopback owns the engine, so these apply here, unlike view-only remote). See
+        // DrawControlsPanel for the semantics of speed (x real-time, live) and sim resolution (step-length,
+        // rebuilds).
+        var speed = (float)host.Speed;
+        if (ImGui.SliderFloat("speed", ref speed, 0.25f, 10f, "%.2fx real-time"))
+        {
+            host.SetSpeed(speed);
+        }
+
+        // Sim resolution is a sandbox-only control (scenario mode's step-length is fixed by its .sumocfg).
+        if (host.ScenarioMode)
+        {
+            ImGui.Text($"sim resolution: {1.0 / host.StepLength:F0}Hz (scenario-fixed)");
+        }
+        else
+        {
+            var hz = (int)Math.Round(1.0 / host.StepLength);
+            ImGui.Text("sim resolution (restarts):");
+            if (ImGui.RadioButton("1Hz", hz == 1)) host.SetStepLength(1.0);
+            ImGui.SameLine();
+            if (ImGui.RadioButton("2Hz", hz == 2)) host.SetStepLength(0.5);
+            ImGui.SameLine();
+            if (ImGui.RadioButton("5Hz", hz == 5)) host.SetStepLength(0.2);
+            ImGui.SameLine();
+            if (ImGui.RadioButton("10Hz", hz == 10)) host.SetStepLength(0.1);
         }
 
         ImGui.Separator();
@@ -622,8 +661,8 @@ public static class Renderer
     public static void DrawDdsDiagnosticsPanel(FrameStats frameStats, DrClock clock, double ddsSamplesPerSecond, int vehicleCount)
     {
         var (min, avg, p99) = frameStats.Compute();
-        ImGui.SetNextWindowPos(new Vector2(10, 250), ImGuiCond.FirstUseEver);
-        ImGui.SetNextWindowSize(new Vector2(380, 190), ImGuiCond.FirstUseEver);
+        ImGui.SetNextWindowPos(new Vector2(10, 390), ImGuiCond.FirstUseEver);
+        ImGui.SetNextWindowSize(new Vector2(380, 210), ImGuiCond.FirstUseEver);
         // Shared by loopback and remote (P3 refactor) -- neither the title nor the content depends on
         // which of the two owns a local publisher, so one panel covers both.
         ImGui.Begin("SumoSharp - diagnostics (dds)");
@@ -634,6 +673,7 @@ public static class Renderer
         ImGui.Text($"renderSim: {clock.RenderSim:F2}s   simRate: {clock.SimRate:F2}/s");
         ImGui.Text($"clock back-steps: {clock.BackSteps}   delay: {clock.EffectiveDelay:F2}s");
         ImGui.Text($"vehicles: {vehicleCount}");
+        ImGui.Text($"GC gen0/1/2: {GC.CollectionCount(0)} / {GC.CollectionCount(1)} / {GC.CollectionCount(2)}");
         ImGui.End();
     }
 
