@@ -61,3 +61,5 @@ scenarios/**/combined.fcd.xml
 
 # Dear ImGui writes its window layout here (native viewer, Sim.Viewer); local-only.
 imgui.ini
+# CycloneDDS writes a runtime log to the CWD on viewer DDS runs (loopback/publish/remote); local-only.
+cyclonedds.log

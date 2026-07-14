@@ -44,6 +44,7 @@ var delaySeconds = 0.0f;
 double? secondsCap = null;
 int? fleet = null;
 var perf = false;
+double? simRate = null;
 
 for (var i = 0; i < args.Length; i++)
 {
@@ -78,6 +79,11 @@ for (var i = 0; i < args.Length; i++)
         // fps / frame-ms avg+p99). Pair with `--seconds N` to auto-exit after the sweep.
         case "--perf":
             perf = true;
+            break;
+        // Preset the live sim rate (Steps == 1s-of-sim-time each, per wall-clock second) for `--mode local`,
+        // the same knob the controls-panel slider drives -- handy for scripted perf runs at a fixed rate.
+        case "--sim-rate":
+            simRate = double.Parse(args[++i], CultureInfo.InvariantCulture);
             break;
         case "--drop-obstacle":
             var parts = args[++i].Split(',');
@@ -114,7 +120,7 @@ if (inputPath is null)
 
 if (mode == "local")
 {
-    return RunLocal(ResolveNetPath(inputPath), screenshotPath, frames, dropObstacle, fleet, perf, secondsCap);
+    return RunLocal(ResolveNetPath(inputPath), screenshotPath, frames, dropObstacle, fleet, perf, secondsCap, simRate);
 }
 
 if (mode == "loopback")
@@ -144,11 +150,16 @@ static string ResolveNetPath(string path)
 }
 
 static int RunLocal(string netPath, string? screenshotPath, int frames, (double X, double Y)? dropObstacle,
-    int? fleet, bool perf, double? secondsCap)
+    int? fleet, bool perf, double? secondsCap, double? simRate)
 {
     using var host = fleet is { } cap
         ? new EngineHost(netPath, spawnCap: cap, forceSandbox: true)
         : new EngineHost(netPath);
+
+    if (simRate is { } rate)
+    {
+        host.SetSimStepsPerSecond(rate);
+    }
 
     if (dropObstacle is { } drop)
     {
@@ -172,13 +183,11 @@ static int RunLocal(string netPath, string? screenshotPath, int frames, (double 
     // under Xvfb/software GL, finishing before either has had a chance to run even once. Pacing the render
     // loop to a real frame rate gives both wall-clock-driven systems time to actually produce traffic before
     // the screenshot is taken.
-    // Perf mode measures the TRUE render frame time, so it must NOT clamp to 60 fps (a capped loop would
-    // report a flat 16.6 ms and hide all headroom). Every other run keeps the 60 fps cap for the reasons in
-    // the comment that used to sit here (giving the wall-clock-driven sim/spawner time to produce traffic).
-    if (!perf)
-    {
-        Raylib.SetTargetFPS(60);
-    }
+    // Render FPS cap, live-adjustable from the controls panel (30 / 60 / unlimited). Default 60 -- rendering
+    // at the hundreds of fps the GPU allows for a 10 Hz sim is wasted work. `--perf` starts unlimited (0) so
+    // the measurement sees the true render frame time instead of a flat 16.6 ms. 0 = no cap.
+    var fpsCap = perf ? 0 : 60;
+    Raylib.SetTargetFPS(fpsCap);
 
     rlImGui.Setup(darkTheme: true, enableDocking: false);
     var io = ImGui.GetIO();
@@ -281,7 +290,7 @@ static int RunLocal(string netPath, string? screenshotPath, int frames, (double 
         roadLayer.EnsureAndBlit(camera, cam => Renderer.DrawStaticWorld(cam, host.Network));
         Renderer.DrawDynamicWorld(camera, host.Network, snapshot, host);
 
-        Renderer.DrawControlsPanel(host);
+        Renderer.DrawControlsPanel(host, ref fpsCap);
         if (showDiagnostics)
         {
             Renderer.DrawDiagnosticsPanel(snapshot, frameStats);

@@ -318,10 +318,13 @@ public static class Renderer
     // P1 controls panel (SUMOSHARP-NATIVE-VIEWER.md P1): mode label, restart, clear obstacles, and the
     // random-traffic toggle. Sized explicitly (SetNextWindowSize) so its text is never clipped -- P0's HUD
     // was cut off at the default auto-size. Must be called between rlImGui.Begin()/End() (see Program.cs).
-    public static void DrawControlsPanel(EngineHost host)
+    // `fpsCap` is the render frame-rate cap in fps, with 0 meaning "unlimited"; the radio here mutates it and
+    // pushes the change straight to Raylib.SetTargetFPS so the choice takes effect on the next frame. It's a
+    // ref because Program.cs owns the value (it sets the initial cap before the loop) -- see RunLocal.
+    public static void DrawControlsPanel(EngineHost host, ref int fpsCap)
     {
         ImGui.SetNextWindowPos(new Vector2(10, 10), ImGuiCond.FirstUseEver);
-        ImGui.SetNextWindowSize(new Vector2(360, 175), ImGuiCond.FirstUseEver);
+        ImGui.SetNextWindowSize(new Vector2(360, 300), ImGuiCond.FirstUseEver);
         ImGui.Begin("SumoSharp - controls");
         ImGui.Text(host.ScenarioMode ? "mode: SCENARIO" : "mode: SANDBOX");
         ImGui.Separator();
@@ -342,6 +345,27 @@ public static class Renderer
             host.SetRandomTraffic(randomTraffic);
         }
 
+        ImGui.Separator();
+
+        // Sim update rate: continuous slider over Steps/s (each Step = 1s of sim time), i.e. how many sim
+        // ticks the background runner does per wall-clock second. 1 = real-time, 10 = the default 10x
+        // fast-forward. Drives EngineHost.SetSimStepsPerSecond (SpeedMultiplier) live, without a restart.
+        var simRate = (float)host.SimStepsPerSecond;
+        if (ImGui.SliderFloat("sim steps/s", ref simRate, 1f, 20f, "%.1f"))
+        {
+            host.SetSimStepsPerSecond(simRate);
+        }
+
+        // Render FPS cap: 30 / 60 / unlimited. Rendering at the hundreds of fps the GPU allows for a 10 Hz
+        // sim is wasted work, so default to a real cap; "unlimited" (0) stays available for perf measurement.
+        ImGui.Text("render fps cap:");
+        ImGui.SameLine();
+        if (ImGui.RadioButton("30", fpsCap == 30)) { fpsCap = 30; Raylib.SetTargetFPS(30); }
+        ImGui.SameLine();
+        if (ImGui.RadioButton("60", fpsCap == 60)) { fpsCap = 60; Raylib.SetTargetFPS(60); }
+        ImGui.SameLine();
+        if (ImGui.RadioButton("unlimited", fpsCap == 0)) { fpsCap = 0; Raylib.SetTargetFPS(0); }
+
         ImGui.TextWrapped("click a road to drop an obstacle - drag to pan - wheel to zoom - 'd' toggles diagnostics");
         ImGui.End();
     }
@@ -352,7 +376,7 @@ public static class Renderer
     public static void DrawDiagnosticsPanel(SimulationSnapshot snapshot, FrameStats frameStats)
     {
         var (min, avg, p99) = frameStats.Compute();
-        ImGui.SetNextWindowPos(new Vector2(10, 195), ImGuiCond.FirstUseEver);
+        ImGui.SetNextWindowPos(new Vector2(10, 320), ImGuiCond.FirstUseEver);
         ImGui.SetNextWindowSize(new Vector2(360, 150), ImGuiCond.FirstUseEver);
         ImGui.Begin("SumoSharp - diagnostics");
         ImGui.Text($"fps: {Raylib.GetFPS()}");

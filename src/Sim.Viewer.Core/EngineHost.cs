@@ -44,6 +44,14 @@ public sealed class EngineHost : IDisposable
     private Timer? _spawnTimer;
     private volatile bool _randomTraffic;
 
+    // Live sim-rate knob (native-viewer controls panel). The SimulationRunner ticks at BaseTickHz wall-clock
+    // and each tick Steps one step-length (1s) of sim time, so "sim steps per second" == effective ticks/s ==
+    // BaseTickHz * SpeedMultiplier. We drive SpeedMultiplier (a public, per-tick-read runner knob) rather than
+    // restarting the runner, so the rate changes live without resetting the sim. Remembered here so Restart()
+    // (which rebuilds the runner) can re-apply it.
+    private const double BaseTickHz = 10.0;
+    private double _simStepsPerSecond = BaseTickHz;
+
     public NetworkModel Network { get; }
 
     public double MinX { get; }
@@ -69,6 +77,21 @@ public sealed class EngineHost : IDisposable
 
     // Turn the runtime random-traffic spawner on/off (independent of mode) -- SimHost's SetRandomTraffic.
     public void SetRandomTraffic(bool on) => _randomTraffic = on;
+
+    // Current live sim rate in Steps (== 1s of sim time each) per wall-clock second, for the UI slider.
+    public double SimStepsPerSecond => _simStepsPerSecond;
+
+    // Set the live sim rate (Steps per wall-clock second). Applied immediately to the running runner via
+    // SpeedMultiplier and remembered so a Restart()'s fresh runner picks up the same rate. Clamped to a sane
+    // positive range so the slider can't stall (0) or ask for an absurd catch-up.
+    public void SetSimStepsPerSecond(double stepsPerSecond)
+    {
+        _simStepsPerSecond = Math.Clamp(stepsPerSecond, 0.5, 60.0);
+        lock (_lock)
+        {
+            _runner.SpeedMultiplier = _simStepsPerSecond / BaseTickHz;
+        }
+    }
 
     // Thread-safe snapshot of injected obstacle world-points, for the renderer's red-X marker.
     public IReadOnlyList<(double X, double Y)> ObstaclePoints
@@ -184,8 +207,11 @@ public sealed class EngineHost : IDisposable
             var runner = new SimulationRunner(engine);
             runner.EnableSnapshotPool(capacity: 3);
             // Local mode has no dead reckoning to smooth over sparse updates, so a higher rate than the web
-            // demo's 2 Hz is fine -- the renderer draws the authoritative Snapshot every frame.
-            runner.Start(targetHz: 10.0);
+            // demo's 2 Hz is fine -- the renderer draws the authoritative Snapshot every frame. The live
+            // sim-rate slider drives SpeedMultiplier on top of this base (re-applied here so a Restart keeps
+            // the user's chosen rate).
+            runner.Start(targetHz: BaseTickHz);
+            runner.SpeedMultiplier = _simStepsPerSecond / BaseTickHz;
 
             _engine = engine;
             _runner = runner;
