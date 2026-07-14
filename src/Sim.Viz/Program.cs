@@ -33,6 +33,7 @@ internal static class Program
             Console.Error.WriteLine("usage: Sim.Viz <scenarioDir> [--fcd <path>]");
             Console.Error.WriteLine("       Sim.Viz --bundle <outPath>");
             Console.Error.WriteLine("       Sim.Viz --evac-organic <outPath>");
+            Console.Error.WriteLine("       Sim.Viz --evac-city <outPath>");
             return args.Length == 0 ? 2 : 0;
         }
 
@@ -40,8 +41,54 @@ internal static class Program
         {
             "--bundle" => RunBundle(args),
             "--evac-organic" => RunEvacOrganic(args),
+            "--evac-city" => RunEvacCity(args),
             _ => RunSingle(args),
         };
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // Standalone 10k-city evac mode (PANIC-EVAC-PHASE5-TIER2-TASKS.md T2.6): emits JUST the one
+    // scene, kept OUT of --bundle and --evac-organic (SceneGen.BuildEvacCity already bounds its own
+    // payload via region-crop -- see the "region-crop:" console line it prints -- but it is still a
+    // dedicated multi-MB scene reviewed on its own).
+    // ---------------------------------------------------------------------------------------
+    private static int RunEvacCity(string[] args)
+    {
+        if (args.Length < 2)
+        {
+            Console.Error.WriteLine("error: --evac-city requires an output path");
+            return 2;
+        }
+
+        var outPath = args[1];
+        var repoRoot = RepoRoot();
+
+        var scene = SceneGen.BuildEvacCity(repoRoot);
+        var payload = new ReplayData(new[] { scene });
+        if (!WriteHtml(payload, scene.Name, outPath))
+        {
+            return 2;
+        }
+
+        var vehicleSlots = scene.Frames.Length > 0 ? scene.Frames[0].V.Length : 0;
+
+        var pedestrianDiscs = 0;
+        foreach (var frame in scene.Frames)
+        {
+            foreach (var d in frame.D)
+            {
+                if (d is { Length: > 3 } && (d[3] == SceneGen.KindFleeing || d[3] == SceneGen.KindEscaped))
+                {
+                    pedestrianDiscs++;
+                }
+            }
+        }
+
+        var size = new FileInfo(outPath).Length;
+        Console.WriteLine(
+            $"wrote {outPath}  ({size} bytes, {size / 1024.0 / 1024.0:F2} MiB)  frames={scene.Frames.Length} " +
+            $"vehicleSlots={vehicleSlots} pedestrianDiscs={pedestrianDiscs}");
+        return 0;
     }
 
     // ---------------------------------------------------------------------------------------

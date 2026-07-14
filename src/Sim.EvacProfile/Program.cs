@@ -39,6 +39,11 @@ internal static class Program
             return RunMicrobench();
         }
 
+        if (Array.IndexOf(args, "--city") >= 0)
+        {
+            return RunCity(args);
+        }
+
         var repoRoot = RepoRoot();
         var (engine, director) = EvacOrganicScenario.Build(repoRoot);
         director.EnableProfiling();
@@ -115,6 +120,116 @@ internal static class Program
 
         return 0;
     }
+
+    // PANIC-EVAC-PHASE5-TIER2-DESIGN.md §3d/§5(3) / TASKS T2.7: the Tier-2 closing deliverable. Runs
+    // EvacCityScenario (the committed 10k-class city-15000 host, design §3a option A) TWICE -- Tier-2
+    // spatial hashes OFF then ON -- and prints the same per-phase breakdown T4.2 does for each run,
+    // plus the speedup on the two measured hotspots (pusher/pedestrian step) and a separate auto-track
+    // scan verdict (is its O(city) cost material at this scale?). `--city [ticks]` -- ticks defaults
+    // to 300 (mirrors the organic profile's run length); pass a smaller number for a quick check.
+    private static int RunCity(string[] args)
+    {
+        var ticks = DefaultCityTicks;
+        var cityArgIdx = Array.IndexOf(args, "--city");
+        if (cityArgIdx + 1 < args.Length && int.TryParse(args[cityArgIdx + 1], out var parsedTicks))
+        {
+            ticks = parsedTicks;
+        }
+
+        var repoRoot = RepoRoot();
+
+        CityRun RunOnce(bool useSpatialHash)
+        {
+            var config = EvacCityScenario.DefaultConfig() with { UseCrowdSpatialHash = useSpatialHash };
+            var (engine, director) = EvacCityScenario.Build(repoRoot, config: config);
+            director.EnableProfiling();
+
+            var peakActive = 0;
+            var sw = Stopwatch.StartNew();
+            for (var step = 0; step < ticks; step++)
+            {
+                director.Tick();
+                peakActive = Math.Max(peakActive, engine.VehicleHandles.Length);
+            }
+
+            sw.Stop();
+
+            return new CityRun(
+                useSpatialHash, sw.Elapsed.TotalMilliseconds, director.Profile, peakActive,
+                director.TrackedCount, director.PanickedCount, director.ConvertedCount,
+                director.PusherCount, director.PedestrianCount);
+        }
+
+        Console.WriteLine("=== T2.7 evac cost profile: city-15000 (EvacCityScenario), hashes OFF vs ON ===");
+        Console.WriteLine($"scenario           : scenarios/_bench/city-15000 (24x24 grid, 1 lane, ~13-17k peak concurrent)");
+        Console.WriteLine($"ticks              : {ticks}  (stepLength=1.0s)");
+        Console.WriteLine();
+
+        var off = RunOnce(useSpatialHash: false);
+        var on = RunOnce(useSpatialHash: true);
+
+        void PrintRun(string label, CityRun r)
+        {
+            Console.WriteLine($"--- {label} (UseCrowdSpatialHash={r.UseSpatialHash}) ---");
+            Console.WriteLine($"peak concurrent (city-wide) : {r.PeakActive}");
+            Console.WriteLine($"tracked working-region pop. : {r.TrackedCount}");
+            Console.WriteLine($"panicked / converted        : {r.Panicked} / {r.Converted}");
+            Console.WriteLine($"pushers (ever) / pedestrians : {r.PusherCount} / {r.Pedestrians}");
+            Console.WriteLine($"total generation wall time  : {r.TotalMs:F1} ms  ({r.TotalMs / 1000.0:F3} s)");
+            Console.WriteLine("per-phase breakdown:");
+            PrintPhaseRow("fear update", r.Profile.FearUpdate.TotalMilliseconds, r.TotalMs);
+            PrintPhaseRow("disc feeds", r.Profile.DiscFeeds.TotalMilliseconds, r.TotalMs);
+            PrintPhaseRow("pedestrian step", r.Profile.PedestrianStep.TotalMilliseconds, r.TotalMs);
+            PrintPhaseRow("pusher step", r.Profile.PusherStep.TotalMilliseconds, r.TotalMs);
+            PrintPhaseRow("engine.Step", r.Profile.EngineStep.TotalMilliseconds, r.TotalMs);
+            PrintPhaseRow("auto-track scan", r.Profile.AutoTrackScan.TotalMilliseconds, r.TotalMs);
+            Console.WriteLine();
+        }
+
+        PrintRun("OFF (brute force)", off);
+        PrintRun("ON  (spatial hash)", on);
+
+        double Speedup(double offMs, double onMs) => onMs > 0 ? offMs / onMs : double.PositiveInfinity;
+
+        var pusherSpeedup = Speedup(off.Profile.PusherStep.TotalMilliseconds, on.Profile.PusherStep.TotalMilliseconds);
+        var pedSpeedup = Speedup(off.Profile.PedestrianStep.TotalMilliseconds, on.Profile.PedestrianStep.TotalMilliseconds);
+
+        Console.WriteLine("=== before/after summary ===");
+        Console.WriteLine(
+            $"pusher step      : {off.Profile.PusherStep.TotalMilliseconds,9:F1} ms -> " +
+            $"{on.Profile.PusherStep.TotalMilliseconds,9:F1} ms   ({pusherSpeedup,6:F2}x)");
+        Console.WriteLine(
+            $"pedestrian step  : {off.Profile.PedestrianStep.TotalMilliseconds,9:F1} ms -> " +
+            $"{on.Profile.PedestrianStep.TotalMilliseconds,9:F1} ms   ({pedSpeedup,6:F2}x)");
+        Console.WriteLine(
+            $"total generation : {off.TotalMs,9:F1} ms -> {on.TotalMs,9:F1} ms   ({Speedup(off.TotalMs, on.TotalMs),6:F2}x)");
+        Console.WriteLine();
+
+        // Auto-track scan verdict: report the ON run's number (the run that matters -- the ON run is
+        // the one the demo actually ships with) as a % of that run's total tick time. design §3d: only
+        // optimize the O(city) scan if the measurement shows it material; no speculative work.
+        var autoTrackMs = on.Profile.AutoTrackScan.TotalMilliseconds;
+        var autoTrackPct = on.TotalMs > 0 ? autoTrackMs / on.TotalMs : 0.0;
+        const double materialThresholdPct = 0.05;   // 5% of tick time -- design's "material" bar
+        var verdict = autoTrackPct >= materialThresholdPct
+            ? "MATERIAL -- the O(city) auto-track scan should get its own optimization (T2.8 candidate: " +
+              "a coarse world-grid pre-filter over the read buffer, or an incremental entrant set)."
+            : "NOT material at this scale -- no optimization warranted (design §3d: measurement-gated, no speculative work).";
+        Console.WriteLine(
+            $"AUTO-TRACK SCAN VERDICT: {autoTrackMs:F1} ms total ({autoTrackPct:P1} of ON run's tick time, " +
+            $"peak concurrent {on.PeakActive}). {verdict}");
+
+        return 0;
+    }
+
+    private const int DefaultCityTicks = 300;
+
+    private readonly record struct CityRun(
+        bool UseSpatialHash, double TotalMs, ProfileSnapshot Profile, int PeakActive, int TrackedCount,
+        int Panicked, int Converted, int PusherCount, int Pedestrians);
+
+    private static void PrintPhaseRow(string name, double ms, double totalMs) =>
+        Console.WriteLine($"  {name,-18} {ms,9:F1} ms   {(totalMs > 0 ? ms / totalMs : 0.0),6:P1}");
 
     // T2.3: synthetic heavy-load microbenchmark for the two Tier-2 spatial-hash solvers. For each
     // solver and each N, builds two crowds -- brute-force and grid (UseSpatialHash) -- placed

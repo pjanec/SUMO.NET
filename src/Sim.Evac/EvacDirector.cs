@@ -206,7 +206,9 @@ public sealed class EvacDirector
     // activity/radius internally, so nothing seeds without a live, in-range, visible incident).
     private void PreStep()
     {
+        var autoTrackStart = _profiler?.Begin() ?? 0L;
         AutoTrackWorkingRegion();
+        _profiler?.End(autoTrackStart, EvacProfiler.Phase.AutoTrackScan);
 
         var discFeedsStart = _profiler?.Begin() ?? 0L;
         FeedVehicleDiscsToPeds();
@@ -552,6 +554,14 @@ public sealed class EvacDirector
     // `Track`ed, or auto-tracked into the working region) -- distinguishes "never entered the region"
     // from "tracked, then despawned/converted" (IsAlive is false for both).
     public bool IsTracked(VehicleHandle h) => _veh.ContainsKey(h);
+
+    // PANIC-EVAC-PHASE5-TIER2-DESIGN.md §3b/§5(3) (T2.5): total distinct vehicles ever auto-tracked
+    // (or explicitly Tracked) into the working region over the run. `_veh` entries are added by
+    // Track() and NEVER removed (a converted/despawned vehicle's VehState just flips Alive=false), so
+    // this count is monotonically non-decreasing and IS "the tracked working-region population" the
+    // city-scale demo must land in the hundreds->low-thousands range -- proof the crowd solvers are
+    // actually being stressed at 10k, not just the parity engine.
+    public int TrackedCount => _veh.Count;
 
     public bool IsPanicked(VehicleHandle h) => _veh.TryGetValue(h, out var s) && s.Panicked;
     public bool IsConverted(VehicleHandle h) => _veh.TryGetValue(h, out var s) && s.Converted;

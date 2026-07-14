@@ -857,6 +857,223 @@ internal static class SceneGen
             boundary);
     }
 
+    // ---------------------------------------------------------------------------------------
+    // Scene -- "Panic evacuation (10k city)" (PANIC-EVAC-PHASE5-TIER2-DESIGN.md §3b/§3c, TASKS T2.6):
+    // the Tier-2 CITY-SCALE evac. Drives EvacCityScenario (scenarios/_bench/city-15000, ~13-17k peak
+    // concurrent) exactly the way BuildEvacOrganic drives EvacOrganicScenario -- fear-tinted vehicle
+    // frames, stable-keyed pedestrian/abandoned-car/pusher discs, hard-edge boundary, incident overlay
+    // -- but a 10k-car x N-frame payload at FULL per-vehicle detail would be tens of MB (design §3c),
+    // so this builder adds a REGION-CROP compaction pass after the raw run: every vehicle the evac
+    // layer ever auto-tracked into the working region (director.IsTracked) keeps full per-frame detail
+    // (it's the thing the demo is actually about); every other ("distant") vehicle is either dropped
+    // entirely or kept as a decimated sample (every k-th by first-seen slot order) so the city still
+    // reads as populated in the background. The exact counts are ALWAYS logged to the console (no
+    // silent truncation) -- see the "region-crop:" line below.
+    // ---------------------------------------------------------------------------------------
+    internal const int DistantSampleEvery = 20;   // keep 1 in 20 distant (never-tracked) vehicles
+
+    // PANIC-EVAC-PHASE5-TIER2-DESIGN.md §3c: layered payload bounding -- region-crop (above) alone
+    // still left an 18.6 MB payload at ticks=400 (measured), mostly the per-frame null padding of
+    // thousands of ever-spawned pedestrian disc columns growing with frame count. Frame decimation
+    // (keep every Nth tick's snapshot; the director still TICKS every step, so the simulation itself
+    // is unaffected -- only which snapshots are RECORDED is thinned) cuts every per-frame array
+    // linearly and brings the payload back under the stated budget. Logged like every other drop.
+    internal const int FrameDecimate = 3;   // keep 1 recorded frame per 3 ticks
+
+    internal static ScenePayload BuildEvacCity(string repoRoot, int ticks = 400, int frameDecimate = FrameDecimate)
+    {
+        var scenarioDir = Path.Combine(repoRoot, "scenarios", "_bench", "city-15000");
+        var netPath = Path.Combine(scenarioDir, "net.net.xml");
+        var cfgPath = Path.Combine(scenarioDir, "config.sumocfg");
+
+        var (engine, director) = Sim.Evac.EvacCityScenario.Build(repoRoot);
+        var network = BuildNetwork(NetworkParser.Parse(netPath));
+        var scenarioConfig = ScenarioConfigParser.Parse(cfgPath);
+        var stepLength = scenarioConfig.StepLength > 0 ? scenarioConfig.StepLength : 1.0;
+
+        var slotByHandle = new Dictionary<uint, int>();
+        var everTracked = new HashSet<uint>();
+        var frames = new List<FramePayload>();
+        var discsKeyedPerFrame = new List<List<(string Key, double[] Disc)>>();
+        var recordedFrameCount = 0;
+
+        for (var step = 0; step < ticks; step++)
+        {
+            director.Tick();
+
+            var handles = engine.VehicleHandles;
+            var px = engine.PosX;
+            var py = engine.PosY;
+            var pa = engine.Angle;
+
+            // Tracking bookkeeping runs EVERY tick regardless of frame decimation -- a vehicle that
+            // passes through the working region between two recorded frames must still count as
+            // tracked (region-crop must not silently miss it just because its frame wasn't kept).
+            for (var i = 0; i < handles.Length; i++)
+            {
+                if (!slotByHandle.ContainsKey(handles[i].Index))
+                {
+                    slotByHandle[handles[i].Index] = slotByHandle.Count;
+                }
+
+                if (director.IsTracked(handles[i]))
+                {
+                    everTracked.Add(handles[i].Index);
+                }
+            }
+
+            if ((step + 1) % frameDecimate != 0)
+            {
+                continue;   // thinned tick: simulation advanced, but no frame recorded
+            }
+
+            recordedFrameCount++;
+
+            var v = new double[slotByHandle.Count][];
+            for (var i = 0; i < handles.Length; i++)
+            {
+                var slot = slotByHandle[handles[i].Index];
+                v[slot] = new[] { R(px[i]), R(py[i]), R(pa[i]), R(director.Fear(handles[i])) };
+            }
+
+            var discs = new List<(string, double[])>();
+            for (var i = 0; i < director.PedestrianCount; i++)
+            {
+                var p = director.PedestrianPosition(i);
+                var kind = director.PedestrianEscaped(i) ? KindEscaped : KindFleeing;
+                discs.Add(($"p{i}", new[] { R(p.X), R(p.Y), 0.6, (double)kind }));
+            }
+
+            for (var i = 0; i < director.AbandonedCarCount; i++)
+            {
+                var c = director.AbandonedCar(i);
+                discs.Add(($"a{i}", new[] { R(c.X), R(c.Y), R(c.Radius), (double)KindAbandoned }));
+            }
+
+            foreach (var (handle, px_, py_, headingRad) in director.ActivePushersWithHandle())
+            {
+                var headingDeg = headingRad * 180.0 / Math.PI;
+                discs.Add(($"push{handle.Index}",
+                    new[] { R(px_), R(py_), 2.5, (double)KindPushingCar, R(headingDeg), 0.0, 2.5, 0.9 }));
+            }
+
+            frames.Add(new FramePayload(v, Array.Empty<double[]?>()));
+            discsKeyedPerFrame.Add(discs);
+        }
+
+        NormalizeVehicleSlots(frames, slotByHandle.Count);
+        AssignStableDiscSlots(frames, discsKeyedPerFrame);
+
+        // ----- region-crop compaction (§3c): keep every tracked vehicle's column; keep a decimated
+        // sample of distant (never-tracked) columns; drop the rest. Slots kept in original first-seen
+        // order so the mapping stays deterministic. -----
+        var totalSlots = slotByHandle.Count;
+        var handleBySlot = new uint[totalSlots];
+        foreach (var (handleIndex, slot) in slotByHandle)
+        {
+            handleBySlot[slot] = handleIndex;
+        }
+
+        var keptSlots = new List<int>();
+        var distantOrdinal = 0;
+        var sampledDistantCount = 0;
+        for (var slot = 0; slot < totalSlots; slot++)
+        {
+            if (everTracked.Contains(handleBySlot[slot]))
+            {
+                keptSlots.Add(slot);
+                continue;
+            }
+
+            var keepSample = distantOrdinal % DistantSampleEvery == 0;
+            distantOrdinal++;
+            if (keepSample)
+            {
+                keptSlots.Add(slot);
+                sampledDistantCount++;
+            }
+        }
+
+        var droppedCount = totalSlots - keptSlots.Count;
+        Console.WriteLine(
+            $"region-crop: {everTracked.Count} in-region + {sampledDistantCount}/{totalSlots - everTracked.Count} " +
+            $"sampled distant (every {DistantSampleEvery}th); dropped {droppedCount} distant vehicles " +
+            $"(kept {keptSlots.Count}/{totalSlots} total vehicle columns)");
+        Console.WriteLine(
+            $"frame-decimation: kept 1 of every {frameDecimate} ticks -> {recordedFrameCount} recorded frames " +
+            $"of {ticks} simulated ticks (dropped {ticks - recordedFrameCount} intermediate frames; dt scaled " +
+            $"{stepLength:F1}s -> {stepLength * frameDecimate:F1}s between recorded frames)");
+
+        for (var f = 0; f < frames.Count; f++)
+        {
+            var oldV = frames[f].V;
+            var newV = new double[keptSlots.Count][];
+            for (var newSlot = 0; newSlot < keptSlots.Count; newSlot++)
+            {
+                newV[newSlot] = oldV[keptSlots[newSlot]];
+            }
+
+            frames[f] = frames[f] with { V = newV };
+        }
+
+        double minX = double.PositiveInfinity, minY = double.PositiveInfinity;
+        double maxX = double.NegativeInfinity, maxY = double.NegativeInfinity;
+        void Track(double x, double y)
+        {
+            if (x < minX) minX = x;
+            if (y < minY) minY = y;
+            if (x > maxX) maxX = x;
+            if (y > maxY) maxY = y;
+        }
+
+        foreach (var lane in network.Lanes)
+        {
+            for (var p = 0; p < lane.Shape.Length; p += 2) Track(lane.Shape[p], lane.Shape[p + 1]);
+        }
+
+        foreach (var j in network.Junctions)
+        {
+            for (var p = 0; p < j.Shape.Length; p += 2) Track(j.Shape[p], j.Shape[p + 1]);
+        }
+
+        var nm = director.NavMesh;
+        var boundary = new[]
+        {
+            R(nm.MinX), R(nm.MinY), R(nm.MinX), R(nm.MaxY), R(nm.MaxX), R(nm.MaxY), R(nm.MaxX), R(nm.MinY),
+        };
+
+        var incidentSpec = director.Incident;
+        var cfg = Sim.Evac.EvacCityScenario.DefaultConfig();
+        var incident = new[]
+        {
+            R(incidentSpec.X), R(incidentSpec.Y), R(incidentSpec.Radius), R(incidentSpec.StartTime), R(cfg.SafeRadius),
+        };
+
+        var labels = new string[9];
+        labels[4] = "fleeing pedestrian";
+        labels[5] = "escaped pedestrian";
+        labels[6] = "abandoned car";
+        labels[8] = "abandoning car (shoulder)";
+
+        return new ScenePayload(
+            "Panic evacuation (10k city)",
+            "A 10k-vehicle-class city (24x24 grid, 1 lane, ~13-17k peak concurrent); a large central "
+            + "incident triggers panic ONLY in the auto-tracked working region around it -- distant "
+            + "traffic (shown as a thinned sample so the city still reads) stays pure parity lane "
+            + "traffic, untouched by the evac layer. Cars flee toward grid-fringe exits and jam; "
+            + "boxed-in drivers nose onto the shoulder, then abandon (dark-red discs) and flee on foot "
+            + "(cyan, turning green past the safe radius); the dashed rectangle is the known-world hard "
+            + "edge. Driving core = SUMO port; pedestrians + panic = external Sim.Evac layer.",
+            new double[] { R(minX), R(minY), R(maxX), R(maxY) },
+            network,
+            new double[] { 5.0, 1.8 },
+            stepLength * frameDecimate,
+            frames.ToArray(),
+            labels,
+            incident,
+            boundary);
+    }
+
     // Run a pure crowd to convergence, snapshotting disc positions each step and keeping every
     // `decimate`-th snapshot (the frames are dense, so linear interpolation on the front end is
     // ample). Disc kind is per-agent (its stream), captured at Add time.

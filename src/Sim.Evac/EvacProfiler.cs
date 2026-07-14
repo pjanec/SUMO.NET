@@ -18,6 +18,12 @@ public sealed class EvacProfiler
         PedestrianStep,  // PostStep: DrivePedestrians()
         PusherStep,      // PostStep: DriveOrcaPushers()
         EngineStep,      // Tick: the parity core, engine.Step() (context, not an evac cost)
+
+        // PANIC-EVAC-PHASE5-TIER2-DESIGN.md §3d / TASKS T2.7: PreStep's AutoTrackWorkingRegion() scan
+        // -- O(city) per tick (a full read-buffer scan looking for new entrants). Tier-1 folded this
+        // into "other" (< 4%); Tier-2 measures it explicitly at 10k so the auto-track verdict (does it
+        // need its own optimization?) is backed by a number instead of a guess.
+        AutoTrackScan,
     }
 
     private static readonly int PhaseCount = Enum.GetValues<Phase>().Length;
@@ -46,6 +52,7 @@ public sealed class EvacProfiler
             ToSpan(_phaseTicks[(int)Phase.PedestrianStep]),
             ToSpan(_phaseTicks[(int)Phase.PusherStep]),
             ToSpan(_phaseTicks[(int)Phase.EngineStep]),
+            ToSpan(_phaseTicks[(int)Phase.AutoTrackScan]),
             ToSpan(_tickTicks),
             _tickCount);
     }
@@ -63,5 +70,6 @@ public readonly record struct ProfileSnapshot(
     TimeSpan PedestrianStep,
     TimeSpan PusherStep,
     TimeSpan EngineStep,
+    TimeSpan AutoTrackScan,
     TimeSpan TotalTick,
     int TickCount);
