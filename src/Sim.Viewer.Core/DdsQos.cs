@@ -51,4 +51,8 @@ internal static class DdsQos
         DdsApi.dds_qset_history(qos, DdsApi.DDS_HISTORY_KEEP_LAST, depth);
         return qos;
     }
+
+    // NB: the remote-command channel's QoS (reliable + transient-local + deep keep-last) is declared on the
+    // topic TYPE via [DdsQos] on DdsViewerCommand (CycloneDDS.NET code-first DSL), applied automatically -- so
+    // it needs no hand-built handle here.
 }

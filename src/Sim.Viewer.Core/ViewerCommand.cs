@@ -27,10 +27,9 @@ public sealed class DdsCommandWriter : IDisposable
 
     public DdsCommandWriter(DdsParticipant participant)
     {
-        // RELIABLE + TRANSIENT_LOCAL: a command must not be dropped, and a remote that connects before the
-        // publisher still has its latest command delivered once the publisher appears (Seq dedup keeps that
-        // idempotent).
-        _writer = new DdsWriter<DdsViewerCommand>(participant, DdsTopicNames.Commands, DdsQos.DurableLatest());
+        // QoS (reliable + transient-local + deep keep-last) is declared on the topic type via [DdsQos] and
+        // applied automatically -- so the 2-arg ctor (no explicit qos handle) is all that's needed.
+        _writer = new DdsWriter<DdsViewerCommand>(participant, DdsTopicNames.Commands);
         _writerId = Environment.ProcessId;
     }
 
@@ -61,7 +60,7 @@ public sealed class DdsCommandReader : IDisposable
 
     public DdsCommandReader(DdsParticipant participant)
     {
-        _reader = new DdsReader<DdsViewerCommand>(participant, DdsTopicNames.Commands, DdsQos.DurableLatest());
+        _reader = new DdsReader<DdsViewerCommand>(participant, DdsTopicNames.Commands);
     }
 
     public void PumpApply(EngineHost host)
