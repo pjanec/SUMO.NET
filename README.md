@@ -31,8 +31,10 @@ doesn't have. Highlights below; precise scope after that.
   zipper merge), static **and** actuated traffic lights, and **first-class rail** (signals, level
   crossings, bidirectional single track, traction).
 - **➕ Beyond SUMO.** Live external agents (pedestrians / crowds / detections that cars *react* to),
-  emergency-vehicle give-way, opposite-direction overtaking, and a self-contained **offline HTML replay
-  visualizer** — no server, no SUMO needed.
+  emergency-vehicle give-way, opposite-direction overtaking, laneless/shaped mixed traffic, a full
+  **panic-evacuation** model (localized incident → flee → jam → abandon car → foot exodus, layered on
+  the unchanged parity core), and a self-contained **offline HTML replay visualizer** — no server, no
+  SUMO needed.
 
 ## Scope
 
@@ -270,6 +272,27 @@ every other scenario is byte-identical.
 - Deferred (diagnosed in `docs/OV-REMAINING.md`): a cross-lane hard-brake backstop, return-gap enforcement,
   and a coupled OV2/OV4 decision enabling a true reduced-clearance side-by-side pass.
 
+### Panic evacuation (localized incident → foot exodus)
+
+A complete **panic-evacuation** model layered *entirely* on top of the unchanged driving core (a
+`Sim.Evac` external layer that only *drives* the engine through public seams — parity-exempt, so with
+panic off the determinism hash is unmoved). On a localized security incident: nearby cars panic
+(local information only — contagion + occlusion-gated line-of-sight + jam-unease, never a global
+broadcast), switch to an aggressive flee preset and reroute toward exits; the streets jam; a boxed-in
+panicked driver noses onto the shoulder as a shaped non-holonomic mover, then **abandons the car** and
+its occupants flee **on foot**; the pedestrian crowd (reciprocal collision avoidance, confined to a
+"known-world" navmesh) streams outward to safety, and cars react to both pedestrians and abandoning
+cars as obstacles.
+
+- **The evacuation is LOCAL** — the layer auto-attaches only to a bounded **working region** around the
+  incident, so its cost scales with the *local* affected population, not the city size. Demonstrated at
+  **10k-vehicle-class scale**: a central catastrophe with a low-thousands foot exodus while the rest of
+  the city keeps flowing (distant traffic is pure, untouched parity lane traffic).
+- **Bit-identical, opt-in scale knobs** — the two crowd solvers gained spatial hashes proven
+  byte-identical to brute force (exact position/heading-equality tests); default off, per-scenario opt-in.
+- Behavioral/property-tested (cascade emerges, containment, locality, determinism), not goldens.
+- **Full feature index, per-phase design docs, and how to run the demos: `docs/PANIC-EVAC-OVERVIEW.md`.**
+
 ### Demand insertion & warm-start snapshots
 
 - **Flow demand:** `<flow>` (period/vehsPerHour/number, exact parity) and probabilistic
@@ -434,6 +457,20 @@ dotnet run           --project src/Sim.Viz -- scenarios/_bench/city-organic-L2 -
 | `scenarios/_bench/city-organic-L2` | **2-lane** town, 274 junctions, ~406 concurrent — multi-lane at scale |
 | `scenarios/_bench/city-mixed-1k` | 1,064 junctions (262 TLS), ~1,000 concurrent, ~98% flowing |
 
+### Panic-evacuation demos
+
+Self-contained HTML replays of the evacuation model (see *Panic evacuation* above and
+`docs/PANIC-EVAC-OVERVIEW.md`). No SUMO, no server.
+
+```bash
+# realistic organic town — congestion + a large local foot exodus
+dotnet run -c Release --project src/Sim.Viz -- --evac-organic evac-organic.html
+# 10k-vehicle-class city — a local catastrophe while the rest of the city keeps flowing
+dotnet run -c Release --project src/Sim.Viz -- --evac-city evac-city.html
+# per-phase cost profile (organic; --city for 10k off-vs-on; --microbench for the crowd-hash speedup)
+dotnet run -c Release --project src/Sim.EvacProfile
+```
+
 ### Benchmarks (metrics, not pictures)
 
 ```bash
@@ -453,8 +490,10 @@ src/
   Sim.Harness/    FCD parser/writer, trajectory & ensemble comparators, tolerance config
   Sim.ParityTests/ the offline test suite (engine vs committed goldens)
   Sim.Run/        engine → FCD dumper (feeds the visualizer)
-  Sim.Viz/        offline HTML replay generator (Canvas 2D)
+  Sim.Viz/        offline HTML replay generator (Canvas 2D; incl. the evac scenes)
   Sim.ExtDemo/    external-agent demo runner (combined FCD)
+  Sim.Evac/       panic-evacuation layer (parity-exempt; drives the core via public seams)
+  Sim.EvacProfile/ evac per-phase cost profiler + crowd-solver micro-benchmark
   Sim.Bench/      determinism + micro-benchmark oracle
   Sim.BenchCity/  scaled-city benchmark runner (RTF / RSS / stuck detector)
 scenarios/        committed parity scenarios (inputs + goldens + tolerance + provenance) and _bench/ demos
@@ -466,7 +505,8 @@ LICENSE           EPL-2.0 OR GPL-2.0-or-later (dual); version.json — project v
 
 Key docs: **`docs/DESIGN.md`** (architecture of record — read this for the "why"), **`docs/TASKS.md`** (the work
 queue / feature ledger), **`CLAUDE.md`** (contributor rules), **`docs/RAIL-SUPPORT.md`**,
-**`docs/EXTERNAL-AGENTS-VIZ.md`**, **`docs/BENCHMARK_SPEC.md`**, **`docs/C4-VII-REMAINING.md`** (open junction work).
+**`docs/EXTERNAL-AGENTS-VIZ.md`**, **`docs/BENCHMARK_SPEC.md`**, **`docs/C4-VII-REMAINING.md`** (open junction work),
+**`docs/PANIC-EVAC-OVERVIEW.md`** (the panic-evacuation feature index).
 
 ---
 
