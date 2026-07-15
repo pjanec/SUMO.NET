@@ -20,7 +20,7 @@ doc is the mechanism; the task breakdown + success conditions are in
    evac would need a new DDS crowd/incident topic; explicitly out of scope here, noted in *Future*.)
 3. **Parity gate is untouchable.** Everything lives in the two out-of-`Traffic.sln` viewer projects and
    `Sim.Evac` (also out of the solution), *except* one small additive seam on `SimulationRunner` (§2).
-   That seam is nullable and inert-when-unset: the determinism hash `909605E965BFFE59` and the 440-test
+   That seam is nullable and inert-when-unset: the determinism hash `909605E965BFFE59` and the 446-test
    suite MUST be unchanged. This is the load-bearing invariant every task re-verifies.
 4. **Reuse, don't fork.** The live renderer draws the *exact* director read-surface the offline
    `Sim.Viz.SceneGen.BuildEvacGrid/Organic` already consumes (peds, abandoned cars, pushers, fear,
@@ -186,7 +186,7 @@ view and the HTML replay read identically.
 - Evac uses `Sim.Evac`'s own deterministic seeding (unchanged); a given demo + clicked incident replays
   identically. No `System.Random` added to the core.
 - **Parity:** the sole `Traffic.sln` change is the inert `OnAfterStep` hook. `dotnet test Traffic.sln` →
-  440 passed / 3 skipped / 0 failed and `Sim.Bench` hash `909605E965BFFE59` (single + parallel) MUST hold
+  446 passed / 3 skipped / 0 failed and `Sim.Bench` hash `909605E965BFFE59` (single + parallel) MUST hold
   after it lands — a task gate, not an afterthought.
 
 ## Headless verification (this Linux VM, software GL under Xvfb)

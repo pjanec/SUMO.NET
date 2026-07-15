@@ -48,6 +48,12 @@ public sealed class SimulationRunner : IDisposable
 
     public SimulationRunner(Engine engine) => _engine = engine;
 
+    // Optional post-step hook, invoked on the engine thread immediately after Engine.Step() and BEFORE the
+    // snapshot is captured. Null by default and never set on any parity/bench path, so it is inert there
+    // (determinism hash 909605E965BFFE59 unchanged). Used only by the native viewer's evac demo mode to
+    // tick the external Sim.Evac layer in lockstep with the core.
+    public Action<Engine>? OnAfterStep { get; set; }
+
     // The most recently published frame. Read it fresh each host frame; it is immutable, so a retained
     // reference stays valid (a newer frame is published as a new object).
     public SimulationSnapshot Snapshot => _published;
@@ -144,6 +150,7 @@ public sealed class SimulationRunner : IDisposable
     {
         DrainCommands();
         _engine.Step();
+        OnAfterStep?.Invoke(_engine);
 
         SimulationSnapshot snap;
         if (_pool is { } pool)

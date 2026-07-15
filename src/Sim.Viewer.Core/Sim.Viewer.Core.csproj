@@ -22,6 +22,10 @@
          hermetic gate. -->
     <ProjectReference Include="..\Sim.Replication\Sim.Replication.csproj" />
     <ProjectReference Include="..\Sim.Replication.Dds\Sim.Replication.Dds.csproj" />
+    <!-- docs/SUMOSHARP-VIEWER-DEMO-EVAC-DESIGN.md §4: the live evac demo path reuses Sim.Evac's
+         EvacDirector + Evac*Scenario builders verbatim (no new evac logic). Sim.Evac is also OUT of
+         Traffic.sln, same as this project, so this reference does not touch the parity gate. -->
+    <ProjectReference Include="..\Sim.Evac\Sim.Evac.csproj" />
   </ItemGroup>
 
 </Project>

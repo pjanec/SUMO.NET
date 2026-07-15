@@ -1,5 +1,6 @@
 using System.Globalization;
 using Sim.Core;
+using Sim.Evac;
 using Sim.Ingest;
 
 namespace Sim.Viewer.Core;
@@ -46,6 +47,18 @@ public sealed class EngineHost : IDisposable
     private volatile bool _randomTraffic;
     private volatile bool _paused;
     private string? _stepCfgPath; // temp .sumocfg for a non-default sandbox step length (see WriteStepLengthConfig)
+
+    // docs/SUMOSHARP-VIEWER-DEMO-EVAC-DESIGN.md §4: the OPTIONAL evac path. When set (via CreateEvac),
+    // BuildSim() builds the Engine + EvacDirector through this delegate instead of LoadScenario/
+    // LoadNetwork; null for every existing scenario/sandbox host, so their BuildSim path is untouched.
+    private Func<Incident?, (Engine Engine, EvacDirector Director)>? _evacProvider;
+    private Incident? _incident;
+    // SafeRadius isn't on EvacDirector's public read surface (it lives in the EvacConfig the director
+    // was built with) -- captured once at CreateEvac time from the same config passed to Evac*Scenario.
+    // Build, purely so CaptureEvac can fill EvacRenderSnapshot.Incident.SafeRadius.
+    private double _evacSafeRadius;
+    private double _evacDefaultRadius; // each kind's DefaultIncident.Radius, for SetIncidentAtWorld
+    private volatile EvacRenderSnapshot? _evacSnap;
 
     // Two decoupled viewer knobs (native-viewer controls panel):
     //   * _speed  -- playback speed as a multiple of real time (sim-seconds advanced per wall-second).
@@ -101,6 +114,11 @@ public sealed class EngineHost : IDisposable
             }
         }
     }
+
+    // The latest published evac render snapshot (§3), or null for a non-evac host -- set only inside
+    // the evac SimulationRunner.OnAfterStep hook installed by BuildSim(), so it is atomically published
+    // exactly like Snapshot/SnapshotPair (no director access off the engine thread).
+    public EvacRenderSnapshot? Evac => _evacSnap;
 
     // Current state of the runtime random-traffic spawner, for the ImGui checkbox binding.
     public bool RandomTraffic => _randomTraffic;
@@ -237,6 +255,99 @@ public sealed class EngineHost : IDisposable
             null, dueTime: 400, period: spawnPeriod);
     }
 
+    // docs/SUMOSHARP-VIEWER-DEMO-EVAC-DESIGN.md §4: build a host that drives a live evac scenario
+    // (grid-tls | organic | city) instead of a scenario/sandbox net. `incident` overrides the kind's
+    // DefaultIncident (used by SetIncidentAtWorld to (re)place it interactively).
+    public static EngineHost CreateEvac(string evacKind, string repoRoot, Incident? incident = null)
+        => new(evacKind, repoRoot, incident);
+
+    // Private evac ctor: mirrors the public ctor's shape (parse Network, compute bounds, BuildSim) but
+    // sources the Engine + EvacDirector from `_evacProvider` instead of LoadScenario/LoadNetwork, and
+    // skips the sandbox random-traffic spawner entirely (evac scenarios carry their own demand).
+    private EngineHost(string evacKind, string repoRoot, Incident? incident)
+    {
+        var (netPath, provider, safeRadius, defaultIncident) = ResolveEvacProvider(evacKind, repoRoot);
+
+        _netPath = netPath;
+        _evacProvider = provider;
+        _evacSafeRadius = safeRadius;
+        _evacDefaultRadius = defaultIncident.Radius;
+        _incident = incident ?? defaultIncident;
+
+        // Evac scenarios carry their own demand/config (mirrors scenario-mode semantics): fixes the
+        // step-length assumption behind the speed formula and makes SetStepLength a no-op, exactly as
+        // it already is for a committed scenario dir.
+        _scenarioMode = true;
+        _randomTraffic = false;
+        _normalEdges = Array.Empty<string>();
+        _spawnCap = 0;
+        _spawnBatch = 1;
+
+        Network = NetworkParser.Parse(netPath);
+
+        double minX = double.PositiveInfinity, minY = double.PositiveInfinity;
+        double maxX = double.NegativeInfinity, maxY = double.NegativeInfinity;
+        foreach (var lane in Network.LanesByHandle)
+        {
+            foreach (var (x, y) in lane.Shape)
+            {
+                minX = Math.Min(minX, x);
+                minY = Math.Min(minY, y);
+                maxX = Math.Max(maxX, x);
+                maxY = Math.Max(maxY, y);
+            }
+        }
+
+        MinX = minX;
+        MinY = minY;
+        MaxX = maxX;
+        MaxY = maxY;
+
+        // No sandbox spawn timer -- evac demand comes from the scenario's own Build (spawned in-line for
+        // grid-tls, or LoadScenario's departures for organic/city), never the random-traffic spawner.
+        BuildSim();
+    }
+
+    // Maps an evac kind name to its net path (for geometry/bounds) and a provider delegate bound to the
+    // matching Evac*Scenario.Build overload. `safeRadius` comes from the SAME EvacConfig instance handed
+    // to every Build call (captured once here) so CaptureEvac can report it without EvacDirector needing
+    // to expose its config.
+    private static (string NetPath, Func<Incident?, (Engine Engine, EvacDirector Director)> Provider,
+        double SafeRadius, Incident DefaultIncident) ResolveEvacProvider(string evacKind, string repoRoot)
+    {
+        switch (evacKind)
+        {
+            case "grid-tls":
+            {
+                var netPath = Path.Combine(repoRoot, "scenarios", "evac-grid-tls", "net.net.xml");
+                var cfg = EvacTlsScenario.DefaultConfig();
+                (Engine, EvacDirector) Provider(Incident? incident)
+                {
+                    var (engine, director, _) = EvacTlsScenario.Build(netPath, incident, cfg);
+                    return (engine, director);
+                }
+                return (netPath, Provider, cfg.SafeRadius, EvacTlsScenario.DefaultIncident);
+            }
+            case "organic":
+            {
+                var netPath = Path.Combine(repoRoot, "scenarios", "_bench", "city-organic-L2", "net.net.xml");
+                var cfg = EvacOrganicScenario.DefaultConfig();
+                (Engine, EvacDirector) Provider(Incident? incident) => EvacOrganicScenario.Build(repoRoot, incident, cfg);
+                return (netPath, Provider, cfg.SafeRadius, EvacOrganicScenario.DefaultIncident);
+            }
+            case "city":
+            {
+                var netPath = Path.Combine(repoRoot, "scenarios", "_bench", "city-15000", "net.net.xml");
+                var cfg = EvacCityScenario.DefaultConfig();
+                (Engine, EvacDirector) Provider(Incident? incident) => EvacCityScenario.Build(repoRoot, incident, cfg);
+                return (netPath, Provider, cfg.SafeRadius, EvacCityScenario.DefaultIncident);
+            }
+            default:
+                throw new ArgumentException(
+                    $"Unknown evac kind '{evacKind}' (expected \"grid-tls\", \"organic\", or \"city\").", nameof(evacKind));
+        }
+    }
+
     // (Re)build the engine + runner from scratch, at t=0 -- SimHost's BuildSim pattern. Under _lock so
     // no frame/spawn/obstacle-inject races the swap; the old runner is disposed once swapped out.
     private void BuildSim()
@@ -246,27 +357,41 @@ public sealed class EngineHost : IDisposable
             Generation++;
             var old = _runner;
 
-            var engine = new Engine();
-            if (_scenarioMode)
+            Engine engine;
+            EvacDirector? director = null;
+            if (_evacProvider is not null)
             {
-                engine.LoadScenario(_netPath, _rouPath!, _cfgPath!); // drives the scenario's OWN demand
-            }
-            else if (Math.Abs(_stepLength - 1.0) < 1e-9)
-            {
-                engine.LoadNetwork(_netPath); // default 1s step -> Engine's own DefaultNetworkConfig
+                // §4: the evac path -- build via the bound Evac*Scenario.Build instead of LoadScenario/
+                // LoadNetwork. `_randomTraffic` stays false (already set in the evac ctor / here for
+                // belt-and-suspenders on a re-entrant SetIncidentAtWorld rebuild): evac scenarios carry
+                // their own demand, never the sandbox spawner.
+                (engine, director) = _evacProvider(_incident);
+                _randomTraffic = false;
             }
             else
             {
-                // Sandbox with a non-default step length: LoadNetwork only reads the sumocfg for its config
-                // (timeline/flags), never its net/route refs, so a generated cfg carrying our step-length --
-                // every other field pinned to Engine.DefaultNetworkConfig's values -- changes ONLY the sim
-                // resolution and nothing else about sandbox behaviour.
-                engine.LoadNetwork(_netPath, WriteStepLengthConfig(_stepLength));
-            }
+                engine = new Engine();
+                if (_scenarioMode)
+                {
+                    engine.LoadScenario(_netPath, _rouPath!, _cfgPath!); // drives the scenario's OWN demand
+                }
+                else if (Math.Abs(_stepLength - 1.0) < 1e-9)
+                {
+                    engine.LoadNetwork(_netPath); // default 1s step -> Engine's own DefaultNetworkConfig
+                }
+                else
+                {
+                    // Sandbox with a non-default step length: LoadNetwork only reads the sumocfg for its config
+                    // (timeline/flags), never its net/route refs, so a generated cfg carrying our step-length --
+                    // every other field pinned to Engine.DefaultNetworkConfig's values -- changes ONLY the sim
+                    // resolution and nothing else about sandbox behaviour.
+                    engine.LoadNetwork(_netPath, WriteStepLengthConfig(_stepLength));
+                }
 
-            _vType = engine.DefaultVType;
-            // A long vehicle so the random spawner can show swept-path off-tracking ("swing wide") on turns.
-            _truckType = engine.DefineVType(new VTypeParams { VClass = "truck", Length = 12.0 });
+                _vType = engine.DefaultVType;
+                // A long vehicle so the random spawner can show swept-path off-tracking ("swing wide") on turns.
+                _truckType = engine.DefineVType(new VTypeParams { VClass = "truck", Length = 12.0 });
+            }
 
             var runner = new SimulationRunner(engine);
             // Capacity 4 (was 3): the viewer holds BOTH the newest and previous frame across a render frame
@@ -280,6 +405,17 @@ public sealed class EngineHost : IDisposable
             runner.Start(targetHz: BaseTickHz);
             runner.SpeedMultiplier = _speed / (BaseTickHz * _stepLength);
             if (_paused) runner.Pause();
+
+            if (director is not null)
+            {
+                // §2/§3/§4: tick the external evac layer in lockstep with the core, on the engine thread,
+                // right after Engine.Step() and before the (unrelated) SimulationSnapshot capture -- then
+                // capture+publish the evac render snapshot atomically, same discipline as Snapshot/
+                // SnapshotPair. Never set on any parity/bench host (this is the ONLY place OnAfterStep is
+                // ever assigned), so those paths stay inert.
+                var d = director;
+                runner.OnAfterStep = e => { d.Tick(); _evacSnap = CaptureEvac(e, d); };
+            }
 
             _engine = engine;
             _runner = runner;
@@ -307,6 +443,58 @@ public sealed class EngineHost : IDisposable
                 SpawnOne();
             }
         }
+    }
+
+    // docs/SUMOSHARP-VIEWER-DEMO-EVAC-DESIGN.md §3: capture EvacDirector's public read surface into an
+    // immutable EvacRenderSnapshot. Called from inside the engine-thread OnAfterStep hook installed by
+    // BuildSim, right after `director.Tick()`, so the director is quiescent for the duration of this call.
+    // Instance method (not static) purely to read `_evacSafeRadius` -- SafeRadius isn't on EvacDirector's
+    // own public surface, so it is captured once from the EvacConfig passed to Evac*Scenario.Build.
+    private EvacRenderSnapshot CaptureEvac(Engine engine, EvacDirector director)
+    {
+        var pedCount = director.PedestrianCount;
+        var peds = new (double X, double Y, bool Escaped)[pedCount];
+        for (var i = 0; i < pedCount; i++)
+        {
+            var p = director.PedestrianPosition(i);
+            peds[i] = (p.X, p.Y, director.PedestrianEscaped(i));
+        }
+
+        var carCount = director.AbandonedCarCount;
+        var cars = new (double X, double Y, double R)[carCount];
+        for (var i = 0; i < carCount; i++)
+        {
+            var c = director.AbandonedCar(i);
+            cars[i] = (c.X, c.Y, c.Radius);
+        }
+
+        var pushers = director.ActivePushers()
+            .Select(p => (p.X, p.Y, p.HeadingRad))
+            .ToArray();
+
+        var fear = new Dictionary<uint, double>();
+        foreach (var handle in engine.VehicleHandles)
+        {
+            fear[handle.Index] = director.Fear(handle);
+        }
+
+        var incident = director.Incident;
+        var navmesh = director.NavMesh;
+
+        return new EvacRenderSnapshot
+        {
+            Time = director.Time,
+            Peds = peds,
+            AbandonedCars = cars,
+            Pushers = pushers,
+            FearByVehicle = fear,
+            Incident = (incident.X, incident.Y, incident.Radius, incident.StartTime, _evacSafeRadius),
+            Boundary = (navmesh.MinX, navmesh.MinY, navmesh.MaxX, navmesh.MaxY),
+            Panicked = director.PanickedCount,
+            Converted = director.ConvertedCount,
+            Escaped = director.EscapedCount,
+            Abandoned = director.AbandonedCarCount,
+        };
     }
 
     // Write a minimal .sumocfg carrying `stepLength`, every OTHER field pinned to the exact values in
@@ -345,6 +533,24 @@ public sealed class EngineHost : IDisposable
     public void Restart()
     {
         _paused = false;
+        BuildSim();
+    }
+
+    // docs/SUMOSHARP-VIEWER-DEMO-EVAC-DESIGN.md §4: (re)place the incident at a clicked world point and
+    // rebuild the evac scenario with it -- for evac hosts, the left-click handler is repurposed from
+    // "drop obstacle" to "place incident" (wired in a later batch). No-op for non-evac hosts (there is no
+    // incident to place). Radius is the kind's own DefaultIncident.Radius; StartTime is "now" in the
+    // CURRENT run's sim-clock, so a click always plants a live-from-now incident. Unlike Restart(), pause
+    // state is preserved (mirrors SetStepLength's rebuild-in-place, not a user-requested restart).
+    public void SetIncidentAtWorld(double wx, double wy)
+    {
+        if (_evacProvider is null)
+        {
+            return;
+        }
+
+        var currentTime = Snapshot?.Time ?? 0.0;
+        _incident = new Incident(wx, wy, currentTime, _evacDefaultRadius);
         BuildSim();
     }
 

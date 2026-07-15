@@ -5,7 +5,7 @@ Implements `docs/SUMOSHARP-VIEWER-DEMO-EVAC-DESIGN.md` (sections referenced as �
 diff, re-runs the gate + the Xvfb screenshot itself, ticks the box only on first-hand confirmation).
 
 **Standing invariant for every task (re-verified, not assumed):**
-`dotnet test Traffic.sln` → **440 passed / 3 skipped / 0 failed**, and
+`dotnet test Traffic.sln` → **446 passed / 3 skipped / 0 failed**, and
 `dotnet run -c Release --project src/Sim.Bench` → hash **`909605E965BFFE59`** (single AND parallel).
 The viewer projects are out of `Traffic.sln`; the only in-solution edit in the whole feature is T1.
 
@@ -18,7 +18,7 @@ The viewer projects are out of `Traffic.sln`; the only in-solution edit in the w
 - **Do:** add `public Action<Engine>? OnAfterStep { get; set; }`; invoke it in `Tick()` as
   `_engine.Step(); OnAfterStep?.Invoke(_engine);` — before the snapshot capture. Comment it as
   inert-when-null.
-- **Success:** builds; `dotnet test Traffic.sln` = 440/3/0; `Sim.Bench` hash `909605E965BFFE59` single +
+- **Success:** builds; `dotnet test Traffic.sln` = 446/3/0; `Sim.Bench` hash `909605E965BFFE59` single +
   parallel — i.e. **byte-identical** with the hook present but unset. (This is the whole point of T1.)
 
 ### T2 — `EvacRenderSnapshot` + `EngineHost` evac path  (§3, §4)
@@ -85,7 +85,7 @@ The viewer projects are out of `Traffic.sln`; the only in-solution edit in the w
 ### T7 — docs + final gate
 - **Files:** `docs/SUMOSHARP-NATIVE-VIEWER.md` (add the demo-tool + live-evac mode), README one-liner in
   the "Live & native viewers" block, this tracker.
-- **Success:** full `dotnet test Traffic.sln` 440/3/0 + `Sim.Bench` hash unmoved (final re-confirm after
+- **Success:** full `dotnet test Traffic.sln` 446/3/0 + `Sim.Bench` hash unmoved (final re-confirm after
   all stages); `docs/SUMOSHARP-NATIVE-VIEWER.md` describes `--demo` + the evac category; screenshots from
   T4/T6 attached to the tracker. Build clean incl. both viewer projects.
 
