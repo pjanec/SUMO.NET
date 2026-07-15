@@ -482,6 +482,7 @@ static int RunPublish(string netPath, double? secondsCap, int? fleet, double? st
 
     var startWall = Stopwatch.StartNew();
     var lastPublishedSimTime = double.NaN;
+    var lastGeneration = host.Generation;
     var lastHeartbeatWall = -2.0; // force an immediate first heartbeat
 
     while (!stopRequested)
@@ -500,11 +501,15 @@ static int RunPublish(string netPath, double? secondsCap, int? fleet, double? st
         // background thread, so most polls of this loop see an unchanged snapshot and would otherwise
         // re-publish identical state.
         var snap = host.Snapshot;
-        // Restart (remote command) rebuilds at t=0: sim time drops, so the `> lastPublishedSimTime` gate
-        // would suppress all publishing until it climbed back up -> the remote stays empty after a restart.
-        // Reset the gate so the fresh timeline republishes immediately.
-        if (!double.IsNaN(lastPublishedSimTime) && snap.Time < lastPublishedSimTime - 2.0)
+        // Restart (remote command) rebuilds the sim at t=0: sim time drops, so the `> lastPublishedSimTime`
+        // gate would suppress all publishing until it climbed back up -> the remote stays empty after a
+        // restart. Detect the rebuild DETERMINISTICALLY via EngineHost.Generation (not a fragile backward-
+        // time-jump threshold, which misses a small pre-restart time) and reset the gate so the fresh
+        // timeline republishes immediately.
+        if (host.Generation != lastGeneration)
         {
+            lastGeneration = host.Generation;
+            publisher.Reset();
             lastPublishedSimTime = double.NaN;
         }
 
@@ -603,7 +608,7 @@ static int RunLoopback(string netPath, string? screenshotPath, int frames, float
     var alwaysInterpolate = true;
     var smoothed = new Dictionary<VehicleHandle, (float X, float Y, float Deg)>();
     var lastPublishedSimTime = double.NaN;
-    var lastLoopSimTime = 0.0;
+    var lastGeneration = host.Generation;
     VehicleHandle? traceHandle = null; // diagnostic: resolved once from --trace-veh id
     var startWall = Stopwatch.StartNew();
 
@@ -629,17 +634,22 @@ static int RunLoopback(string netPath, string? screenshotPath, int frames, float
         // cadence -- EngineHost's SimulationRunner ticks in the background at its own targetHz, so most
         // render frames see an unchanged snapshot and would otherwise re-publish identical state.
         var snapTimeNow = host.Snapshot.Time;
-        // Restart detection (local): sim time jumping backward means Restart rebuilt at t=0. Drop stale
-        // vehicle state + re-anchor the clock, and reset the publish gate so the fresh timeline republishes
-        // (otherwise `> lastPublishedSimTime` would suppress it until sim time climbed back up).
-        if (snapTimeNow < lastLoopSimTime - 2.0)
+        // Restart detection: a bumped EngineHost.Generation means Restart rebuilt the sim at t=0. This is
+        // DETERMINISTIC -- the old heuristic (a >2 s backward jump in Snapshot.Time) silently missed when the
+        // pre-restart sim time was small, leaving the publish gate wedged (`> lastPublishedSimTime` forever
+        // false) so nothing republished: the "restart does nothing / no cars re-appear" bug. On a restart:
+        // drop stale vehicle state, re-anchor the DR clock, reset the publish gate so the fresh timeline
+        // republishes from t=0, and re-seed the auto-delay for the new stream.
+        if (host.Generation != lastGeneration)
         {
+            lastGeneration = host.Generation;
+            publisher.Reset();
             subscriber.ResetVehicles();
             drClock.Reset();
             lastPublishedSimTime = double.NaN;
+            delaySeeded = false;
         }
 
-        lastLoopSimTime = snapTimeNow;
         if (double.IsNaN(lastPublishedSimTime) || snapTimeNow > lastPublishedSimTime)
         {
             publisher.PublishStep();
@@ -871,12 +881,16 @@ static int RunRemote(string? screenshotPath, int frames, float initialDelaySecon
 
         statusReader.Pump();
         var status = statusReader.Current;
-        // Restart detection: the host's sim time jumping backward means it rebuilt at t=0. Drop stale vehicle
-        // state (reused handles would otherwise mix old + new timelines) and re-anchor the DR clock.
-        if (status.Present && status.SimTime < lastRemoteSimTime - 2.0)
+        // Restart detection: the host's sim time jumping backward means it rebuilt at t=0. Sim time is
+        // authoritative and monotonic WITHIN a run, so any real decrease is a restart -- a small threshold
+        // (0.5 s, tolerating only minor DDS status reordering) catches restarts from a short-running sim too,
+        // where the old 2 s threshold missed. Drop stale vehicle state (reused handles would otherwise mix
+        // old + new timelines), re-anchor the DR clock, and re-seed the auto-delay.
+        if (status.Present && status.SimTime < lastRemoteSimTime - 0.5)
         {
             subscriber.ResetVehicles();
             drClock.Reset();
+            delaySeeded = false;
         }
 
         lastRemoteSimTime = status.SimTime;

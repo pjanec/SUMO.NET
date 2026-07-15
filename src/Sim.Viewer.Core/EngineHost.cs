@@ -68,6 +68,13 @@ public sealed class EngineHost : IDisposable
 
     public bool ScenarioMode => _scenarioMode;
 
+    // Incremented on every (re)build of the sim (ctor + each Restart). A consumer (the viewer loop / a
+    // headless publisher) watches this to detect a restart DETERMINISTICALLY -- far more robust than
+    // inferring one from a backward jump in Snapshot.Time, which misses when the pre-restart sim time is
+    // small (a fragile threshold left the DDS publish gate wedged -> "restart does nothing"). First build
+    // leaves it at 1, so a loop that seeds `lastGeneration = host.Generation` sees no spurious reset.
+    public int Generation { get; private set; }
+
     public SimulationSnapshot Snapshot
     {
         get
@@ -236,6 +243,7 @@ public sealed class EngineHost : IDisposable
     {
         lock (_lock)
         {
+            Generation++;
             var old = _runner;
 
             var engine = new Engine();

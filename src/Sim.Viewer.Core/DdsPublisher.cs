@@ -235,6 +235,18 @@ public sealed class DdsPublisher : IDisposable
         return result;
     }
 
+    // Forget all per-vehicle publish state, for when the sim is rebuilt at t=0 (EngineHost.Restart). The
+    // adaptive scheduler keys each vehicle's next-publish decision on `time - lastSent`; after a restart the
+    // fresh timeline's `snap.Time` is SMALLER than the stale lastSent, so that delta goes negative and the
+    // scheduler suppresses every vehicle until sim time climbs back past the old value -> "restart shows no
+    // cars". Clearing `_knownVehicles` too makes the fresh vehicles re-announce their lifecycle/dims (the
+    // subscriber drops its dims on reset). Call this whenever the driving EngineHost's Generation bumps.
+    public void Reset()
+    {
+        _scheduler.Reset();
+        _knownVehicles.Clear();
+    }
+
     public void Dispose()
     {
         _vehicleWriter.Dispose();
