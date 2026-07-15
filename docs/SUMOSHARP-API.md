@@ -62,12 +62,23 @@ obstacle-store ownership split, the lateral-state API requirements folded in, an
 
 ## 1. Package layout & naming
 
+> **The package layout is now owned by `SUMOSHARP-PACKAGING-DESIGN.md`** (the à-la-carte rethink —
+> it covers Replication, the render-side motion package, the raylib viewer package, and the evac /
+> testing / meta packages that landed after this table was written). The table below is kept for the
+> original *intent* and the license/framework notes that follow; two corrections to reconcile it with
+> the shipped reality:
+> - **Core and Ingest ship as two separate packages** (`SumoSharp.Core`, `SumoSharp.Ingest`), not one
+>   bundled `SumoSharp.Core`. `Core` package-references `Ingest`, so installing `Core` still pulls it.
+> - **`SumoSharp.Runtime` is retired** — the async `SimulationRunner` lives in `Sim.Core` and carries
+>   no extra dependency, so there is nothing to split. A stepped-only build simply never calls it.
+
 | Package | Contents | Ships? |
 |---|---|---|
-| **`SumoSharp.Core`** | `Sim.Core` + `Sim.Ingest` (engine + net/rou/sumocfg parsers) | ✅ the one package most users install |
-| **`SumoSharp.Runtime`** *(optional split)* | the async `SimulationRunner` + command queue (§7) | ✅ separate so headless training builds can avoid the threading they don't want |
-| **`SumoSharp.Tools`** | SUMO-binary fetch + `netconvert`/`duarouter` wrappers (§2) | ✅ optional, dev-time only |
-| `Sim.Harness` | FCD parsing + tolerance comparison | ❌ `IsPackable=false` (test-only; maybe later `SumoSharp.Testing`) |
+| **`SumoSharp.Core`** | `Sim.Core` (engine + runtime + `SimulationRunner` + `PoseResolver`); package-refs `SumoSharp.Ingest` | ✅ the package most users install |
+| **`SumoSharp.Ingest`** | `Sim.Ingest` (net/rou/sumocfg parsers + model) | ✅ shipped separately (pulled in transitively by Core) |
+| ~~`SumoSharp.Runtime`~~ | ~~async `SimulationRunner` split~~ | ⛔ **retired** — `SimulationRunner` is in Core |
+| **`SumoSharp.Tools`** | SUMO-binary fetch + `netconvert`/`duarouter` wrappers (§2) | ✅ optional, dev-time only (still design-only) |
+| `Sim.Harness` | FCD parsing + tolerance comparison | → **`SumoSharp.Testing`** (opt-in dev-time package; see packaging design) |
 | `Sim.Run`, `Sim.Viz`, `Sim.ExtDemo`, benches | CLIs / demos | ❌ shipped as **samples**, not packages |
 
 **Name:** `SumoSharp` (verified clear at time of writing). "SUMO" is an Eclipse trademark, so the
