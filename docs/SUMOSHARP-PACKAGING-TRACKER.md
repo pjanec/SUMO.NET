@@ -16,25 +16,32 @@ verified first-hand (build / `dotnet pack` / `dotnet test`), per the CLAUDE.md a
 - [x] P0.1 — Packaging design/tasks/tracker docs landed.
 - [x] P0.2 — `SUMOSHARP-API.md §1` points here; two-package reality + retired `Runtime` recorded.
 
-## Stage P1 — `SumoSharp.Viewer.Motion` (critical path)
-- [ ] P1.1 — `DrClock` decoupled from `DdsSubscriber` (transport-neutral sample + history); branch/arc
-      regression test.
-- [ ] P1.2 — `Sim.Viewer.Motion` project created: net8+ns2.1, `IsPackable`, `PackageId=SumoSharp.Viewer.Motion`,
-      no DDS/raylib deps; packs `lib/net8.0` + `lib/netstandard2.1`.
-- [ ] P1.3 — DR/smoothing guide shipped as the package README (+ license/disclaimer).
+## Stage P1 — Replication transport contract + neutral sample (D8, D9) — critical path
+- [ ] P1.1 — `IReplicationSink`/`IReplicationSource` (4-channel contract) added in `Sim.Replication`.
+- [ ] P1.2 — `TimestampedSample` + `IVehicleSampleHistory` added in `Sim.Replication` (+ history test).
+- [ ] P1.3 — `Sim.Replication.Dds` refactored to *implement* the contract (channel model no longer
+      defined DDS-side; `DdsF32Col` columns stay as encoding).
+- [ ] P1.4 — in-memory-transport round-trip test proves a second binding (hermetic, no CycloneDDS).
 
-## Stage P2 — `SumoSharp.Viewer.Raylib`
-- [ ] P2.1 — raylib/ImGui component packable (`PackageId=SumoSharp.Viewer.Raylib`, native assets);
+## Stage P2 — `SumoSharp.Viewer.Motion`
+- [ ] P2.1 — `DrClock` decoupled from `DdsSubscriber` onto the P1 sample/history; branch/arc
+      regression test.
+- [ ] P2.2 — `Sim.Viewer.Motion` project created: net8+ns2.1, `IsPackable`, `PackageId=SumoSharp.Viewer.Motion`,
+      no DDS/raylib deps; packs `lib/net8.0` + `lib/netstandard2.1`.
+- [ ] P2.3 — DR/smoothing guide shipped as the package README (+ license/disclaimer).
+
+## Stage P3 — `SumoSharp.Viewer.Raylib`
+- [ ] P3.1 — raylib/ImGui component packable (`PackageId=SumoSharp.Viewer.Raylib`, native assets);
       `Sim.Viewer` exe reduced to a thin sample; viewer modes still run.
 
-## Stage P3 — Dev-time & domain packages
-- [ ] P3.1 — `SumoSharp.Testing` from `Sim.Harness`.
-- [ ] P3.2 — `SumoSharp.Evac` from `Sim.Evac`.
+## Stage P4 — Dev-time & domain packages
+- [ ] P4.1 — `SumoSharp.Testing` from `Sim.Harness`.
+- [ ] P4.2 — `SumoSharp.Evac` from `Sim.Evac`.
 
-## Stage P4 — Convenience & CI
-- [ ] P4.1 — `SumoSharp` meta-package (Core + Ingest + Replication + Viewer.Motion).
-- [ ] P4.2 — packaging guard test extended (portable-tier target/packability + no-native-leak invariants).
-- [ ] P4.3 — publish CI packs the full shipped set on a `v*` tag.
+## Stage P5 — Convenience & CI
+- [ ] P5.1 — `SumoSharp` meta-package (Core + Ingest + Replication + Viewer.Motion).
+- [ ] P5.2 — packaging guard test extended (targets/packability, no-native-leak, contract-in-Replication).
+- [ ] P5.3 — publish CI packs the full shipped set on a `v*` tag.
 
 ## Already shipped before this session (context)
 - [x] `SumoSharp.Core`, `SumoSharp.Ingest` — packable, net8+ns2.1, publish CI, B13 guard.

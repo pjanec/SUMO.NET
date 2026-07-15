@@ -56,9 +56,14 @@ grow past the four shipped packages, and the growth has to stay **layered and op
    This is the load-bearing new split (§5). The reconstruction pipeline (`DrClock`, `PoseResolver`,
    `ILaneShapeSource`, auto-delay, extrapolation low-pass) is portable scalar maths and belongs in
    its own portable package; raylib/ImGui belong in an optional desktop-viewer package.
-4. **Transport is pluggable, and its abstraction is portable.** `SumoSharp.Replication` holds the
-   wire records + codec + publish policy with no transport dependency; `SumoSharp.Replication.Dds`
-   is one transport. A future WebSocket/ENet transport is a sibling leaf, never a Core concern.
+4. **The replication data model *is* the API; transports are bindings.** `SumoSharp.Replication`
+   is the replication **API** — the data model (records + their semantics), the packed codec, the
+   publish policy, **and the transport contract** (`IReplicationSink`/`IReplicationSource` over the
+   four logical channels: durable geometry-once, durable dims/lifecycle-once, per-frame movers, and
+   the reverse command/status channel). It carries **no** transport dependency. `SumoSharp.Replication.Dds`
+   is **one binding** of that contract; a WebSocket / named-pipe / shared-memory / ENet transport is a
+   sibling leaf that implements the same interface. Consumers — viewers, remote clients, other-language
+   reimplementations — program against the **data model**, never against DDS. (Decisions D8, D9.)
 5. **Additive and parity-inert.** Packaging changes touch only project metadata and *code
    organisation*; they must never alter a simulation trajectory. The offline parity gate
    (`dotnet test`, no SUMO, no native libs) stays byte-identical, and a guard test pins the
@@ -79,12 +84,17 @@ Tier 0 — Engine (portable: net8.0 + netstandard2.1)
   SumoSharp.Core        engine, obstacle store, SoA read API, runtime        → Ingest
                         demand, SimulationRunner, PoseResolver, ILaneShapeSource
 
-Tier 1 — Replication / transport
-  SumoSharp.Replication      DR wire records + packed codec + publish policy → Core   (portable)
-  SumoSharp.Replication.Dds  ⚠ CycloneDDS transport (native)                → Replication (net8.0)
+Tier 1 — Replication API (the data model) / transports (bindings)
+  SumoSharp.Replication      DR data model + codec + publish policy +        → Core   (portable)
+                             transport contract (IReplicationSink/Source, 4 channels) +
+                             timestamped sample + per-vehicle history
+  SumoSharp.Replication.Dds  ⚠ CycloneDDS *binding* (native)                 → Replication (net8.0)
+  SumoSharp.Replication.*    future sibling bindings (WebSocket / named-pipe / shared-mem / ENet)
+                             — each implements the same contract; DDS is just the first
 
 Tier 2 — Render-side motion / viewers
-  SumoSharp.Viewer.Motion    DrClock + DR pipeline glue + sample history     → Core, Replication
+  SumoSharp.Viewer.Motion    DrClock + DR pipeline glue (auto-delay, low-pass) → Core, Replication
+                             consumes the Replication timestamped sample + history;
                              (portable render-side reconstruction; NO raylib, NO DDS)   (portable)
   SumoSharp.Viewer.Raylib ⚠  the 2D desktop viewer as a reusable component   → Viewer.Motion,
                              (raylib + ImGui, native, desktop-only)             Replication.Dds (net8.0)
@@ -110,7 +120,7 @@ sample shell). These demonstrate; they are not the product.
 | Integrator | Installs |
 |---|---|
 | Headless sim / training / digital-twin backend | `SumoSharp.Core` (+ `Ingest`) |
-| …that streams state to a decoupled process | + `SumoSharp.Replication` + `SumoSharp.Replication.Dds` |
+| …that streams state to a decoupled process | + `SumoSharp.Replication` (the API) + a transport binding, e.g. `SumoSharp.Replication.Dds` |
 | **Game / 3D engine with its own renderer** | `SumoSharp.Core` + `SumoSharp.Viewer.Motion` (+ a transport) |
 | Wants the batteries-included 2D desktop view | + `SumoSharp.Viewer.Raylib` |
 | Content pipeline (build a `.net.xml` from OSM) | + `SumoSharp.Tools` (dev-time) |
@@ -138,6 +148,22 @@ sample shell). These demonstrate; they are not the product.
   formally closed.
 - **D4 — `Replication` portable, `Replication.Dds` native-leaf.** Already the case; codified as a
   principle so no transport dependency ever creeps into `Replication` (which is `net8.0;ns2.1`).
+- **D8 — The transport contract is an explicit interface in `Replication`, and DDS is one binding.**
+  Lift the four logical channels (durable geometry-once, durable dims/lifecycle-once, per-frame
+  movers, reverse command/status) — today realized *inside* the DDS package (`DdsTopicNames`,
+  `DdsTopics`, `CommandTopic`, `GeometryTlTopics`) — into a portable `IReplicationSink` /
+  `IReplicationSource` contract in `Sim.Replication`. `Sim.Replication.Dds` becomes the DDS
+  *implementation* of that contract; a WebSocket / named-pipe / shared-memory / ENet transport is a
+  sibling that implements the same interface. This makes "DDS is one of multiple transfer options"
+  **structural**, not aspirational, and lets a second transport be an implement-the-interface job.
+  A DDS-specific *representation* (the `DdsF32Col`/`DdsI32Col` inline-array SoA columns — the
+  "structured chunk" topic option) stays in `.Dds`; it is an encoding optimization, not the model.
+- **D9 — The timestamped sample + per-vehicle history live in `Replication` (the data model is the
+  API).** A `VehicleRecord` + its sim/arrival timestamp (and the newest-last per-vehicle history the
+  DR clock reads) are part of the data-model API, not a render-side detail. They live in
+  `Sim.Replication`; `DrClock` (in `Viewer.Motion`) consumes the **API** sample type, and each
+  transport (DDS today) *fills* it. This is what removes `DrClock`'s coupling to
+  `DdsSubscriber.VehicleSample` (§5).
 - **D5 — Ship the raylib viewer as a *package* (`SumoSharp.Viewer.Raylib`), not only a sample.**
   The user explicitly wants "viewer tools (maybe standalone nugets)". The reusable brain is already
   split into `Sim.Viewer.Core`; this doc extends that split so the render component is consumable,
@@ -176,24 +202,37 @@ takes a `DdsSubscriber.VehicleSample` / `DdsSubscriber.HistoryCap` — i.e. the 
 the type level to the DDS subscriber**, even though `SUMOSHARP-VIEWER-DR-SMOOTHING.md §8` already
 argues (correctly) that `DrClock` is *conceptually* transport-agnostic.
 
-**Target seam** (matches `SUMOSHARP-VIEWER-DR-SMOOTHING.md §8`'s "clean seam"):
+**Target seam** (matches `SUMOSHARP-VIEWER-DR-SMOOTHING.md §8`'s "clean seam"). Note the sample +
+history now live in the **`Replication` API** (D9), not in `Viewer.Motion`:
 
 ```
+SumoSharp.Replication  (net8.0;netstandard2.1)  — the data-model API
+  ├─ VehicleRecord, LaneGeo, TlEntry, UpcomingLanes, FrameHeader   (data model — existing)
+  ├─ FrameCodec / GeometryCodec / TlCodec / FrameChunker           (codec — existing)
+  ├─ IPublishPolicy / PublishScheduler                             (policy — existing)
+  ├─ IReplicationSink / IReplicationSource                         (NEW — the 4-channel contract, D8)
+  ├─ TimestampedSample    (NEW — VehicleRecord + sim/arrival time, D9)
+  └─ IVehicleSampleHistory (NEW — transport-neutral newest-last per-vehicle buffer, D9)
+
 SumoSharp.Viewer.Motion  (net8.0;netstandard2.1, NO raylib, NO DDS)
-  ├─ DrClock                 (moved from Sim.Viewer.Core, decoupled from DdsSubscriber)
-  ├─ IVehicleSampleHistory   (new: transport-neutral per-vehicle sample buffer abstraction)
-  ├─ VehicleSample           (new/relocated: lane + arc-pos + posLat + kinematics + upcoming + time)
+  ├─ DrClock                 (moved from Sim.Viewer.Core; consumes Replication's sample + history)
   ├─ DrPipeline helpers      (auto-delay §5.4, extrapolation low-pass §5.5 — plain scalar maths)
   └─ (re-exports) PoseResolver, ILaneShapeSource, Pose, DrState   [these stay defined in Core]
-      depends on → SumoSharp.Core (PoseResolver), SumoSharp.Replication (VehicleRecord shape)
+      depends on → SumoSharp.Core (PoseResolver), SumoSharp.Replication (data model + sample + history)
+
+SumoSharp.Replication.Dds  (net8.0, native)  — one binding of the contract
+  └─ implements IReplicationSink/Source over DDS topics; adapts DDS samples → TimestampedSample
 ```
 
-The one real code change is **decoupling `DrClock` from `DdsSubscriber`**: introduce a
-transport-neutral sample type + history interface in `Viewer.Motion`, have `DrClock.Resolve` take
-those, and make the DDS subscriber (which stays in the raylib/DDS tier) *adapt* its samples to that
-interface. This is a mechanical, parity-inert refactor (viewer-only code; `Sim.Core`'s
-`PoseResolver` is untouched) — but it is the change that makes "reimplement DR in a different
-viewer" a `PackageReference`, not a copy-paste. After it, the DR/smoothing guide
+The real code changes are two, both parity-inert (viewer/transport-side only; `Sim.Core`'s
+`PoseResolver` is untouched):
+1. **Add the transport contract + neutral sample/history to `Replication`** (D8, D9) and refactor
+   `Replication.Dds` to *implement* the contract rather than owning the channel model.
+2. **Decouple `DrClock` from `DdsSubscriber`** so it consumes the `Replication` sample/history
+   types; the DDS subscriber becomes an adapter that fills them.
+
+Together these make "reimplement DR over a different transport/viewer" an implement-the-interface +
+`PackageReference` job, not a copy-paste. After them, the DR/smoothing guide
 (`SUMOSHARP-VIEWER-DR-SMOOTHING.md`) becomes the **README/primary doc** of `SumoSharp.Viewer.Motion`.
 
 `SumoSharp.Viewer.Raylib` then depends on `Viewer.Motion` + `Replication.Dds` and holds the
@@ -235,8 +274,16 @@ raylib/ImGui rendering + the DDS subscriber adapter; the `Sim.Viewer` exe become
     `IsPackable=true` with the expected `PackageId`;
   - `Viewer.Motion` has **no** `ProjectReference` to `Sim.Replication.Dds` (no native leak into the
     portable motion package) and no `Raylib`/`rlImgui` `PackageReference`;
-  - `Replication.Dds` and `Viewer.Raylib` remain the *only* packable projects carrying native deps.
-  This is a hermetic, source-reading test (no build, no SUMO, no network) — same style as B13.
+  - `Replication.Dds` and `Viewer.Raylib` remain the *only* packable projects carrying native deps;
+  - the transport contract (`IReplicationSink`/`IReplicationSource`) is defined in **`Sim.Replication`**
+    (the API), not in `Sim.Replication.Dds` (D8) — a hermetic check that a source file under
+    `src/Sim.Replication/` declares those interfaces.
+- **Prove a second binding is possible.** A hermetic unit test implements the contract with an
+  **in-memory transport** (sink → source in the same process, no native DDS) and round-trips a
+  frame + geometry + a command, demonstrating structurally that DDS is one option among several
+  (D8). Runs inside `dotnet test`, native-free.
+  This is a hermetic, source-reading/in-memory test (no build of native libs, no SUMO, no network) —
+  same style as B13.
 
 ---
 
@@ -257,13 +304,17 @@ raylib/ImGui rendering + the DDS subscriber adapter; the `Sim.Viewer` exe become
 
 1. **P0 — Reconcile docs with reality.** Update `SUMOSHARP-API.md §1` to point here; record the
    two-package (not bundled) reality and the retired `Runtime` idea. *(This doc + a pointer edit.)*
-2. **P1 — `SumoSharp.Viewer.Motion`.** Decouple `DrClock` from `DdsSubscriber`; move the portable
-   reconstruction into a new packable, ns2.1-clean project; wire `Viewer.Raylib`/exe to adapt onto
-   it. Ship the DR/smoothing guide as its README. *(The load-bearing refactor, §5.)*
-3. **P2 — `SumoSharp.Viewer.Raylib`.** Make the reusable raylib/ImGui component packable; leave the
+2. **P1 — Replication transport contract + neutral sample (D8, D9).** Add `IReplicationSink`/
+   `IReplicationSource` + the timestamped sample + per-vehicle history to `Sim.Replication`; refactor
+   `Replication.Dds` to *implement* the contract; add the in-memory-transport proof test. *(Prereq
+   for the motion package — the sample it consumes lives here.)*
+3. **P2 — `SumoSharp.Viewer.Motion`.** Decouple `DrClock` from `DdsSubscriber` onto the P1 sample/
+   history; move the portable reconstruction into a new packable, ns2.1-clean project; wire
+   `Viewer.Raylib`/exe to adapt onto it. Ship the DR/smoothing guide as its README. *(§5.)*
+4. **P3 — `SumoSharp.Viewer.Raylib`.** Make the reusable raylib/ImGui component packable; leave the
    exe a thin sample.
-4. **P3 — `SumoSharp.Testing` + `SumoSharp.Evac`.** Flip `Sim.Harness`/`Sim.Evac` to packable with
+5. **P4 — `SumoSharp.Testing` + `SumoSharp.Evac`.** Flip `Sim.Harness`/`Sim.Evac` to packable with
    IDs + READMEs.
-5. **P4 — `SumoSharp` meta-package + `SumoSharp.Tools`.** Convenience bundle; then the SUMO-binary
+6. **P5 — `SumoSharp` meta-package + `SumoSharp.Tools`.** Convenience bundle; then the SUMO-binary
    fetch tool (or global tool) per `SUMOSHARP-API.md §2`.
 6. **Every step:** extend the B13-style guard, re-run the offline gate, publish CI packs the new IDs.
