@@ -17,6 +17,7 @@
          smooth per-frame poses. -->
     <IsPackable>true</IsPackable>
     <PackageId>SumoSharp.Viewer.Motion</PackageId>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
     <Description>SumoSharp — portable render-side dead-reckoning &amp; motion reconstruction for the SumoSharp traffic engine: DrClock (render clock + interpolate/extrapolate resolve) and DrPoseSmoother (capped position error-smoothing + motion-derived heading tilt + heading low-pass) turn sparse authoritative/DDS samples into smooth per-frame vehicle poses. No renderer, no transport. Unofficial, independent reimplementation; not affiliated with the Eclipse SUMO project.</Description>
   </PropertyGroup>
 
