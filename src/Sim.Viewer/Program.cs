@@ -64,6 +64,12 @@ var perf = false;
 double? simRate = null;
 double? stepLen = null;
 string? traceVeh = null;
+// docs/SUMOSHARP-PACKAGING-DESIGN.md D10 (P3.1): hidden proof-of-seam flag -- installs a trivial
+// MarkerOverlay (a bright magenta dot at the net centre) through the generic IRenderOverlay hook, so a
+// screenshot can confirm a domain-agnostic overlay renders through the seam without the render loop
+// knowing its concrete type. `--mode local` only; harmless everywhere else (RunLocal ignores it unless
+// set).
+var overlayTest = false;
 
 for (var i = 0; i < args.Length; i++)
 {
@@ -126,6 +132,9 @@ for (var i = 0; i < args.Length; i++)
         case "--demo-smoke":
             demoSmoke = true;
             break;
+        case "--overlay-test":
+            overlayTest = true;
+            break;
         default:
             inputPath ??= args[i];
             break;
@@ -158,7 +167,7 @@ if (mode == "remote")
 // loopback/publish, which have no --demo path yet) is skipped for this one case.
 if (mode == "local" && demoName is not null)
 {
-    return RunLocal(null, demoName, screenshotPath, frames, dropObstacle, fleet, perf, secondsCap, simRate, stepLen);
+    return RunLocal(null, demoName, screenshotPath, frames, dropObstacle, fleet, perf, secondsCap, simRate, stepLen, overlayTest);
 }
 
 if (inputPath is null)
@@ -169,7 +178,7 @@ if (inputPath is null)
 
 if (mode == "local")
 {
-    return RunLocal(ResolveNetPath(inputPath), demoName, screenshotPath, frames, dropObstacle, fleet, perf, secondsCap, simRate, stepLen);
+    return RunLocal(ResolveNetPath(inputPath), demoName, screenshotPath, frames, dropObstacle, fleet, perf, secondsCap, simRate, stepLen, overlayTest);
 }
 
 if (mode == "loopback")
@@ -205,7 +214,8 @@ static string ResolveNetPath(string path)
 // those); an ad-hoc path keeps using them exactly as before -- this is the "keep working exactly as
 // today" invariant §5 requires for `--mode local <path>` with no `--demo`.
 static int RunLocal(string? netPath, string? demoName, string? screenshotPath, int frames,
-    (double X, double Y)? dropObstacle, int? fleet, bool perf, double? secondsCap, double? simRate, double? stepLen)
+    (double X, double Y)? dropObstacle, int? fleet, bool perf, double? secondsCap, double? simRate, double? stepLen,
+    bool overlayTest = false)
 {
     var step = stepLen ?? 1.0;
     var repoRoot = DemoCatalog.RepoRoot();
@@ -248,6 +258,13 @@ static int RunLocal(string? netPath, string? demoName, string? screenshotPath, i
 
     using var session = new DemoSession(initialHost, initialEntry, repoRoot);
     var host = session.Host;
+
+    // docs/SUMOSHARP-PACKAGING-DESIGN.md D10 (P3.1): the generic render-overlay seam. Null today except
+    // for the hidden `--overlay-test` proof; a real domain overlay (e.g. the evac layer, P3.2) plugs in
+    // here without RunLocal ever naming its concrete type.
+    IRenderOverlay? overlay = overlayTest
+        ? new MarkerOverlay((host.MinX + host.MaxX) / 2.0, (host.MinY + host.MaxY) / 2.0)
+        : null;
 
     // Default interactive speed to 1x real-time (what a viewer expects); perf runs keep the 10x fast-forward
     // so the fleet warms up quickly. Either way the panel's "speed" slider overrides live.
@@ -424,8 +441,16 @@ static int RunLocal(string? netPath, string? demoName, string? screenshotPath, i
                     // cursor. docs/SUMOSHARP-VIEWER-DEMO-EVAC-DESIGN.md §6 point 4: for evac demos the click
                     // (re)places the incident instead of dropping an obstacle (evac scenarios carry their
                     // own demand; there is no "obstacle" concept there).
+                    // docs/SUMOSHARP-PACKAGING-DESIGN.md D10 (P3.1): an overlay that wants clicks (e.g. the
+                    // evac layer's incident placement, P3.2) gets first refusal; otherwise fall back to
+                    // today's behaviour (evac special-case still inline here -- Commit 2 moves it into the
+                    // evac overlay and this `host.Evac` branch goes away).
                     var flipSpace = Raylib.GetScreenToWorld2D(mouse, camera);
-                    if (host.Evac is not null)
+                    if (overlay is { HandlesWorldClick: true })
+                    {
+                        overlay.OnWorldClick(flipSpace.X, -flipSpace.Y);
+                    }
+                    else if (host.Evac is not null)
                     {
                         host.SetIncidentAtWorld(flipSpace.X, -flipSpace.Y);
                     }
@@ -510,7 +535,14 @@ static int RunLocal(string? netPath, string? demoName, string? screenshotPath, i
             Renderer.DrawEvacWorld(camera, evacSnap);
         }
 
+        // docs/SUMOSHARP-PACKAGING-DESIGN.md D10 (P3.1): the generic overlay's UNDER layer, immediately
+        // before the vehicles it may want to draw beneath/around.
+        overlay?.DrawWorldUnder(camera, snapshot, vehicleDraws);
+
         Renderer.DrawDynamicWorld(camera, host.Network, snapshot, host, vehicleDraws);
+
+        // ...and its OVER layer, immediately after.
+        overlay?.DrawWorldOver(camera, snapshot, vehicleDraws);
 
         if (evacSnap is not null)
         {
@@ -519,6 +551,7 @@ static int RunLocal(string? netPath, string? demoName, string? screenshotPath, i
 
         Renderer.DrawDemosPanel(session, resolvedCatalog, evacSnap);
         Renderer.DrawControlsPanel(host, ref fpsCap, ref smooth, isEvac: evacSnap is not null);
+        overlay?.DrawUi();
         if (showDiagnostics)
         {
             Renderer.DrawDiagnosticsPanel(snapshot, frameStats, host.Speed, actualSpeed, host.StepLength);

@@ -601,7 +601,11 @@ public static class Renderer
         // docs/SUMOSHARP-VIEWER-DEMO-EVAC-DESIGN.md §6: `fear` is an OPTIONAL trailing param (default 0) so
         // every existing call site (DDS loopback/remote, and local's non-evac path) keeps compiling and
         // rendering byte-identically -- fear 0 must yield the EXACT current speed colour (see DrawVehicleList).
-        public DrVehicleDraw(double frontX, double frontY, float headingDeg, float length, float width, double speedExact, double fear = 0.0)
+        // docs/SUMOSHARP-PACKAGING-DESIGN.md D10 (P3.1): `handle` is a further OPTIONAL trailing param
+        // (default `default(VehicleHandle)`, i.e. VehicleHandle.None) -- generic vehicle identity, for a
+        // render-overlay (e.g. the evac fear overpaint, P3.2) to key its own per-vehicle state off the SAME
+        // handle the engine uses, without the renderer knowing why. Every existing call site keeps compiling.
+        public DrVehicleDraw(double frontX, double frontY, float headingDeg, float length, float width, double speedExact, double fear = 0.0, VehicleHandle handle = default)
         {
             FrontX = frontX;
             FrontY = frontY;
@@ -610,6 +614,7 @@ public static class Renderer
             Width = width;
             SpeedExact = speedExact;
             Fear = fear;
+            Handle = handle;
         }
 
         public double FrontX { get; }
@@ -619,6 +624,7 @@ public static class Renderer
         public float Width { get; }
         public double SpeedExact { get; }
         public double Fear { get; }
+        public VehicleHandle Handle { get; }
     }
 
     // Draws the LOOPBACK-mode world from DECODED DDS state (subscriber geometry + TL-by-lane + already
