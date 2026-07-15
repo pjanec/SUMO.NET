@@ -139,3 +139,45 @@ the DR-error policy (the scheduler's bookkeeping/prune tests should be behaviour
    governor only if the 10k measurement needs it (proposed: measure first).
 4. **Tolerances** — 0.3 m / 0.2 m are starting points; final from the §5 smoothness-vs-throughput
    sweep.
+
+## 8. Resolved decisions & concrete plan (agreed 2026-07-15)
+
+**Layering (user principle):** the data model + messages (`VehicleRecord`) are the transport-agnostic
+**API**; `Sim.Replication` owns them + the DR math + the publish-decision *principle*; the DDS layer is
+just a transport that reuses them; `Sim.Core` stays network-agnostic (untouched). Decisions:
+1. Shared `ExtrapolateArc` → **`Sim.Replication`** (e.g. `DrExtrapolation.Arc(...)`); `DrClock` calls
+   it (one source of truth so publisher-prediction == viewer-prediction). Decision operates on
+   `VehicleRecord` fields, never a DDS type.
+2. **Keep `DefaultPublishPolicy` unchanged**; **add `DrErrorPublishPolicy`** (coexist under one
+   `IPublishPolicy`). `DdsPublisher` switches to the DR-error policy; `Sim.LiveHost` keeps Default.
+3. **Measure throughput first**; governor only if 10k needs it.
+4. Tolerances 0.3 m / 0.2 m to start.
+
+**Blast radius** (`Sim.Replication` IS in `Traffic.sln` → `dotnet test` must stay green): callers
+`src/Sim.Viewer.Core/DdsPublisher.cs`, `src/Sim.LiveHost/SimHost.cs`; tests
+`tests/Sim.ParityTests/RungB24PublishSchedulerTests.cs` (+ its `Offer` helper).
+
+**API shape:**
+- `PublishSignals` gains defaulted fields `PosError`, `LatError`, `LaneChanged` (existing ctor still
+  compiles; `DefaultPublishPolicy` ignores them → its behaviour and the RungB24 interval assertions are
+  unchanged, only the test's `Offer` helper is updated to the new scheduler signature).
+- `PublishScheduler` stores the last-**published** state per handle (pos, speed, accel, posLat,
+  latSpeed, laneHandle, time) instead of just last-sent time; `ShouldPublish` gains the current
+  `pos/posLat/laneHandle/latSpeed`, computes `predPos = DrExtrapolation.Arc(ref…, since)` +
+  `predLat`, fills the new signals (`LaneChanged = lane != ref.lane`, errors = |cur − pred|), calls
+  the policy; on publish, re-bases the stored ref. `SecondsSinceLastSent` (= since) stays for Default.
+- `DrErrorPublishPolicy`: publish if `LaneChanged || PosError > PosTol || LatError > LatTol ||
+  SecondsSinceLastSent >= MaxInterval` (+ first-sight = since is +inf). Tunables PosTol=0.3,
+  LatTol=0.2, MaxInterval=3.
+
+**Task stages** (each: build + `dotnet test` green is a success condition):
+- **A (Sim.Replication + tests):** shared `DrExtrapolation.Arc`; enrich `PublishSignals`; extend
+  `PublishScheduler` (state + signature + prediction); add `DrErrorPublishPolicy`; keep
+  `DefaultPublishPolicy`; update `SimHost` + `RungB24` `Offer` to the new signature; add DrError unit
+  tests. Gate: `dotnet test` green (Default assertions unchanged; new DrError tests pass).
+- **B (wire DDS + DrClock):** `DdsPublisher` builds the candidate `VehicleRecord`, calls the new
+  scheduler API, constructed with `DrErrorPublishPolicy`; `DrClock.ExtrapolateArc` delegates to the
+  shared `DrExtrapolation.Arc`. Gate: viewer builds; loopback `--trace-veh follow` on `12-overtake`
+  shows the pass reconciliation ≤ ~0.3 m (was ~2 m) and no rendered slowdown.
+- **C (throughput):** measure published records/s at 10k, DR-error vs Default; tune PosTol / decide on
+  the governor.
