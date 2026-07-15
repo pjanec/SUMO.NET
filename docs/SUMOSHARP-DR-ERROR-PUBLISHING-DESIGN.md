@@ -1,11 +1,14 @@
 # Dead-reckoning-error-based publishing — design
 
-**Status:** design (design-first; no code until agreed). **Scope:** the publish side —
-`Sim.Replication` (`PublishScheduler` / `PublishPolicy`) + `Sim.Viewer.Core/DdsPublisher`, plus a
-small shared-extrapolation extraction. **Builds on:** `SUMOSHARP-DEADRECKONING.md` §7 (the adaptive
-scheduler) and `SUMOSHARP-VIEWER-DR-SMOOTHING.md` §5 (the viewer's DR pipeline). **Supersedes** the
-delay/extrapolation dimension of `SUMOSHARP-DR-MOTION-JITTER-INVESTIGATION.md` (this is the root-cause
-fix that investigation pointed to). **Parity:** publish-side only — zero engine/golden impact.
+**Status:** ✅ **IMPLEMENTED & on `main`** (2026-07-15) — Stage A `4f9b1b6`, Stage B `89abbe4`,
+Stage C (throughput measurement) done. See §9 "As-built" for what actually landed, the throughput
+result, and the deviations from the plan below. The design sections §1–§8 are kept as the rationale of
+record. **Scope:** the publish side — `Sim.Replication` (`PublishScheduler` / `PublishPolicy`) +
+`Sim.Viewer.Core/DdsPublisher`, plus a small shared-extrapolation extraction. **Builds on:**
+`SUMOSHARP-DEADRECKONING.md` §7 (the adaptive scheduler) and `SUMOSHARP-VIEWER-DR-SMOOTHING.md` §5 (the
+viewer's DR pipeline). **Supersedes** the delay/extrapolation dimension of
+`SUMOSHARP-DR-MOTION-JITTER-INVESTIGATION.md` (this is the root-cause fix that investigation pointed
+to). **Parity:** publish-side only — zero engine/golden impact (`dotnet test` stayed 446/0 throughout).
 
 ---
 
@@ -181,3 +184,47 @@ just a transport that reuses them; `Sim.Core` stays network-agnostic (untouched)
   shows the pass reconciliation ≤ ~0.3 m (was ~2 m) and no rendered slowdown.
 - **C (throughput):** measure published records/s at 10k, DR-error vs Default; tune PosTol / decide on
   the governor.
+
+## 9. As-built (implemented 2026-07-15)
+
+Landed on `main` in three stages; the design above was followed closely, with the deviations noted.
+
+**Stage A — `4f9b1b6` (Sim.Replication, additive, no signature change):**
+- `DrExtrapolation.Arc(pos, speed, accel, dt)` — the shared constant-accel arc curve, ported verbatim
+  from `DrClock.ExtrapolateArc` (clamped so a decelerating vehicle freezes at its stop, never reverses).
+- `PublishSignals` gained optional `PosError` / `LatError` / `LaneChanged` (existing 6-arg ctor calls
+  untouched); `DrErrorPublishPolicy` added; `IPublishPolicy` / `DefaultPublishPolicy` unchanged.
+- Unit tests for the policy predicate. `dotnet test` 446/0.
+
+**Stage B — `89abbe4` (coordinated scheduler + caller migration):**
+- `PublishScheduler` now stores the last-**published** `Ref` (pos/posLat/speed/accel/latSpeed/lane/time)
+  and computes `predPos = DrExtrapolation.Arc(ref…, since)` + `predLat` → fills the new signals. New
+  `ShouldPublish(handle, model, pos, posLat, speed, accel, latSpeed, laneHandle, time, manoeuvring)`.
+  `since` still drives `DefaultPublishPolicy` (its behaviour + the RungB24 interval assertions unchanged;
+  only the test's `Offer` helper was migrated to the new signature).
+- `DdsPublisher` → `DrErrorPublishPolicy { PosTol 0.3, LatTol 0.2, MaxInterval 3 }`, passes current
+  `pos/posLat/lane`. `SimHost` kept `DefaultPublishPolicy`, new signature. `DrClock.ExtrapolateArc`
+  delegates to `DrExtrapolation.Arc` (publisher prediction == viewer extrapolation, byte-identical).
+
+**Stage C — throughput (measurement only; no commit — instrumentation reverted):**
+- Measured published-records/step, DR-error vs Default, on `--mode publish --fleet 1500 samples/
+  junctions/cross`: **DR-error 181.2 vs Default 192.6 → 0.94× (≈6% fewer).** Constraint satisfied —
+  throughput not increased. Per-vehicle decisions are independent, so the ratio is scale-invariant
+  (measurement was ramp-limited to ~454 vehicles in the 30 s window, not the full 10k; a true-10k
+  absolute figure was not forced — the ratio holds by construction).
+
+**Deviations / notes:**
+- **Governor (§3.5, open decision §7.3): NOT implemented** — the measure-first decision held; DR-error
+  is already ≤ Default, so no per-step publish cap was needed. Revisit only if a churnier 10k scene
+  ever exceeds budget.
+- **Layering (§8, decision 1) as designed:** `DrExtrapolation` lives in `Sim.Replication`; the decision
+  operates on `VehicleRecord` fields; `Sim.Core` untouched.
+- **Verification metric corrected during Stage B review:** the initial gate measured arc-pos
+  reconciliation, which is meaningless across a lane change (different lanes have different arc origins →
+  an 8.66 m "reconciliation" that is pure bookkeeping). Re-verified with **world-position** motion split
+  into straight-cruise vs lane-change frames: straight-cruise min rendered/true speed ratio **0.72 with
+  zero sub-70% events** (the pass hiccup + frequent micro-slowdowns gone), max world step ≤ 0.34 m. The
+  residual lane-change dip is the separate lateral-straddle item, not this.
+- **Outcome vs goal:** the pass hiccup and the frequent straight-line micro-slowdowns are fixed at the
+  root and confirmed live by the user, at low delay, with no bandwidth increase — exactly the three
+  mutually-constrained requirements (delay <1 s, no blanket bandwidth, smooth) the design set out to meet.
