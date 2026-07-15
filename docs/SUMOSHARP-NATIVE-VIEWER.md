@@ -26,6 +26,27 @@ dotnet run --project src/Sim.Viewer -- --mode <local|remote|loopback> <scenarioD
   subscriber/renderer, over DDS intra-host. The single-app DR test: exercises publish→DDS→subscribe→DR→render
   with no second machine.
 
+### Demo tool + live evacuation (`local` mode) — see `docs/SUMOSHARP-VIEWER-DEMO-EVAC-*.md`
+
+`local` mode doubles as a **fast interactive demo tool**. An in-window ImGui **Demos picker** (categorized:
+Junctions / Traffic-lights / Lane-change / Rail / City-scale / Sandbox / Evacuation) switches between curated
+demos live — dispose-old/build-new at the top of the next frame, camera re-fit, road cache invalidated:
+
+```
+dotnet run --project src/Sim.Viewer -- --mode local --demo "Roundabout"          # pick the initial demo by name
+dotnet run --project src/Sim.Viewer -- --mode local --demo "Evacuation (organic town)"
+dotnet run --project src/Sim.Viewer -- --mode local samples/junctions/cross/net.net.xml   # ad-hoc path still works
+```
+
+The **Evacuation** category renders the `Sim.Evac` panic-evacuation layer **live** for the first time (it was
+offline-HTML-only). A tiny inert `SimulationRunner.OnAfterStep` hook ticks the `EvacDirector` in lockstep with
+the engine; `EngineHost` publishes an immutable `EvacRenderSnapshot` (peds, abandoned cars, pushers,
+per-vehicle fear, incident, boundary) captured on the engine thread; the renderer draws the amber incident zone
++ safe-radius ring, the dashed known-world boundary, fear-tinted vehicles, cyan→green pedestrians, dark-red
+abandoned cars and orange shoulder-pushers (colours match `Sim.Viz/SceneGen` so live == the HTML replay).
+**Left-click (re)places the incident** in an evac demo. The hook is null on every parity/bench path, so the
+determinism hash `909605E965BFFE59` and the suite are unchanged.
+
 ## Projects (both OUTSIDE `Traffic.sln` — they pull CycloneDDS + raylib; the hermetic gate never sees them)
 
 - **`src/Sim.Viewer.Core`** — no raylib dependency, so it is **headless-testable**:

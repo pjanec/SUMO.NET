@@ -19,6 +19,6 @@ Standing gate on every tick: `dotnet test Traffic.sln` = 446/3/0 · `Sim.Bench` 
 - [x] **T6** evac draw pass + place-incident click — Opus-verified first-hand (Xvfb screenshots + exact-color pixel scans): amber incident zone+ring, dashed boundary, fear-tinted vehicles, and peds/abandoned cars render (organic: cyan-fleeing=1, escaped-green=223, abandoned-red=56; grid-tls: green=24, red=98). Pure-SUMO demos carry 0 evac-color pixels (unchanged); left-click places the incident in evac demos.
 
 ## Stage D — close-out
-- [ ] **T7** docs (native-viewer doc + README) + final gate re-confirm + screenshots attached
+- [x] **T7** docs + final gate — `docs/SUMOSHARP-NATIVE-VIEWER.md` documents the demo tool + live-evac mode; README "Live & native viewers" updated with `--demo` + live panic-evac. Final gate re-confirmed: `dotnet test Traffic.sln` = 446/3/0, `Sim.Bench` hash `909605E965BFFE59` single+parallel.
 
-Status: **Batches 1–2 (T1–T4) landed + Opus-verified. Batch 3 (T5–T6, ImGui picker + evac render) next.**
+Status: **COMPLETE — all of T1–T7 landed + Opus-verified. The native viewer's `local` mode is now an interactive demo tool (ImGui scenario picker) covering pure-SUMO scenarios and the live panic-evacuation feature.**

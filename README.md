@@ -313,7 +313,11 @@ hermetic `dotnet test` gate never touches them and the determinism hash is unaff
   Four modes: `local` (renders the authoritative `Snapshot` every frame — no transport, no jitter),
   `loopback` (one process: publish → DDS → subscribe → dead-reckon → render), `publish` (headless
   engine + DDS writer), and `remote` (**view-only** DDS subscriber + renderer; a late joiner gets the
-  road network via durable QoS).
+  road network via durable QoS). `local` mode also doubles as a **demo tool**: an in-window ImGui
+  **scenario picker** (`--demo "<name>"`) switches between curated demos live — junctions, traffic
+  lights, lane-changing, rail, city-scale, sandbox nets, **and** the **panic-evacuation** feature
+  rendered *live* (incident zone, fear-tinted cars, pedestrian crowd, abandoned cars; click to place the
+  incident).
 
 The remote transport is **binary DDS** (RTPS), not JSON — a `Sim.Replication` layer (transport-agnostic
 frame codec + an **adaptive publish-rate policy** that sends fast-changing vehicles more often and
@@ -518,6 +522,9 @@ dotnet run -c Release --project src/Sim.Viewer -- --mode loopback scenarios/15-r
 # two processes: a headless publisher, then a late-joining view-only remote client
 dotnet run -c Release --project src/Sim.Viewer -- --mode publish samples/junctions/cross/net.net.xml   # terminal A
 dotnet run -c Release --project src/Sim.Viewer -- --mode remote                                        # terminal B
+# demo tool: pick an initial demo by name; switch live from the in-window ImGui "Demos" picker
+dotnet run -c Release --project src/Sim.Viewer -- --mode local --demo "Roundabout"
+dotnet run -c Release --project src/Sim.Viewer -- --mode local --demo "Evacuation (organic town)"      # live panic-evac
 ```
 Controls (local/loopback): drag = pan, wheel = zoom, click a road = drop an obstacle, `d` = toggle the
 diagnostics overlay; the ImGui panel has restart / clear-obstacles / inject-traffic / DR-delay. On a
