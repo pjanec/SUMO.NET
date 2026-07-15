@@ -88,7 +88,18 @@ public sealed class EvacOverlay : IRenderOverlay
                     $"Unknown evac kind '{_evacKind}' (expected \"grid-tls\", \"organic\", or \"city\").");
         }
 
-        return (engine, e => { director.Tick(); _snap = Capture(e, director); });
+        // docs/SUMOSHARP-VIEWER-DEMO-EVAC-DESIGN.md: unlike EvacDirector.Tick() (the offline/self-driven
+        // path, which owns _engine.Step() itself), the native viewer's SimulationRunner is the sole
+        // engine driver here (Tick = Step; OnAfterStep) -- calling director.Tick() from OnAfterStep would
+        // step the engine a SECOND time per runner tick, desyncing the director's clock from the traffic
+        // (see the design doc's "double-step" note). Instead split BeforeStep/AfterStep across the
+        // runner's own step: BeforeStep() now (before the runner's first Step()), then per step
+        // AfterStep() -> Capture() -> BeforeStep() (prep for the NEXT Step()). Unrolled across ticks this
+        // is exactly BeforeStep_N, Step_N, AfterStep_N per N -- the engine steps once per runner tick and
+        // director.Time lines up with the just-completed engine step, byte-identical in spirit to
+        // EvacDirector.Tick()'s own PreStep, Step, PostStep interleaving.
+        director.BeforeStep(); // initial pre-step prep for the runner's FIRST Engine.Step()
+        return (engine, e => { director.AfterStep(); _snap = Capture(e, director); director.BeforeStep(); });
     }
 
     // Maps an evac kind name to its net path (geometry/bounds), the config instance every Build call for

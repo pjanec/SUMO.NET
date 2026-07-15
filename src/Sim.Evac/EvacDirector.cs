@@ -145,18 +145,27 @@ public sealed class EvacDirector
 
     // ----- the coordinated tick -----
 
+    // The pre-step half of a tick: advance the director clock and run PreStep (auto-track, disc feeds,
+    // fear update -> panic params/obstacles the NEXT engine step consumes). Public so a host that owns
+    // its OWN engine stepping (the native viewer's SimulationRunner) can run this WITHOUT EvacDirector
+    // also stepping -- avoiding a double-step. Tick() (the offline/self-driven path) still calls it.
+    public void BeforeStep() { _time += _stepLength; PreStep(); }
+
+    // The post-step half: PostStep (pedestrian crowd advance, abandonment, etc. off the just-advanced
+    // engine state). Public for the same reason as BeforeStep.
+    public void AfterStep() { PostStep(); }
+
     public void Tick()
     {
         var tickStart = _profiler?.Begin() ?? 0L;
 
-        _time += _stepLength;
-        PreStep();
+        BeforeStep();
 
         var engineStart = _profiler?.Begin() ?? 0L;
         _engine.Step();
         _profiler?.End(engineStart, EvacProfiler.Phase.EngineStep);
 
-        PostStep();
+        AfterStep();
 
         _profiler?.EndTick(tickStart);
     }
