@@ -90,3 +90,64 @@ public class RungB24PublishSchedulerTests
         PublishScheduler sched, VehicleHandle h, double accel, double t, bool manoeuvring = false) =>
         sched.ShouldPublish(h, DrModel.LaneArc, speed: 10.0, accel: accel, time: t, laneChangingOrManoeuvring: manoeuvring);
 }
+
+// SUMOSHARP-DR-ERROR-PUBLISHING-DESIGN.md §8 (Stage A) — DrErrorPublishPolicy.ShouldPublish exercised
+// directly with hand-built PublishSignals; no scheduler involved.
+public class DrErrorPublishPolicyTests
+{
+    private static readonly VehicleHandle H = new(1, 1);
+
+    [Fact]
+    public void Steady_InTolerance_BeforeHeartbeat_DoesNotPublish()
+    {
+        var policy = new DrErrorPublishPolicy();
+        var s = new PublishSignals(H, DrModel.LaneArc, 10, 0, secondsSinceLastSent: 1.0, false,
+            posError: 0.05, latError: 0.0, laneChanged: false);
+        Assert.False(policy.ShouldPublish(s));
+    }
+
+    [Fact]
+    public void PosErrorOverTolerance_Publishes()
+    {
+        var policy = new DrErrorPublishPolicy();
+        var s = new PublishSignals(H, DrModel.LaneArc, 10, 0, secondsSinceLastSent: 1.0, false,
+            posError: 0.5, latError: 0.0, laneChanged: false);
+        Assert.True(policy.ShouldPublish(s));
+    }
+
+    [Fact]
+    public void LatErrorOverTolerance_Publishes()
+    {
+        var policy = new DrErrorPublishPolicy();
+        var s = new PublishSignals(H, DrModel.LaneArc, 10, 0, secondsSinceLastSent: 1.0, false,
+            posError: 0.0, latError: 0.3, laneChanged: false);
+        Assert.True(policy.ShouldPublish(s));
+    }
+
+    [Fact]
+    public void LaneChanged_Publishes()
+    {
+        var policy = new DrErrorPublishPolicy();
+        var s = new PublishSignals(H, DrModel.LaneArc, 10, 0, secondsSinceLastSent: 1.0, false,
+            posError: 0.0, latError: 0.0, laneChanged: true);
+        Assert.True(policy.ShouldPublish(s));
+    }
+
+    [Fact]
+    public void HeartbeatReached_Publishes()
+    {
+        var policy = new DrErrorPublishPolicy();
+        var s = new PublishSignals(H, DrModel.LaneArc, 10, 0, secondsSinceLastSent: 3.0, false,
+            posError: 0.0, latError: 0.0, laneChanged: false);
+        Assert.True(policy.ShouldPublish(s));
+    }
+
+    [Fact]
+    public void FirstSighting_Publishes()
+    {
+        var policy = new DrErrorPublishPolicy();
+        var s = new PublishSignals(H, DrModel.LaneArc, 10, 0, secondsSinceLastSent: double.PositiveInfinity, false,
+            posError: 0.0, latError: 0.0, laneChanged: false);
+        Assert.True(policy.ShouldPublish(s));
+    }
+}

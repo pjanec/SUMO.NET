@@ -11,10 +11,12 @@ public readonly struct PublishSignals
 {
     public PublishSignals(
         VehicleHandle handle, DrModel model, double speed, double accel,
-        double secondsSinceLastSent, bool laneChangingOrManoeuvring)
+        double secondsSinceLastSent, bool laneChangingOrManoeuvring,
+        double posError = 0.0, double latError = 0.0, bool laneChanged = false)
     {
         Handle = handle; Model = model; Speed = speed; Accel = accel;
         SecondsSinceLastSent = secondsSinceLastSent; LaneChangingOrManoeuvring = laneChangingOrManoeuvring;
+        PosError = posError; LatError = latError; LaneChanged = laneChanged;
     }
 
     public VehicleHandle Handle { get; }
@@ -23,6 +25,9 @@ public readonly struct PublishSignals
     public double Accel { get; }
     public double SecondsSinceLastSent { get; }
     public bool LaneChangingOrManoeuvring { get; }
+    public double PosError { get; }
+    public double LatError { get; }
+    public bool LaneChanged { get; }
 }
 
 public interface IPublishPolicy
@@ -54,4 +59,23 @@ public sealed class DefaultPublishPolicy : IPublishPolicy
         var interval = predictable ? SlowInterval : FastInterval;
         return s.SecondsSinceLastSent >= interval;
     }
+}
+
+// Dead-reckoning-error policy (SUMOSHARP-DR-ERROR-PUBLISHING-DESIGN.md): publish only when the receiver's
+// dead-reckoning would be wrong -- i.e. the true state has diverged from the DR prediction (computed by the
+// scheduler via DrExtrapolation.Arc from the last-PUBLISHED state) beyond a small tolerance, or the lane
+// changed, or a liveliness heartbeat elapsed. A genuinely steady vehicle diverges by ~0 -> not sent
+// (bandwidth saved); a drifting/maneuvering one is sent promptly -> the viewer's extrapolation stays within
+// tolerance -> smooth at low playout delay. First sighting: SecondsSinceLastSent is +inf >= MaxInterval.
+public sealed class DrErrorPublishPolicy : IPublishPolicy
+{
+    public double PosTol { get; init; } = 0.3;      // m of longitudinal prediction error
+    public double LatTol { get; init; } = 0.2;      // m of lateral (posLat) prediction error
+    public double MaxInterval { get; init; } = 3.0; // s liveliness heartbeat
+
+    public bool ShouldPublish(in PublishSignals s) =>
+        s.LaneChanged
+        || s.PosError > PosTol
+        || s.LatError > LatTol
+        || s.SecondsSinceLastSent >= MaxInterval;
 }
