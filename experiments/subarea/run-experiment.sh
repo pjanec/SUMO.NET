@@ -53,8 +53,11 @@ cat > macro.sumocfg <<'EOF'
   <processing><time-to-teleport value="-1"/><default.speeddev value="0"/></processing>
 </configuration>
 EOF
+# --vehroute-output.write-unfinished is REQUIRED: without it, vehicles still en route at
+# sim end are silently dropped (here ~14%), and every crop inherits an identical demand
+# shortfall that masquerades as spatial non-convergence (see RESULTS-halo.md).
 sumo -c macro.sumocfg --vehroute-output macro.vehroutes.xml \
-     --vehroute-output.exit-times --no-step-log true
+     --vehroute-output.exit-times --vehroute-output.write-unfinished --no-step-log true
 
 echo "== 5. cutRoutes: crop demand into the box, re-timing fringe departures =="
 python3 "$SUMO_HOME/tools/route/cutRoutes.py" sub.net.xml macro.vehroutes.xml \
