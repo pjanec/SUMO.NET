@@ -153,19 +153,20 @@ dotnet add package SumoSharp.Core
 using Sim.Core;
 
 var engine = new Engine();
-engine.LoadNetwork("net.net.xml");        // SumoSharp.Ingest parses the network
+engine.LoadNetwork("scenarios/15-reroute/net.net.xml");        // SumoSharp.Ingest parses the network
 
-// spawn one vehicle on a route (edge ids come from your .net.xml)
-var type = engine.DefaultVType;
-engine.SpawnVehicle(type, fromEdge: "<from>", toEdge: "<to>");
+// define a deterministic car type, then spawn two routed vehicles (edge ids come from your .net.xml)
+var car = engine.DefineVType(new VTypeParams { Sigma = 0.0, MaxSpeed = 13.89 }, id: "car");
+engine.SpawnVehicle(car, fromEdge: "SA", toEdge: "DE");        // routed by the built-in shortest path
+engine.SpawnVehicle(engine.DefaultVType, fromEdge: "AB", toEdge: "DE");
 
-for (int step = 0; step < 20; step++)
+for (int step = 1; step <= 20; step++)
 {
-    engine.Step();                        // advance one simulated second
+    engine.Step();                                             // advance one simulated second
     foreach (var h in engine.VehicleHandles)
         if (engine.TryGetVehicle(h, out VehicleState v))
-            Console.WriteLine($"t={engine.CurrentTime,4}s  {v.VehicleId,-8}  " +
-                              $"({v.X,7:0.0},{v.Y,7:0.0})  {v.Speed,4:0.0} m/s  lane={v.LaneId}");
+            Console.WriteLine($"t={engine.CurrentTime,5:F1}s  {v.VehicleId,-6}  " +
+                              $"lane={v.LaneId,-6} ({v.X,7:F1},{v.Y,7:F1})  {v.Speed,5:F2} m/s");
 }
 ```
 

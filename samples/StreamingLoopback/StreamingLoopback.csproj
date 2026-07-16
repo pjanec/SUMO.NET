@@ -1,0 +1,27 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    StreamingLoopback: a consumer of SumoSharp.Replication demonstrating the transport-neutral
+    replication contract (IReplicationSink / IReplicationSource) end to end, with NO DDS involved.
+    InMemoryReplicationBus is a same-process, non-DDS binding of those interfaces; a consumer coded
+    against IReplicationSource never needs to know CycloneDDS exists at all. A sample, not a package
+    (IsPackable=false), so it never ships to NuGet and never affects the hermetic offline test loop.
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>12</LangVersion>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- In a real consumer project this would instead be:
+           dotnet add package SumoSharp.Replication
+         We use a ProjectReference here because the packages are not yet published to nuget.org.
+         See this sample's README.md for the equivalent `dotnet add package` step. -->
+    <ProjectReference Include="..\..\src\Sim.Replication\Sim.Replication.csproj" />
+  </ItemGroup>
+
+</Project>
