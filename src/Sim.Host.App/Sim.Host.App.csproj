@@ -1,0 +1,35 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    docs/DEMO-CITY3D-DESIGN.md "src/Sim.Host.App, the generic headless DDS host": a standalone, reusable
+    tool (sibling to Sim.LiveHost), NOT demo-specific. Loads any scenario (net+rou+cfg dir), drives the
+    engine with SimulationRunner in manual mode, and each tick hands the snapshot to Sim.Host's
+    ReplicationPublisher, which writes it to whichever IReplicationSink the transport flag selects (dds
+    or inmem). No rendering, no GPU: runs headless on this Linux VM. The City3D remote viewer (T2.2)
+    subscribes to whatever this process publishes.
+
+    DELIBERATELY OUT OF Traffic.sln: it references Sim.Replication.Dds, which pulls the external
+    CycloneDDS.NET package (and a native DDS library), the same reason Sim.Replication.Dds and
+    Sim.Viewer are themselves out of the solution. Build/run it explicitly by project path, like Sim.Viewer.
+  -->
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>12</LangVersion>
+    <IsPackable>false</IsPackable>
+    <AssemblyName>Sim.Host.App</AssemblyName>
+    <RootNamespace>Sim.Host.App</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Sim.Host\Sim.Host.csproj" />
+    <ProjectReference Include="..\Sim.Core\Sim.Core.csproj" />
+    <ProjectReference Include="..\Sim.Ingest\Sim.Ingest.csproj" />
+    <ProjectReference Include="..\Sim.Replication\Sim.Replication.csproj" />
+    <ProjectReference Include="..\Sim.Replication.Dds\Sim.Replication.Dds.csproj" />
+  </ItemGroup>
+
+</Project>

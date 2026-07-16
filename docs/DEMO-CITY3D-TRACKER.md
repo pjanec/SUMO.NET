@@ -27,7 +27,7 @@ the first `src/` task and repeat them here as each box is ticked.
 - [x] **T1.7** scenario switch + scale — Opus-verified first-hand: `run-local.sh` (builds + launches the viewer; interactive with a DISPLAY, else Xvfb; `--scenario`/`--camera`/`--shot`/`--frames` passthrough). All three tiers render headlessly: `09-traffic-light` (3 roads/52 bldg/1 head), **`_bench/city-mixed-1k` (7024 roads / 15124 buildings / 1876 signal heads**, big signalized city), `_bench/city-organic-L2` (1787/4080/492). Believable scale confirmed via screenshots (true 4.5×1.8 m cars, true lane widths, tens-of-metre buildings). *desktop: interactive look pending.*
 
 ## Stage 2 — Remote (M2)
-- [ ] **T2.1** `src/Sim.Host.App` generic headless DDS host — publishes (dds + inmem), self-test green, gate unchanged
+- [x] **T2.1** `src/Sim.Host.App` — Opus-verified first-hand: additive console tool (`--scenario`/`--transport dds|inmem`/`--hz`/`--seconds`|`--steps`/`--spawn`), reuses `ReplicationPublisher` + `DdsReplicationSink` (no new publisher). **inmem** run self-consumes (`geometry complete=True`, vehicles received); **dds** run publishes over CycloneDDS cleanly (exit 0). Fixed-seed ambient RNG. Not in `Traffic.sln` (native dep) → gate unaffected; `465/0/3` + hash `909605E965BFFE59` confirmed. Additive `src/` only.
 - [ ] **T2.2** viewer remote mode (DDS source), single channel — headless receive+reconstruct, render code unchanged vs local — *desktop: live remote render*
 
 ## Stage 3 — Video wall + performance (M3)
