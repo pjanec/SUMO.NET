@@ -18,8 +18,8 @@
     <IsPackable>false</IsPackable>
     <Authors>pjanec</Authors>
     <Company>pjanec</Company>
-    <PackageProjectUrl>https://github.com/pjanec/SUMO.NET</PackageProjectUrl>
-    <RepositoryUrl>https://github.com/pjanec/SUMO.NET</RepositoryUrl>
+    <PackageProjectUrl>https://github.com/pjanec/SumoSharp</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/pjanec/SumoSharp</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
     <PackageTags>sumo;traffic;microsimulation;traffic-simulation;simulation;ecs;games;digital-twin</PackageTags>
     <PackageReadmeFile>README.md</PackageReadmeFile>

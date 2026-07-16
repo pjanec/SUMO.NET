@@ -13,4 +13,4 @@ if you want the SUMO file parsers and network model without the engine.
 ## License
 
 `EPL-2.0 OR GPL-2.0-or-later` (derivative of SUMO). See
-[the repository](https://github.com/pjanec/SUMO.NET) for details.
+[the repository](https://github.com/pjanec/SumoSharp) for details.

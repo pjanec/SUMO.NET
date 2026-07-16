@@ -75,5 +75,5 @@ bit-for-bit; the parallel plan reproduces the single-threaded trajectory.
 
 ## Links
 
-- Repository & docs: https://github.com/pjanec/SUMO.NET
+- Repository & docs: https://github.com/pjanec/SumoSharp
 - API design of record: `docs/SUMOSHARP-API.md`
