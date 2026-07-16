@@ -1,0 +1,24 @@
+<Project Sdk="Godot.NET.Sdk/4.7.1">
+
+  <!--
+    docs/DEMO-CITY3D-DESIGN.md "Code structure" — the Godot 4 app half of the City3D demo. Thin glue: it
+    references CityLib (which pulls the SumoSharp.* packages from the local feed transitively) and turns
+    CityLib's plain arrays/structs into Godot nodes/meshes. No SumoSharp.* PackageReference lives here
+    directly — CityLib owns that boundary; this project only needs the Godot SDK from nuget.org plus a
+    ProjectReference to CityLib (repo-checkout demo, not a package: IsPackable=false).
+  -->
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+    <!-- Godot 4 .NET requirement: lets the engine dynamically load the game assembly at runtime. -->
+    <EnableDynamicLoading>true</EnableDynamicLoading>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\CityLib\CityLib.csproj" />
+  </ItemGroup>
+
+</Project>
