@@ -56,6 +56,8 @@ doesn't have. Highlights below; precise scope after that.
   [`docs/SUMOSHARP-PACKAGING-DESIGN.md`](docs/SUMOSHARP-PACKAGING-DESIGN.md) (packaging) ·
   [`docs/SUMOSHARP-VIEWER-DR-SMOOTHING.md`](docs/SUMOSHARP-VIEWER-DR-SMOOTHING.md) (dead-reckoning &
   smoothing for custom/3D viewers).
+- **🏙️ [`demos/City3D`](demos/City3D)** — a Godot 4 (.NET) 3D city viewer consuming the SumoSharp
+  packages from a local feed.
 - **🔧 Build & run it from a fresh clone** (build, tests, the demo viewer, the live browser viewer):
   see [Install → *See it run*](#install).
 

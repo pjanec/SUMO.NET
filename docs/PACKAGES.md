@@ -27,6 +27,8 @@ flowchart TD
     Motion --> Repl
     Raylib["⚠ SumoSharp.Viewer.Raylib<br/><small>generic 2D viewer</small>"] --> Motion
     Raylib --> Dds
+    Host["SumoSharp.Host<br/><small>snapshot→wire publisher</small>"] --> Core
+    Host --> Repl
     Testing["SumoSharp.Testing<br/><small>parity harness</small>"] --> Core
     Evac["SumoSharp.Evac<br/><small>panic-evacuation</small>"] --> Core
     Meta["SumoSharp<br/><small>meta bundle</small>"] -.-> Core
@@ -36,7 +38,7 @@ flowchart TD
     classDef portable fill:#1f6feb22,stroke:#1f6feb,color:#0b1220;
     classDef native fill:#c4623b22,stroke:#c4623b,color:#0b1220;
     classDef meta fill:#2fa36b22,stroke:#2fa36b,color:#0b1220;
-    class Core,Ingest,Repl,Motion portable;
+    class Core,Ingest,Repl,Motion,Host portable;
     class Dds,Raylib native;
     class Meta meta;
 ```
@@ -51,6 +53,7 @@ flowchart TD
 | **`SumoSharp.Viewer.Raylib`** ⚠ | A **generic** raylib desktop viewer that renders any SUMO stream, with a render-overlay seam. | net8.0 | native | Viewer.Motion, Replication.Dds |
 | **`SumoSharp.Testing`** | Parity harness: FCD/tripinfo/summary parsers + tolerance comparators. Validate your own scenarios vs SUMO goldens. | net8.0 | — | Core |
 | **`SumoSharp.Evac`** | Optional **panic-evacuation** domain extension over Core's seams (parity-exempt). | net8.0 | — | Core |
+| **`SumoSharp.Host`** | Drive replication from a running engine: `SimulationSnapshot` → `IReplicationSink`, gated by the publish policy — the publish-side companion to `Viewer.Motion`'s receive side. | net8.0 · ns2.1 | — | Core, Replication |
 | **`SumoSharp`** | Convenience **meta-package**: installs the simulate-and-stream core (Core + Ingest + Replication). | ns2.1 | — | (deps only) |
 
 ---
@@ -76,6 +79,7 @@ flowchart LR
 | Someone who wants the batteries-included generic 2D viewer | `+ SumoSharp.Viewer.Raylib` |
 | Validating your own networks against SUMO output | `+ SumoSharp.Testing` |
 | Running evacuation / crowd scenarios | `+ SumoSharp.Evac` |
+| Co-hosting the engine and streaming to a decoupled renderer | `SumoSharp.Host` (+ a transport, e.g. `SumoSharp.Replication.Dds`) on the publish side, `SumoSharp.Viewer.Motion` on the receive side |
 | "Just give me the usual" | `SumoSharp` (meta) |
 
 ---
@@ -239,10 +243,11 @@ Each package's own README carries a focused overview; the runnable, copy-to-lear
 | `SumoSharp.Core` (game facade) | [`samples/SumoSharp.GameHostSample`](../samples/SumoSharp.GameHostSample) — Unity/Godot-shaped `GameHost` (Tick / GetRenderVehicles / Spawn / AddObstacle) | `dotnet run --project samples/SumoSharp.GameHostSample` |
 | `SumoSharp.Replication` | [`samples/StreamingLoopback`](../samples/StreamingLoopback) — in-memory publish→receive | `dotnet run --project samples/StreamingLoopback` |
 | `SumoSharp.Ingest` | via HelloTraffic (parses the net) | — |
-| `SumoSharp.Viewer.Motion` | *no standalone sample yet* — pipeline in the DR-smoothing guide | exercised by `src/Sim.Viewer` |
+| `SumoSharp.Viewer.Motion` | [`demos/City3D`](../demos/City3D) — a Godot 4 3D city viewer that consumes it as a real package consumer | `demos/City3D/build.sh && demos/City3D/run-local.sh` |
 | `SumoSharp.Viewer.Raylib` / `.Replication.Dds` | the native viewer / demo tool (repo run) | `dotnet run -c Release --project src/Sim.Viewer -- --mode local samples/junctions/cross/net.net.xml` |
 | `SumoSharp.Evac` | *no standalone sample yet* | `dotnet run -c Release --project src/Sim.Viewer -- --demo "…evac…"` |
 | `SumoSharp.Testing` | *no standalone sample yet* — consume the FCD parsers + comparators from your test project | — |
+| `demos/City3D` | also exercises `SumoSharp.Core` / `Ingest` / `Replication` / `Replication.Dds` / `Host` (a real package-consumer end to end, local co-hosted + remote/DDS) | see [`demos/City3D/README.md`](../demos/City3D/README.md) |
 
 **Repo demos** (run from a clone, not package installs): a browser live viewer
 (`src/Sim.LiveHost`), an offline HTML replay generator (`src/Sim.Viz`), external-agent injection
@@ -261,7 +266,7 @@ Each package's own README carries a focused overview; the runnable, copy-to-lear
 - **Every push** runs [`ci.yml`](../.github/workflows/ci.yml): build + the hermetic parity test
   suite + a determinism-hash check.
 - **[`pack-check.yml`](../.github/workflows/pack-check.yml)** (push / manual) builds **and packs all
-  nine packages** — including the native `Replication.Dds` and `Viewer.Raylib` — and uploads them as
+  ten packages** — including the native `Replication.Dds` and `Viewer.Raylib` — and uploads them as
   a build artifact. It **never publishes**; it's how you confirm packaging is healthy.
 - **[`publish.yml`](../.github/workflows/publish.yml)** runs only on a `v*` tag: it gates on the
   parity suite, packs the full set at the tag's version, and pushes `.nupkg` + `.snupkg` to

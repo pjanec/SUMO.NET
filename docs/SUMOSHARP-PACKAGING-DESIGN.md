@@ -116,6 +116,10 @@ Tier 2 — Render-side motion / viewers  (generic packages; opinionated demo is 
                              (vehicles/roads/lanes/TLs/HUD/camera) + a render-   Replication.Dds (net8.0)
                              overlay seam (D10). NO evac, NO DemoCatalog, NO curated scenarios.
 
+Tier 2b — Publish-side (generic; the engine-to-wire counterpart of Viewer.Motion's receive side)
+  SumoSharp.Host             ReplicationPublisher: SimulationSnapshot + NetworkModel →       → Core,
+                             IReplicationSink, no DDS/EngineHost coupling (portable)           Replication
+
 Tier 3 — Dev-time / tooling  (net8.0, optional, never referenced by a shipping game build)
   SumoSharp.Tools            SUMO-binary fetch + netconvert/duarouter wrappers          (net8.0)
   SumoSharp.Testing          Sim.Harness: FCD/tripinfo/summary parse + tolerance compare → Core (net8.0)
@@ -311,6 +315,7 @@ relocated to the demo layer, keeping the packaged viewer generic.
 | `Sim.ExtDemo` | exe | sample (unchanged) |
 | `Sim.Run`, `Sim.Bench`, `Sim.BenchCity` | exe | samples/benches (unchanged) |
 | `Sim.LiveHost` | web app | sample (unchanged) |
+| `Sim.Host` | lib (net8;ns2.1) → Core, Replication | **`SumoSharp.Host`** (shipped) — portable snapshot→wire publisher, the publish-side companion to `Viewer.Motion` |
 | (none yet) | — | **`SumoSharp.Tools`** (design-only in `SUMOSHARP-API.md §2`; implement last) |
 | (none — metadata only) | — | **`SumoSharp` meta-package** |
 

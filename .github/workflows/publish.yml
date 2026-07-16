@@ -59,6 +59,7 @@ jobs:
             src/Sim.Viewer.Motion/Sim.Viewer.Motion.csproj \
             src/Sim.Harness/Sim.Harness.csproj \
             src/Sim.Evac/Sim.Evac.csproj \
+            src/Sim.Host/Sim.Host.csproj \
             packaging/SumoSharp.Meta/SumoSharp.Meta.csproj ; do
             dotnet pack "$proj" -c Release --no-build "-p:Version=$VERSION" -o ./nupkgs
           done

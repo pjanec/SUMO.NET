@@ -13,6 +13,7 @@ public class PackagingLayoutTests
     [Theory]
     [InlineData("src/Sim.Replication/Sim.Replication.csproj", "SumoSharp.Replication")]
     [InlineData("src/Sim.Viewer.Motion/Sim.Viewer.Motion.csproj", "SumoSharp.Viewer.Motion")]
+    [InlineData("src/Sim.Host/Sim.Host.csproj", "SumoSharp.Host")]
     public void PortablePackage_MultiTargets_AndHasExpectedPackageId(string relPath, string expectedPackageId)
     {
         var csproj = File.ReadAllText(Path.Combine(RepoRoot(), relPath));

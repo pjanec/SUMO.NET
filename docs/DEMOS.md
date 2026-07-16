@@ -79,3 +79,8 @@ Windows users: run it via WSL or Git Bash (the script is bash-only; there is no 
 
 The native desktop viewer (raylib + Dear ImGui, 10k-scale) is a separate desktop application, not
 a browser page — see `docs/PACKAGES.md` and the "Live & native viewers" section of the README.
+
+Also not part of the web gallery: [`demos/City3D`](../demos/City3D) — a Godot 4 (.NET) 3D city
+viewer that consumes the SumoSharp packages from a local feed (local co-hosted + remote/DDS + a CLI
+video wall); see [`demos/City3D/README.md`](../demos/City3D/README.md). It's a desktop/GPU Godot
+app, not a browser page.

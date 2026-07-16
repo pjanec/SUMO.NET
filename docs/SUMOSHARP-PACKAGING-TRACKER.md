@@ -80,3 +80,14 @@ verified first-hand (build / `dotnet pack` / `dotnet test`), per the CLAUDE.md a
 - [x] `SumoSharp.Core`, `SumoSharp.Ingest` — packable, net8+ns2.1, publish CI, B13 guard.
 - [x] `SumoSharp.Replication`, `SumoSharp.Replication.Dds` — packable.
 - [x] `SumoSharp.Viewer.Motion` — packable (this session, on main).
+
+## Post-merge reconciliation (City3D branch fast-forwarded into main)
+- [x] `SumoSharp.Host` (from `src/Sim.Host`, built for the City3D handoff as the portable
+      snapshot→wire publisher) promoted to the 10th shipped package: added to the `pack-check.yml` /
+      `publish.yml` portable pack loops, the packing-count assertion, and the
+      `PackagingLayoutTests.PortablePackage_MultiTargets_AndHasExpectedPackageId` guard theory.
+      `docs/PACKAGES.md` and `docs/SUMOSHARP-PACKAGING-DESIGN.md` §2/§6 updated accordingly.
+- [x] `demos/City3D` landed as the first real package-consumer proof (Godot 4 viewer, local
+      co-hosted + remote/DDS, consuming `SumoSharp.Core`/`Ingest`/`Replication`/`Replication.Dds`/
+      `Viewer.Motion`/`Host` via `<PackageReference>` from a local NuGet feed, not `<ProjectReference>`).
+      Pointers added: `docs/DEMOS.md`, `README.md`, and the `docs/PACKAGES.md` examples table.

@@ -50,6 +50,7 @@ jobs:
             src/Sim.Viewer.Motion/Sim.Viewer.Motion.csproj \
             src/Sim.Harness/Sim.Harness.csproj \
             src/Sim.Evac/Sim.Evac.csproj \
+            src/Sim.Host/Sim.Host.csproj \
             packaging/SumoSharp.Meta/SumoSharp.Meta.csproj ; do
             dotnet pack "$proj" -c Release --no-build -o ./nupkgs
           done
@@ -60,16 +61,16 @@ jobs:
           echo "=== packed ==="
           ls -l ./nupkgs
 
-      - name: Assert all 9 packages were produced
+      - name: Assert all 10 packages were produced
         run: |
           count="$(ls ./nupkgs/*.nupkg 2>/dev/null | wc -l)"
           echo "nupkg count: $count"
           for id in SumoSharp SumoSharp.Core SumoSharp.Ingest SumoSharp.Replication \
                     SumoSharp.Replication.Dds SumoSharp.Viewer.Motion SumoSharp.Viewer.Raylib \
-                    SumoSharp.Testing SumoSharp.Evac ; do
+                    SumoSharp.Testing SumoSharp.Evac SumoSharp.Host ; do
             ls ./nupkgs/${id}.*.nupkg >/dev/null 2>&1 || { echo "::error::missing package $id"; exit 1; }
           done
-          echo "all 9 shipped packages packed OK"
+          echo "all 10 shipped packages packed OK"
 
       - name: Upload packages as build artifact (not published)
         uses: actions/upload-artifact@v4
