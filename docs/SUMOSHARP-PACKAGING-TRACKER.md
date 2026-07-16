@@ -51,7 +51,17 @@ verified first-hand (build / `dotnet pack` / `dotnet test`), per the CLAUDE.md a
       Raylib-cs/rlImgui-cs). `dotnet test` 465/0, bench hash unchanged; publish.yml packs it; guard fact
       added. **GPU-verified the raylib window renders** (local scenario, loopback DR, evac demo via the
       overlay seam, DemoCatalog picker) — the handoff step the headless session couldn't do. (`b4f69a2`.)
-      Follow-up (Option A, own stage): extract the generic render *loop* into a reusable `ViewerHost` API.
+- [x] P3.3 follow-up (Option A) — extracted the byte-for-byte-common render *loop* into the package as
+      `ViewerHost.Run(ViewerHostConfig)`: window/font bootstrap, the 60 fps loop, the Camera2D
+      pan/zoom/click state machine, the 'D' toggle, resize, the fixed BeginDrawing→world→ImGui→EndDrawing
+      order, the headless screenshot/frames exit, shutdown (+ moved `ExportScreenshot`). Everything that
+      differed between local/loopback/remote is a config callback (`PumpFrame`/`DrawWorld`/`DrawImGui`/
+      `OnWorldClick`/`OnFrameStart`/`RefitCameraBounds`/`OnResize`/`OnFrameEnd`/`OnHeadlessExit`); the three
+      `Run*` methods shrink to setup + config + `Run`. `RoadLayerCache` is now lazily built on the first
+      `DrawWorld` (its `LoadRenderTexture` needs the GL context `ViewerHost.Run` creates). **GPU-verified
+      all four paths render through `ViewerHost`** (local scenario, local evac demo via the overlay seam +
+      DemoCatalog, loopback `DrawWorldDds`, 2-process remote late-join via `RefitCameraBounds`) + fresh
+      regen. `dotnet test` 465/0/3, bench hash unchanged, package packs clean. (`3579d28`.)
 
 ## Stage P4 — Dev-time & domain packages  ✅ COMPLETE
 - [x] P4.1 — `SumoSharp.Testing` from `Sim.Harness` (packs lib/net8.0 + README).
