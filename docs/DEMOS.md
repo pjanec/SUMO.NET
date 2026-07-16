@@ -10,17 +10,55 @@ https://pjanec.github.io/SumoSharp/
 
 ## Demos
 
-| Demo | Shows |
-|---|---|
-| Single free-flow | A single vehicle cruising free-flow on an open road — the simplest parity scenario. |
-| Traffic light | Vehicles queuing and releasing at a signalized intersection with SUMO-native signal heads. |
-| Priority junction | Right-of-way negotiation at an unsignalized priority junction. |
-| External agents showcase | Five external (non-SUMO) agent reactions — stop, swerve, spill, follow, junction-yield — injected alongside engine traffic. |
-| Evacuation (organic town) | A realistic organic town under panic evacuation: congestion plus a large local foot exodus. |
-| City-30 (scaled town) | A 3x3-grid town at ~30 concurrent vehicles — engine run rendered against the SUMO aggregate-parity reference. |
+One demo per feature, grouped by category (the gallery's landing page uses the same grouping).
+
+| Category | Demo | Shows |
+|---|---|---|
+| Car-following | Krauss free-flow | A single vehicle cruising free-flow on an open road under SUMO's default Krauss car-following model — the simplest parity scenario. |
+| Car-following | Platoon shockwave | A dense platoon under Krauss car-following propagates a braking shockwave back through the queue. |
+| Car-following | IDM car-following | The Intelligent Driver Model's smooth, desired-gap-based acceleration profile in free flow and approach. |
+| Car-following | IDMM (memory) | IDM with driver memory: past following experience biases the desired-gap parameter over time. |
+| Car-following | ACC | Adaptive Cruise Control car-following — a fixed time-gap radar-follower model. |
+| Car-following | CACC (cooperative) | Cooperative Adaptive Cruise Control — vehicle-to-vehicle coordination tightens the following gap beyond plain ACC. |
+| Lane changing & overtaking | Keep-right lane change | A faster vehicle merges back to the right-hand lane once past a slower one, per the keep-right lane-change strategy. |
+| Lane changing & overtaking | Same-direction overtaking | A trailing vehicle changes lanes to overtake a slower leader ahead of it. |
+| Lane changing & overtaking | Continuous lane change | Sublane-resolution continuous lateral motion during a lane change, instead of an instantaneous lane snap. |
+| Lane changing & overtaking | Multilane keep-right on arrival | Vehicles across several lanes converge toward the right-hand lane as they approach their arrival edge. |
+| Lane changing & overtaking | Sublane / laneless mixed | Sublane and laneless vehicles share the same road, each governed by its own lateral-motion model. |
+| Junctions & right-of-way | Priority junction | Right-of-way negotiation at an unsignalized priority junction. |
+| Junctions & right-of-way | Right-before-left | An unsignalized junction resolved by the right-before-left rule instead of an explicit priority road. |
+| Junctions & right-of-way | All-way stop | Every approach yields in turn at an all-way-stop-controlled junction. |
+| Junctions & right-of-way | Roundabout | Circulating traffic holds priority over entering traffic at a roundabout. |
+| Junctions & right-of-way | On-ramp merge | A merging vehicle from an on-ramp negotiates a gap into mainline through traffic. |
+| Junctions & right-of-way | Multilane junction turn | Turning movements across a multilane junction with lane-to-lane connections. |
+| Traffic lights | Static traffic light | Vehicles queuing and releasing at a signalized intersection with SUMO-native signal heads on a fixed program. |
+| Traffic lights | Actuated (detector) traffic light | A detector-actuated signal program extends or truncates phases in response to arriving traffic. |
+| Emergency & priority vehicles | Emergency rescue lane (bluelight) | Traffic forms a rescue lane ahead of an approaching emergency vehicle running its bluelight device. |
+| Emergency & priority vehicles | Emergency vehicle runs red | An emergency vehicle passes a red signal while ordinary traffic yields right-of-way to it. |
+| Rail | Rail free-run | A train running free on open track under rail-specific kinematics. |
+| Rail | Rail bidirectional single track | Two trains meet on a bidirectional single track, one yielding at a passing point. |
+| Rail | Rail signal block reservation | A rail signal reserves a track block ahead of a train and holds a following train clear of it. |
+| Rail | Rail level crossing | A road-rail level crossing barrier closes to road traffic as a train approaches. |
+| Rail | Rail traction curve | A train's speed-dependent traction/braking curve shapes its acceleration profile, unlike a road vehicle's flat bounds. |
+| Reactive & external agents | External non-SUMO agents (5 reactions) | Five external (non-SUMO) agent reactions — stop, swerve, spill, follow, junction-yield — injected alongside engine traffic. |
+| Panic evacuation | Panic evacuation (organic town) | A realistic organic town under panic evacuation: congestion plus a large local foot exodus. |
+| Integration & driver behavior | Ballistic integration | Ballistic (exact-kinematics) position integration compared to SUMO's default Euler stepping. |
+| Integration & driver behavior | Reaction time (actionStepLength) | A driver re-evaluates its car-following decision only every actionStepLength seconds instead of every simulation step. |
+| Integration & driver behavior | Dawdle / sigma stochasticity | Krauss's sigma-driven random dawdle perturbs following speed from step to step. |
+| Integration & driver behavior | Probabilistic flow insertion | Vehicles are inserted stochastically by per-step probability instead of on a fixed period. |
+| City scale | Scaled town (~30 vehicles) | A 3x3-grid town at ~30 concurrent vehicles — engine run rendered against the SUMO aggregate-parity reference. |
+| City scale | Large multilane city (~400 vehicles) | A larger organic multilane city network under ~400 concurrent vehicles. |
+| City scale | Signalized city (~1000 vehicles) | A mixed signalized city network at ~1000 concurrent vehicles, exercising traffic lights at city scale. |
 
 The curated set is defined in `scripts/gen-demos.sh`; only demos that actually generate are listed
 on the gallery's landing page (a broken demo is skipped and logged, never faked).
+
+### Not yet in the gallery (needs a dedicated scenario)
+
+- **Opposite-direction overtaking** — overtaking via a lane belonging to oncoming traffic (as
+  opposed to the same-direction multi-lane overtake already covered above).
+- **Rerouting** — a vehicle re-routing mid-trip in response to a rerouter/closure.
+- **Warm-start snapshot** — engine state save/restore; API-only today, no visual replay to render.
 
 ## Run the demos locally
 
@@ -36,9 +74,9 @@ Windows users: run it via WSL or Git Bash (the script is bash-only; there is no 
 ## Maintainer setup
 
 1. **Settings → Pages → Source: "GitHub Actions"** (one-time, per repo).
-2. The gallery deploys automatically from `main` whenever `scenarios/**`, `src/Sim.Viz/**`,
-   `src/Sim.Run/**`, `src/Sim.ExtDemo/**`, or `scripts/gen-demos.sh` change (see
-   `.github/workflows/demos.yml`), or on demand via **Actions → demos → Run workflow**.
+2. The gallery deploys automatically from `main` whenever `scenarios/**`, `src/**`, or
+   `scripts/gen-demos.sh` change (see `.github/workflows/demos.yml`), or on demand via
+   **Actions → demos → Run workflow**.
 3. Feature branches never publish: the push trigger is restricted to `main`.
 
 ## Not part of the web gallery

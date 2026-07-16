@@ -14,9 +14,7 @@ on:
     branches: [main]
     paths:
       - "scenarios/**"
-      - "src/Sim.Viz/**"
-      - "src/Sim.Run/**"
-      - "src/Sim.ExtDemo/**"
+      - "src/**"
       - "scripts/gen-demos.sh"
       - ".github/workflows/demos.yml"
 

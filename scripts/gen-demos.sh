@@ -1,19 +1,20 @@
 #!/usr/bin/env bash
 # gen-demos.sh
 # ------------
-# Single source of truth for the auto-generated interactive-demo gallery: builds a CURATED set of
-# self-contained `replay.html`-style pages (vanilla Canvas 2D, no server, no SUMO — see
-# `src/Sim.Viz`) into `site/<slug>.html`, plus a `site/index.html` landing page. Both the
-# `demos` GitHub Actions workflow (deploy to Pages) and humans run exactly this script — see
-# docs/DEMOS.md.
+# Single source of truth for the auto-generated interactive-demo gallery: builds a CURATED,
+# CATEGORIZED "one per feature" set of self-contained `replay.html`-style pages (vanilla Canvas
+# 2D, no server, no SUMO — see `src/Sim.Viz`) into `site/<slug>.html`, plus a `site/index.html`
+# landing page grouped by category. Both the `demos` GitHub Actions workflow (deploy to Pages)
+# and humans run exactly this script — see docs/DEMOS.md.
 #
 #   scripts/gen-demos.sh
 #   open site/index.html
 #
 # Never modifies committed scenario files: any `replay.html` the tools write into a scenario dir
-# is copied out to `site/` and then restored to its committed content (`git checkout --`); any
-# other regenerated scenario artifact (`engine.fcd.xml`, ...) is deleted afterwards. Resilient: a
-# single broken demo is SKIPped (logged, not faked) and does not abort the rest of the gallery.
+# is copied out to `site/` and then restored — `git checkout --` if that path is git-tracked,
+# otherwise `rm -f` (it was never committed there); any other regenerated scenario artifact
+# (`engine.fcd.xml`, `combined.fcd.xml`, ...) is deleted afterwards. Resilient: a single broken
+# demo is SKIPped (logged, not faked) and does not abort the rest of the gallery.
 set -euo pipefail
 
 ROOT="$(git rev-parse --show-toplevel)"
@@ -31,24 +32,40 @@ dotnet build src/Sim.ExtDemo -c Release -v q
 
 run() { dotnet run -c Release --no-build --project "$1" -- "${@:2}"; }
 
+# restore_replay <scenarioDir>
+# The tools always write <scenarioDir>/replay.html. If that path is already git-tracked (a few
+# scenarios ship a committed sample replay), put the committed content back; otherwise the file
+# never belonged there, so just remove it. Either way scenarios/ ends up pristine.
+restore_replay() {
+  local d="$1"
+  if git ls-files --error-unmatch "$d/replay.html" >/dev/null 2>&1; then
+    git checkout -- "$d/replay.html"
+  else
+    rm -f "$d/replay.html"
+  fi
+}
+
 produced_slugs=()
 produced_titles=()
 produced_descs=()
+produced_cats=()
 skipped_slugs=()
 skipped_reasons=()
 
-# try <slug> <title> <description> <fn>
-# Runs <fn>; on success records <slug>/<title>/<description> as produced, on failure records a SKIP.
-# <fn>'s own commands run under `set -e`, but as the tested command of this `if`, a failure partway
-# through does not abort the whole script — only that one demo is skipped.
+# try <slug> <title> <description> <category> <fn> [fn-args...]
+# Runs "<fn> [fn-args...]"; on success records slug/title/desc/category as produced, on failure
+# records a SKIP. The command runs under `set -e` internally, but as the tested command of this
+# `if`, a failure partway through does not abort the whole script — only that one demo is skipped.
 try() {
-  local slug="$1" title="$2" desc="$3" fn="$4"
+  local slug="$1" title="$2" desc="$3" cat="$4"
+  shift 4
   local log="$LOGDIR/$slug.log"
-  if "$fn" >"$log" 2>&1; then
+  if "$@" >"$log" 2>&1; then
     echo "OK   $slug"
     produced_slugs+=("$slug")
     produced_titles+=("$title")
     produced_descs+=("$desc")
+    produced_cats+=("$cat")
   else
     echo "SKIP $slug (generation failed — see $log)"
     skipped_slugs+=("$slug")
@@ -56,61 +73,178 @@ try() {
   fi
 }
 
-# --- demo bodies -----------------------------------------------------------------------------
-# Each renders straight from committed scenario inputs (net + golden FCD, or the engine run fresh)
-# and never leaves the scenarios/ tree modified.
+# --- generic demo bodies, one per command pattern -------------------------------------------
+# Each renders straight from committed scenario inputs (net + golden FCD, or the engine run
+# fresh) and never leaves the scenarios/ tree modified.
 
-demo_single_free_flow() {
-  local d="scenarios/01-single-free-flow"
+# demo_golden <scenarioDir> <slug>
+# Sim.Viz reads the scenario's committed golden.fcd.xml directly.
+demo_golden() {
+  local d="$1" slug="$2"
   run src/Sim.Viz "$d"
-  cp "$d/replay.html" "$SITE/single-free-flow.html"
-  git checkout -- "$d/replay.html"
+  cp "$d/replay.html" "$SITE/$slug.html"
+  restore_replay "$d"
 }
 
-demo_traffic_light() {
-  local d="scenarios/09-traffic-light"
-  run src/Sim.Viz "$d"
-  cp "$d/replay.html" "$SITE/traffic-light.html"
-  git checkout -- "$d/replay.html"
-}
-
-demo_priority_junction() {
-  local d="scenarios/11-priority-junction"
-  run src/Sim.Viz "$d"
-  cp "$d/replay.html" "$SITE/priority-junction.html"
-  git checkout -- "$d/replay.html"
-}
-
-demo_external_agents() {
-  local d="scenarios/_bench/ext-showcase"
-  run src/Sim.ExtDemo "$d"
-  run src/Sim.Viz "$d" --fcd "$d/engine.fcd.xml"
-  cp "$d/replay.html" "$SITE/external-agents.html"
-  rm -f "$d/replay.html" "$d/engine.fcd.xml" "$d/combined.fcd.xml" "$d/playwright_screenshot.png"
-}
-
-demo_evac_organic() {
-  run src/Sim.Viz --evac-organic "$SITE/evac-organic.html"
-}
-
-demo_city_30() {
-  local d="scenarios/_bench/city-30"
+# demo_run <scenarioDir> <slug>
+# Sim.Run generates a fresh engine.fcd.xml, then Sim.Viz renders it.
+demo_run() {
+  local d="$1" slug="$2"
   run src/Sim.Run "$d"
   run src/Sim.Viz "$d" --fcd "$d/engine.fcd.xml"
-  cp "$d/replay.html" "$SITE/city-30.html"
-  git checkout -- "$d/replay.html"
+  cp "$d/replay.html" "$SITE/$slug.html"
+  restore_replay "$d"
   rm -f "$d/engine.fcd.xml"
 }
 
-# --- run the curated set ----------------------------------------------------------------------
+# demo_ext <scenarioDir> <slug>
+# Sim.ExtDemo generates a combined (engine + external-agent) engine.fcd.xml, then Sim.Viz renders it.
+demo_ext() {
+  local d="$1" slug="$2"
+  run src/Sim.ExtDemo "$d"
+  run src/Sim.Viz "$d" --fcd "$d/engine.fcd.xml"
+  cp "$d/replay.html" "$SITE/$slug.html"
+  restore_replay "$d"
+  rm -f "$d/engine.fcd.xml" "$d/combined.fcd.xml" "$d/playwright_screenshot.png"
+}
 
-echo "==> Generating curated demo gallery…"
-try single-free-flow  "Single free-flow"          "A single vehicle cruising free-flow on an open road — the simplest parity scenario." demo_single_free_flow
-try traffic-light      "Traffic light"             "Vehicles queuing and releasing at a signalized intersection with SUMO-native signal heads." demo_traffic_light
-try priority-junction  "Priority junction"         "Right-of-way negotiation at an unsignalized priority junction." demo_priority_junction
-try external-agents    "External agents showcase" "Five external (non-SUMO) agent reactions — stop, swerve, spill, follow, junction-yield — injected alongside engine traffic." demo_external_agents
-try evac-organic       "Evacuation (organic town)" "A realistic organic town under panic evacuation: congestion plus a large local foot exodus." demo_evac_organic
-try city-30            "City-30 (scaled town)"     "A 3x3-grid town at ~30 concurrent vehicles — engine run rendered against the SUMO aggregate-parity reference." demo_city_30
+# demo_evac <slug>
+# Sim.Viz's dedicated --evac-organic mode writes straight to the site dir; no scenario dir at all.
+demo_evac() {
+  local slug="$1"
+  run src/Sim.Viz --evac-organic "$SITE/$slug.html"
+}
+
+# --- the curated set: category | slug | title | description | scenario dir | pattern ---------
+# One row per feature. Categories are emitted as section headings on the gallery index in this
+# same order; demos within a category keep this order too.
+
+echo "==> Generating curated, categorized demo gallery…"
+
+# Car-following
+try krauss-free-flow "Krauss free-flow" \
+  "A single vehicle cruising free-flow on an open road under SUMO's default Krauss car-following model — the simplest parity scenario." \
+  "Car-following" demo_golden scenarios/01-single-free-flow krauss-free-flow
+try platoon-shockwave "Platoon shockwave" \
+  "A dense platoon under Krauss car-following propagates a braking shockwave back through the queue." \
+  "Car-following" demo_golden scenarios/05-platoon-shockwave platoon-shockwave
+try idm "IDM car-following" \
+  "The Intelligent Driver Model's smooth, desired-gap-based acceleration profile in free flow and approach." \
+  "Car-following" demo_golden scenarios/22-idm-carfollow idm
+try idmm "IDMM (memory)" \
+  "IDM with driver memory: past following experience biases the desired-gap parameter over time." \
+  "Car-following" demo_golden scenarios/25-idmm-carfollow idmm
+try acc "ACC" \
+  "Adaptive Cruise Control car-following — a fixed time-gap radar-follower model." \
+  "Car-following" demo_golden scenarios/23-acc-carfollow acc
+try cacc "CACC (cooperative)" \
+  "Cooperative Adaptive Cruise Control — vehicle-to-vehicle coordination tightens the following gap beyond plain ACC." \
+  "Car-following" demo_golden scenarios/24-cacc-carfollow cacc
+
+# Lane changing & overtaking
+try keep-right "Keep-right lane change" \
+  "A faster vehicle merges back to the right-hand lane once past a slower one, per the keep-right lane-change strategy." \
+  "Lane changing & overtaking" demo_golden scenarios/07-keep-right-change keep-right
+try overtake "Same-direction overtaking" \
+  "A trailing vehicle changes lanes to overtake a slower leader ahead of it." \
+  "Lane changing & overtaking" demo_golden scenarios/12-overtake overtake
+try continuous-lane-change "Continuous lane change" \
+  "Sublane-resolution continuous lateral motion during a lane change, instead of an instantaneous lane snap." \
+  "Lane changing & overtaking" demo_golden scenarios/43-continuous-lanechange continuous-lane-change
+try multilane-keep-right "Multilane keep-right on arrival" \
+  "Vehicles across several lanes converge toward the right-hand lane as they approach their arrival edge." \
+  "Lane changing & overtaking" demo_golden scenarios/45-multilane-keepright-arrival multilane-keep-right
+try sublane-mixed "Sublane / laneless mixed" \
+  "Sublane and laneless vehicles share the same road, each governed by its own lateral-motion model." \
+  "Lane changing & overtaking" demo_golden scenarios/65-mixed-sublane sublane-mixed
+
+# Junctions & right-of-way
+try priority-junction "Priority junction" \
+  "Right-of-way negotiation at an unsignalized priority junction." \
+  "Junctions & right-of-way" demo_golden scenarios/11-priority-junction priority-junction
+try right-before-left "Right-before-left" \
+  "An unsignalized junction resolved by the right-before-left rule instead of an explicit priority road." \
+  "Junctions & right-of-way" demo_golden scenarios/26-right-before-left right-before-left
+try all-way-stop "All-way stop" \
+  "Every approach yields in turn at an all-way-stop-controlled junction." \
+  "Junctions & right-of-way" demo_golden scenarios/27-allway-stop all-way-stop
+try roundabout "Roundabout" \
+  "Circulating traffic holds priority over entering traffic at a roundabout." \
+  "Junctions & right-of-way" demo_golden scenarios/32-roundabout roundabout
+try on-ramp-merge "On-ramp merge" \
+  "A merging vehicle from an on-ramp negotiates a gap into mainline through traffic." \
+  "Junctions & right-of-way" demo_golden scenarios/19-onramp-merge on-ramp-merge
+try multilane-junction-turn "Multilane junction turn" \
+  "Turning movements across a multilane junction with lane-to-lane connections." \
+  "Junctions & right-of-way" demo_golden scenarios/44-multilane-junction-turn multilane-junction-turn
+
+# Traffic lights
+try traffic-light "Static traffic light" \
+  "Vehicles queuing and releasing at a signalized intersection with SUMO-native signal heads on a fixed program." \
+  "Traffic lights" demo_golden scenarios/09-traffic-light traffic-light
+try traffic-light-actuated "Actuated (detector) traffic light" \
+  "A detector-actuated signal program extends or truncates phases in response to arriving traffic." \
+  "Traffic lights" demo_golden scenarios/35-actuated-tls traffic-light-actuated
+
+# Emergency & priority vehicles
+try emergency-corridor "Emergency rescue lane (bluelight)" \
+  "Traffic forms a rescue lane ahead of an approaching emergency vehicle running its bluelight device." \
+  "Emergency & priority vehicles" demo_run scenarios/_bench/emergency-corridor-demo emergency-corridor
+try emergency-run-red "Emergency vehicle runs red" \
+  "An emergency vehicle passes a red signal while ordinary traffic yields right-of-way to it." \
+  "Emergency & priority vehicles" demo_golden scenarios/16-emergency-red emergency-run-red
+
+# Rail
+try rail-free-flow "Rail free-run" \
+  "A train running free on open track under rail-specific kinematics." \
+  "Rail" demo_golden scenarios/47-rail-free-flow rail-free-flow
+try rail-bidirectional "Rail bidirectional single track" \
+  "Two trains meet on a bidirectional single track, one yielding at a passing point." \
+  "Rail" demo_golden scenarios/49-rail-bidi-meet rail-bidirectional
+try rail-signal-block "Rail signal block reservation" \
+  "A rail signal reserves a track block ahead of a train and holds a following train clear of it." \
+  "Rail" demo_golden scenarios/50-rail-signal-meet rail-signal-block
+try rail-level-crossing "Rail level crossing" \
+  "A road-rail level crossing barrier closes to road traffic as a train approaches." \
+  "Rail" demo_run scenarios/_bench/rail-crossing-demo rail-level-crossing
+try rail-traction "Rail traction curve" \
+  "A train's speed-dependent traction/braking curve shapes its acceleration profile, unlike a road vehicle's flat bounds." \
+  "Rail" demo_golden scenarios/52-rail-traction rail-traction
+
+# Reactive & external agents
+try external-agents "External non-SUMO agents (5 reactions)" \
+  "Five external (non-SUMO) agent reactions — stop, swerve, spill, follow, junction-yield — injected alongside engine traffic." \
+  "Reactive & external agents" demo_ext scenarios/_bench/ext-showcase external-agents
+
+# Panic evacuation
+try evac-organic "Panic evacuation (organic town)" \
+  "A realistic organic town under panic evacuation: congestion plus a large local foot exodus." \
+  "Panic evacuation" demo_evac evac-organic
+
+# Integration & driver behavior
+try ballistic-integration "Ballistic integration" \
+  "Ballistic (exact-kinematics) position integration compared to SUMO's default Euler stepping." \
+  "Integration & driver behavior" demo_golden scenarios/21-ballistic-freeflow ballistic-integration
+try action-step-length "Reaction time (actionStepLength)" \
+  "A driver re-evaluates its car-following decision only every actionStepLength seconds instead of every simulation step." \
+  "Integration & driver behavior" demo_golden scenarios/28-actionstep action-step-length
+try dawdle-stochastic "Dawdle / sigma stochasticity" \
+  "Krauss's sigma-driven random dawdle perturbs following speed from step to step." \
+  "Integration & driver behavior" demo_run scenarios/17-dawdle-freeflow dawdle-stochastic
+try probabilistic-flow "Probabilistic flow insertion" \
+  "Vehicles are inserted stochastically by per-step probability instead of on a fixed period." \
+  "Integration & driver behavior" demo_run scenarios/58-flow-probability probabilistic-flow
+
+# City scale
+try city-town "Scaled town (~30 vehicles)" \
+  "A 3x3-grid town at ~30 concurrent vehicles — engine run rendered against the SUMO aggregate-parity reference." \
+  "City scale" demo_run scenarios/_bench/city-30 city-town
+try city-multilane "Large multilane city (~400 vehicles)" \
+  "A larger organic multilane city network under ~400 concurrent vehicles." \
+  "City scale" demo_run scenarios/_bench/city-organic-L2 city-multilane
+try city-signalized "Signalized city (~1000 vehicles)" \
+  "A mixed signalized city network at ~1000 concurrent vehicles, exercising traffic lights at city scale." \
+  "City scale" demo_run scenarios/_bench/city-mixed-1k city-signalized
 
 # --- summary ---------------------------------------------------------------------------------
 
@@ -146,12 +280,20 @@ echo "==> Writing site/index.html…"
   @media (prefers-color-scheme: dark) {
     body { background: #14171a; color: #e6e8eb; }
   }
-  header { max-width: 960px; margin: 0 auto 2.5rem; }
+  header { max-width: 1100px; margin: 0 auto 2.5rem; }
   h1 { font-size: 1.9rem; margin: 0 0 0.5rem; }
   p.lede { margin: 0; opacity: 0.75; line-height: 1.5; }
+  main { max-width: 1100px; margin: 0 auto; }
+  section.category { margin: 0 0 2.4rem; }
+  section.category h2 {
+    font-size: 1.15rem; margin: 0 0 0.9rem; padding-bottom: 0.4rem;
+    border-bottom: 1px solid rgba(0,0,0,0.1);
+  }
+  @media (prefers-color-scheme: dark) {
+    section.category h2 { border-bottom-color: rgba(255,255,255,0.12); }
+  }
   .grid {
-    max-width: 960px; margin: 0 auto; display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 1.1rem;
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 1.1rem;
   }
   a.card {
     display: block; padding: 1.25rem 1.35rem; border-radius: 0.75rem; text-decoration: none;
@@ -162,9 +304,9 @@ echo "==> Writing site/index.html…"
     a.card { background: #1e2226; border-color: rgba(255,255,255,0.08); box-shadow: none; }
   }
   a.card:hover { transform: translateY(-2px); box-shadow: 0 6px 16px rgba(0,0,0,0.12); }
-  a.card h2 { margin: 0 0 0.4rem; font-size: 1.05rem; }
+  a.card h3 { margin: 0 0 0.4rem; font-size: 1.05rem; }
   a.card p { margin: 0; font-size: 0.9rem; opacity: 0.75; line-height: 1.4; }
-  footer { max-width: 960px; margin: 2.5rem auto 0; font-size: 0.8rem; opacity: 0.6; }
+  footer { max-width: 1100px; margin: 2.5rem auto 0; font-size: 0.8rem; opacity: 0.6; }
   footer a { color: inherit; }
 </style>
 </head>
@@ -177,18 +319,31 @@ echo "==> Writing site/index.html…"
     / speed / zoom &amp; pan controls.
   </p>
 </header>
-<div class="grid">
+<main>
 HTML_HEAD
 
+  # Emit one <section> per category, in first-seen order, each with its own card grid.
+  declare -a seen_cats=()
   for i in "${!produced_slugs[@]}"; do
-    slug="${produced_slugs[$i]}"
-    title="${produced_titles[$i]}"
-    desc="${produced_descs[$i]}"
-    printf '  <a class="card" href="%s.html">\n    <h2>%s</h2>\n    <p>%s</p>\n  </a>\n' "$slug" "$title" "$desc"
+    cat="${produced_cats[$i]}"
+    already=0
+    for sc in "${seen_cats[@]:-}"; do [ "$sc" = "$cat" ] && already=1 && break; done
+    [ "$already" -eq 1 ] && continue
+    seen_cats+=("$cat")
+
+    printf '  <section class="category">\n    <h2>%s</h2>\n    <div class="grid">\n' "$cat"
+    for j in "${!produced_slugs[@]}"; do
+      [ "${produced_cats[$j]}" = "$cat" ] || continue
+      slug="${produced_slugs[$j]}"
+      title="${produced_titles[$j]}"
+      desc="${produced_descs[$j]}"
+      printf '      <a class="card" href="%s.html">\n        <h3>%s</h3>\n        <p>%s</p>\n      </a>\n' "$slug" "$title" "$desc"
+    done
+    printf '    </div>\n  </section>\n'
   done
 
   cat <<'HTML_TAIL'
-</div>
+</main>
 <footer>
   Generated by <code>scripts/gen-demos.sh</code> — see <code>docs/DEMOS.md</code> in the repo.
 </footer>
