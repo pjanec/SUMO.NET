@@ -1,6 +1,23 @@
 # HIGH-DENSITY-PLAN.md — verified gap findings + proposed plan
 
-**Status:** STEP 3 check-in (verification complete, awaiting owner steer before implementation).
+**Status:** STEP 4 — owner steered; implementing P0 (design in `docs/HIGH-DENSITY-P0-DESIGN.md`).
+
+### Owner steer (received)
+- **Standing architectural principle — performance may beat exact SUMO parity in production.**
+  Where a "faster but different, equally good" option exists it is allowed, **but it must be gated
+  behind a CLI flag**. The parity-faithful behaviour stays the **default** so (a) automated dev
+  checks (goldens) pass and (b) SUMO scenarios reproduce with similar output. Fast-but-different
+  paths are opt-in only. (Matches CLAUDE.md's "fast-mode flag" escape hatch.)
+- **Q1 → (b) RNG-insensitive parity model.** Do not port SUMO's PRNG draw order; make parity
+  scenarios deterministic/RNG-insensitive, and validate sampling itself statistically.
+- **Q2 (P1-E parity bar) → deferred**; owner wants more info when we reach P1-E. Not blocking P0.
+- **Q3 → P2 empirical check after P0.** ✓
+- **Q4 → start P0-A → P0-C → P0-B → P0-D.** ✓
+- **Q5 → OK to `pip install eclipse-sumo==1.20.0` for golden regen.** ✓
+
+---
+
+**Superseded status line:** STEP 3 check-in (verification complete, awaiting owner steer before implementation).
 **Branch:** `claude/sumosharp-high-density-0r91xo`.
 **Source of truth:** `docs/SUMOSHARP-HIGH-DENSITY-FEATURES.md` (committed to this branch).
 **Baseline (this checkout):** `dotnet build` clean (0 errors); `dotnet test` green —
