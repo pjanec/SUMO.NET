@@ -1,8 +1,38 @@
 # HIGH-DENSITY-P1E-DESIGN.md — `device.rerouting` (periodic congestion-reactive rerouting)
 
 Design doc for P1-E. WHAT/WHY: `docs/SUMOSHARP-HIGH-DENSITY-FEATURES.md` §3 P1-E + `docs/HIGH-DENSITY-PLAN.md`
-§1 (P1-E) / §"Owner steer". This is the HOW. **Design-first: nothing is implemented until the owner
-signs off on this doc.** All SUMO citations verified against the vendored 1.20.0 source (`sumo/src/...`).
+§1 (P1-E) / §"Owner steer". This is the HOW. **Owner signed off (with three day-1 additions below);
+implementation proceeds.** All SUMO citations verified against the vendored 1.20.0 source (`sumo/src/...`).
+
+## 0.5 Owner-approved design decisions (adopted day 1)
+
+After a design discussion the owner directed three deliberate departures from a strict "match SUMO
+exactly" approach, all consistent with the standing perf-over-parity-when-gated principle:
+
+1. **Per-vehicle reroute jitter (gated).** SUMO fires each vehicle's reroute at `depart + k·period`
+   with **no** per-vehicle offset, so a burst of near-simultaneous departures reroutes in lockstep —
+   a *wave* that (a) spikes CPU every `period` s (idle between; wastes cores) and (b) causes
+   **synchronized overreaction / flip-flop** (all cars divert to the same alternate at once, overload
+   it, divert back next wave). We add a per-vehicle phase offset (hash of entity id → offset in
+   `[0, period)`) so reroutes spread uniformly across the period: flattens CPU into a steady stream
+   and breaks the overreaction (more realistic — real drivers share no clock). **Gated:** off = the
+   SUMO-faithful schedule (`depart + k·period`); on = the jittered production schedule. Default off so
+   the faithful anchor scenario matches SUMO.
+
+2. **Acceptance is behavioural/statistical at the end-to-end level** (see revised §6). Exact parity is
+   kept only for the deterministic *machinery* (router, smoothing) and one small SUMO-faithful anchor
+   scenario. Bit-exact trajectory is NOT a hard gate — it would lock the production engine to SUMO's
+   quirks (the wave, the `isDelayed` latch) for no product value. The real end-to-end bar is
+   behavioural: the flow splits, peak load drops, the network drains — comparably to SUMO.
+
+3. **Route-slot recycling (no id explosion at 10k).** No-improvement-gate means a reroute conceptually
+   re-installs a route every `period` per vehicle; minting a fresh synthetic route id each time
+   (today's `RegisterRerouted`) grows `_routesById` unboundedly at 10k vehicles × long runs. Each
+   vehicle gets **one reusable synthetic route slot** it overwrites in place (plus the identical-edge-
+   list short-circuit, which skips most reroutes), so memory stays bounded regardless of run length.
+
+(A further **overreaction-dampening** idea — hysteresis / logit route choice beyond jitter — is
+recorded as a possible later extra, NOT in P1-E scope.)
 
 ## 0. Scope & config
 
@@ -105,25 +135,33 @@ incremental moving-average recurrence → effort fn → A* (= Dijkstra exact). T
 parity is the target** for the P1-E scenario, with statistical parity as a **fallback** only if a
 genuine float-order divergence is observed. (This resolves Q2 toward the two-tier plan, leaning exact.)
 
-## 6. Acceptance — two-tier (Q2; owner to confirm)
+## 6. Acceptance (revised per owner decision §0.5.2)
 
-**Tier 1 — exact unit/parity on the deterministic machinery:**
+**Tier 1 — exact unit tests on the deterministic machinery (hard gate):**
 - **A\* router**: given a fixed static weight table, returns the *same path* as `NetworkRouter`'s Dijkstra
   on the same weights (several hand-built graphs incl. a congestion-vs-alternate case). Exact.
 - **Smoothing**: given a fixed sequence of per-edge `currSpeed` samples, `myEdgeSpeeds` matches the
   hand-computed ring-buffer recurrence (incl. the free-flow seed and the `isDelayed` latch behaviour).
 - **Effort fn**: `max(length/max(v,ε), minTT)` on fixed tuples.
 
-**Tier 2 — end-to-end parity scenario `scenarios/NN-reroute-congestion`:**
-- A small net: a short "shortcut" edge-path and a longer alternate between the same OD, both driveable.
-  Enough demand on the shortcut to congest it so its smoothed travel time rises above the alternate's;
-  `device.rerouting` on (`probability=1, period=30, adaptation-steps=18, routing-algorithm=astar`).
-  Golden from vanilla SUMO 1.20.0. **Target: exact `(lane,pos,speed)` trajectory parity** (deterministic,
-  RNG-insensitive: sigma=0, fixed depart). If a real float-order divergence appears, fall back to
-  **statistical** parity on the route split + throughput (declared via `parityMode` in `tolerance.json`),
-  and document why. Distinct from `15-reroute` (obstacle-based).
-- Also assert (functional) that the flow actually splits (some vehicles take the alternate) — i.e. the
-  feature is genuinely exercised, not a no-op.
+**Tier 2 — end-to-end, TWO scenarios:**
+- **(a) SUMO-faithful anchor `scenarios/NN-reroute-congestion` (jitter OFF).** Small net: a short
+  "shortcut" and a longer alternate between one OD, both driveable; enough demand to congest the
+  shortcut so its smoothed travel time rises above the alternate's; `device.rerouting` on
+  (`probability=1, period=30, adaptation-steps=18, routing-algorithm=astar`), jitter off. Golden from
+  vanilla SUMO 1.20.0. **Best-effort exact `(lane,pos,speed)` parity** (deterministic: sigma=0, fixed
+  depart). If a genuine float-order divergence appears, fall back to `parityMode:"statistical"` on the
+  route split + throughput and document why. This is the regression anchor + "we can still reproduce a
+  SUMO run." Distinct from `15-reroute` (obstacle-based).
+- **(b) Behavioural check (the real product bar), jitter ON and OFF.** On the same (or a slightly
+  denser) net, assert the *outcome* rather than the trajectory: (i) the flow **splits** (a non-trivial
+  fraction takes the alternate once the shortcut congests — feature genuinely exercised, not a no-op);
+  (ii) network throughput / mean travel time is **no worse** with rerouting than without; (iii) with
+  jitter **on**, reroutes are spread across the period (no single-tick wave carrying >X% of the period's
+  reroutes) AND the split/throughput is at least as good as jitter-off. Functional/statistical, not a
+  golden. This is where "different-but-better" is validated.
+
+(Density/no-deadlock at scale is the `BENCHMARK_SPEC.md` statistical harness's job, not here.)
 
 ## 7. Config-parsing additions
 
@@ -143,20 +181,25 @@ genuine float-order divergence is observed. (This resolves Q2 toward the two-tie
 6. **`minimumTravelTime` floor** — SumoSharp has no per-vClass min-travel-time-with-penalty concept yet;
    confirm it's `length / vType.maxSpeed` (timePenalty 0 for our nets) or design it before porting `getEffort`.
 
-## 9. Proposed task breakdown (each closes on its success condition)
+## 9. Task breakdown (each closes on its success condition)
 
-- **P1E-1** config keys (§7) — unit test: parser reads the keys; absent → inert/byte-identical.
+- **P1E-1** config keys (§7) — `device.rerouting.probability/period/adaptation-steps/adaptation-interval`,
+  `routing-algorithm`, **plus** the gated jitter flag (§0.5.1, e.g. `device.rerouting.jitter` — non-SUMO,
+  our own key, default off). Unit test: parser reads the keys; absent → inert/byte-identical.
 - **P1E-2** edge-weight aggregation (§1C, seam #2) — unit tests: seed, ring-buffer recurrence, `isDelayed`
   latch, end-of-step timing. Deterministic, exact.
-- **P1E-3** A* router + effort fn (§1C/1D, seam #3) — unit tests: A*==Dijkstra on fixed weights; effort fn.
+- **P1E-3** A* router + effort fn (§1C/1D, seam #3) — unit tests: A*==Dijkstra on fixed weights; effort fn;
+  admissibility preserved (effort floored at `length/maxSpeed`).
 - **P1E-4** periodic reroute trigger + parallel batch + integration (§1A/1B, §3, §4) — wired before
-  `PlanMovements`; reuses `RegisterRerouted`/`ReplaceRoute`; no-gate install + short-circuit; skip-stale.
-- **P1E-5** `scenarios/NN-reroute-congestion` + Tier-2 parity gate (§6). Full suite green.
+  `PlanMovements`; **per-vehicle route-slot recycling** (§0.5.3, not a fresh id per reroute); no-gate
+  install + identical-list short-circuit; skip-stale; **gated jitter offset** (§0.5.1). Parallel batch A*
+  over a frozen weight snapshot; serial apply via `CommandBuffer.ReplaceRoute`.
+- **P1E-5** scenarios (§6 Tier 2): **(a)** `scenarios/NN-reroute-congestion` faithful anchor + golden;
+  **(b)** behavioural test (flow split, throughput-no-worse, jitter spreads reroutes). Full suite green.
 
-## 10. Open questions for the owner
-- **Q2 confirm**: two-tier acceptance, targeting **exact** end-to-end parity with statistical fallback? (§6)
-- **Scenario authoring**: OK to hand-author the small congestion net (nodes/edges + `netconvert`) for
-  `NN-reroute-congestion`, or is there a preferred net? (I'll hand-author a minimal one.)
-- **`pre-period` / pre-insertion rerouting** (`device.rerouting.pre-period`, default 60): our config
-  doesn't set it, but SUMO's default enables a pre-departure reroute. In scope for parity, or defer?
-  (I recommend porting it only if the scenario shows it affects the golden; otherwise defer and document.)
+## 10. Open questions — resolved
+- **Q2** → RESOLVED (§0.5.2, §6): exact machinery + one faithful anchor; behavioural/statistical end-to-end.
+- **Scenario authoring** → RESOLVED: owner OK'd hand-authoring a synthetic net (`netconvert`).
+- **`pre-period` / pre-insertion rerouting** (`device.rerouting.pre-period`, default 60): **DEFER +
+  document.** Our config doesn't set it; port only if the anchor scenario's golden shows it affects the
+  result. Recorded here so it's not silently forgotten.
