@@ -155,10 +155,13 @@ it at the same position and reproduces the trajectory. Full suite green.
 `<vType .../>` with `probability=`). A `<vehicle type="civ_vehicle">` gets a member vType sampled
 by probability. SUMO samples from its RNG per vehicle.
 
-**SUMO syntax (both forms must parse):**
-- Attribute form: `<vTypeDistribution id="civ" vTypes="car:0.7 van:0.3"/>` — members reference
-  vTypes declared elsewhere; weights after the colon (a member without `:w` defaults weight 1).
-- Nested form: `<vTypeDistribution id="civ"> <vType id="car" .../ probability="0.7"> ... </>` —
+**SUMO syntax (both forms must parse) — VERIFIED against `sumo/src/microsim/MSRouteHandler.cpp:248-286`:**
+- Attribute form: `<vTypeDistribution id="civ" vTypes="carA carB" probabilities="0.5 0.5"/>` —
+  **two separate space-separated attributes**: `vTypes` (member ids declared elsewhere) and an
+  optional parallel `probabilities`. NOT colon-weight syntax (`carA:0.5` is read as one id and
+  errors). If `probabilities` is omitted, each member uses its default probability (1.0). Weights
+  are normalised by the total.
+- Nested form: `<vTypeDistribution id="civ"> <vType id="carA" .../ probability="0.5"> ... </>` —
   members are inline vType definitions carrying a `probability=` attribute.
 A `<vehicle type="civ">`/`<flow type="civ">` whose `type=` names a distribution id draws a member.
 
@@ -184,8 +187,8 @@ registry on `DemandModel`, `Engine` type-resolution at vehicle creation (survey 
 per-entity dawdle-RNG seeding to reuse its hashing).
 
 **Success conditions (P0-B):**
-- Unit tests: parse both the attribute (`vTypes="a:0.7 b:0.3"`) and nested (`<vType probability=>`)
-  forms → normalised registry; a member without an explicit weight defaults to 1.
+- Unit tests: parse both the attribute (`vTypes="a b" probabilities="0.7 0.3"`) and nested (`<vType
+  probability=>`) forms → normalised registry; omitted `probabilities` defaults each member to 1.
 - Parity scenario `scenarios/43-vtypedist`: several vehicles with `type="<distId>"` over a
   **behaviourally-identical 2-member** distribution; golden from SUMO 1.20.0; SumoSharp reproduces
   `(lane,pos,speed)` within tolerance AND every vehicle's resolved type ∈ the members.
