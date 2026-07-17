@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- P0-B acceptance: vTypeDistribution resolution, RNG-insensitively (owner Q1b). The distribution
+     "civ" has TWO members (carA, carB) that are BEHAVIOURALLY IDENTICAL (both passenger, sigma=0,
+     all defaults) and differ only by id. So whichever member each vehicle draws, its dynamics are
+     the same, and the trajectory (lane/pos/speed, the only compared attributes) is invariant to the
+     assignment. SumoSharp therefore reproduces the SUMO golden WITHOUT cloning SUMO's per-vehicle
+     PRNG draw. The parity test additionally asserts every vehicle resolved to one of the members.
+     (Weighted sampling correctness is covered by a separate statistical unit test, not this
+     golden.) All departs are numeric (Given) to keep P0-C out of the picture. -->
+<routes xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://sumo.dlr.de/xsd/routes_file.xsd">
+    <vType id="carA" vClass="passenger" sigma="0"/>
+    <vType id="carB" vClass="passenger" sigma="0"/>
+    <vTypeDistribution id="civ" vTypes="carA carB" probabilities="0.5 0.5"/>
+    <route id="r0" edges="e0"/>
+    <vehicle id="v0" type="civ" route="r0" depart="0"  departPos="0" departSpeed="0" departLane="0"/>
+    <vehicle id="v1" type="civ" route="r0" depart="5"  departPos="0" departSpeed="0" departLane="0"/>
+    <vehicle id="v2" type="civ" route="r0" depart="10" departPos="0" departSpeed="0" departLane="0"/>
+    <vehicle id="v3" type="civ" route="r0" depart="15" departPos="0" departSpeed="0" departLane="0"/>
+</routes>
