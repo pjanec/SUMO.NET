@@ -1,0 +1,9 @@
+sumo_version=1.20.0
+sumo_version_reported=Eclipse SUMO sumo Version 1.20.0
+generated_utc=2026-07-17T09:44:53Z
+command=sumo -c config.sumocfg --fcd-output golden.fcd.xml --fcd-output.acceleration --precision 6 --save-state.times 1 --save-state.files golden.state.xml --no-step-log true
+state_time=1
+# input file hashes (sha256):
+input=net.net.xml sha256=3031c46ee4ca3af77b572646b34e268da049600a5771d40c7f1c7523ce077464
+input=rou.rou.xml sha256=53405778ebb343e24821cc117c4b4eebd3b0bd8a4eb1d31376ecc40acd4f871f
+input=config.sumocfg sha256=31975e1d932a81d9cb63d7e1230a14cd732996671bc963b1f80078d4dfcf7c7a

@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- P0-C1 acceptance: symbolic departSpeed="max" and departLane="best". The net (from
+     scenarios/18-strategic-turnlane) is E1 (2 lanes) then E2 (1 lane), where ONLY E1_1 (index 1)
+     connects onward to E2. So for the route "E1 E2", departLane="best" is UNAMBIGUOUS: lane index
+     1 has the longer route-continuation (lane 0 dead-ends at the junction), so SUMO's BEST_FREE
+     picks E1_1 by continuation length alone (no occupancy tiebreak needed), which keeps the
+     golden deterministic and RNG-insensitive. departSpeed="max" resolves to min(vType maxSpeed,
+     laneSpeed x speedFactor) = min(55.55, 13.89 x 1.0) = 13.89 m/s (no leader, so no safe-speed
+     clamp). The vehicle therefore enters at 13.89 m/s directly on E1_1; contrast scenario 18,
+     which starts it stopped on lane 0 and forces a strategic lane change. -->
+<routes xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://sumo.dlr.de/xsd/routes_file.xsd">
+    <vType id="car" vClass="passenger" sigma="0"/>
+    <route id="r0" edges="E1 E2"/>
+    <vehicle id="veh0" type="car" route="r0" depart="0" departPos="0" departSpeed="max" departLane="best"/>
+</routes>
