@@ -62,6 +62,15 @@ Legend: `[ ]` not started · `[~]` in progress · `[x]` done · `[!]` blocked/ne
 - [ ] **P6-2** Region decomposition (only if P6-1 shows flat parallel plateaus)
 - [ ] **P6-3** Full property-test suite (reqs 1–7, each named; parity untouched)
 
+## Stage P7 — Pedestrian visualization (existing 3D viewers, in-process + remote-DR)
+
+- [ ] **P7-1** Native viewer (`Sim.Viewer`/Raylib) in-process ped render (generalize evac overlay;
+      regime-aware; board/alight appear/disappear) — *schedule early for a visible demo*
+- [ ] **P7-2** Native viewer remote ped render over DR/DDS (FreeKinematic extrapolate + PathArc follow;
+      server==IG visual parity; no promotion pop)
+- [ ] **P7-3** City3D (Godot 3D) ped render — in-process (`SimSource`) + remote (`Reconstructor`/DDS);
+      ground placement, heading, GPU LOD-cull
+
 ---
 
 ## Standing invariants (must stay true every task)

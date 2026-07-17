@@ -207,10 +207,55 @@ Design ref: `PEDESTRIAN-DESIGN.md` §3(d), `PEDESTRIAN-POC7C-FINDINGS.md` Q2.
 
 ---
 
+## Stage P7 — Pedestrian visualization (existing 3D viewers, in-process AND remote-with-DR)
+
+**Why a stage:** the sim is only useful if you can *see* the pedestrians. Two viewers already render cars
+(and evac has a pedestrian precedent), and each supports two data paths — **in-process** (the viewer
+co-hosts the sim and renders live state directly, no DR) and **remote** (the viewer consumes the DDS
+stream and reconstructs via dead-reckoning). Pedestrians must render in **both viewers** over **both
+paths**. Design ref: §7 (DR / multicast), §5 (regime rendering); precedent: `src/Sim.Viewer/EvacOverlay.cs`,
+`src/Sim.Viewer/EvacRenderSnapshot.cs`, `demos/City3D/CityLib/{SimSource,Reconstructor}.cs`.
+
+### P7-1 — Native viewer (`Sim.Viewer` / `Sim.Viewer.Raylib`): in-process pedestrian render
+- **Design ref:** §5. **Files:** `src/Sim.Viewer/`, `src/Sim.Viewer.Raylib/RenderHelpers.cs`. **Deps:** P1-2.
+- Generalize the existing evac ped **overlay** into a first-class pedestrian render driven by live
+  `PedLodManager`/crowd state: draw each ped as an oriented agent (heading from velocity), **regime-aware** —
+  low-power and high-power peds both drawn (optionally tinted for debugging), and `board`/`alight` shown as
+  appear/disappear at the vehicle. Reuse the evac snapshot pattern (`EvacRenderSnapshot`) so reading ped
+  state never blocks the sim step.
+- **Success conditions:** a co-hosted run renders a moving pedestrian crowd (crossing, parking, corridor)
+  at interactive fps; board/alight visibly appears/disappears beside cars; a headless smoke test asserts the
+  ped render snapshot is populated and non-blocking.
+
+### P7-2 — Native viewer: remote pedestrian render over DR/DDS
+- **Design ref:** §7. **Files:** `src/Sim.Viewer.Motion/`, `src/Sim.Viewer/`, `src/Sim.Viewer.Core/DdsPublisher.cs`.
+  **Deps:** P3-1, P3-3.
+- Feed the same ped render from the **DDS stream** instead of live state: `FreeKinematic` high-power peds
+  extrapolated and `PathArc` low-power peds followed via the P3-3 reconstruction, with regime/DR-switch and
+  board/alight lifecycle events applied. Same avatar rendering as P7-1 — only the data source differs.
+- **Success conditions:** a publisher→multicast→viewer run renders the crowd smoothly between sparse
+  updates; **server==IG visual parity** — a low-power ped's rendered position matches the co-hosted render
+  within render tolerance (the POC-3 invariant, now on-screen); no pop/teleport on promotion (DR-switch
+  reconciled by the smoother).
+
+### P7-3 — City3D (Godot 3D): pedestrian render, in-process + remote
+- **Design ref:** §5, §7. **Files:** `demos/City3D/CityLib/{SimSource,Reconstructor}.cs`,
+  `demos/City3D/Viewer/`. **Deps:** P7-1, P7-2 (shares the render model), P3-1/P3-3.
+- Add pedestrian avatars to the Godot 3D city viewer along the paths it already uses for cars: **in-process**
+  via `SimSource` (live ped state) and **remote** via `Reconstructor` + the ped DDS topics (`run-remote.sh`
+  path). 3D-specific: ground-plane placement, a simple ped mesh/billboard, heading from velocity, LOD-cull
+  distant peds for the GPU (render-only culling — independent of sim/net LOD).
+- **Success conditions:** the 3D viewer shows the pedestrian crowd in both `local` and `remote` (DDS) launch
+  modes; peds move smoothly under DR in remote mode; large counts render without stalling (GPU LOD engaged).
+
+---
+
 ## Sequencing summary
 
 **P0 first (Add/Remove — the priority).** Then P1 (API/interest-source) and P2 (navigation) can proceed in
-parallel; P3 (networking) depends on P0-3; P4 (Engine TLS seam) is scheduled with the lane-engine session
-whenever convenient; P5 (evac) waits on P1–P2; P6 (on-target scale) waits on P0 and closes the loop with the
-real hardware numbers. The design is fixed; any P-stage finding that contradicts it updates
+parallel; P3 (networking) depends on P0-3; **P7 (visualization) follows its data sources — P7-1 in-process
+after P1, P7-2/P7-3 remote after P3-1/P3-3** (it is the payoff that makes the whole system watchable, so
+schedule P7-1 early for a visible in-process demo); P4 (Engine TLS seam) is scheduled with the lane-engine
+session whenever convenient; P5 (evac) waits on P1–P2; P6 (on-target scale) waits on P0 and closes the loop
+with the real hardware numbers. The design is fixed; any P-stage finding that contradicts it updates
 `PEDESTRIAN-DESIGN.md` before that stage closes.
