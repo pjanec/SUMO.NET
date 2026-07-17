@@ -34,8 +34,15 @@ principle wins.
    fixed tie-breaks; command-buffer ordering. Single-thread == parallel, run-to-run identical, and (for
    low-power path agents) server == IG. But we are free of SUMO's byte-exact bar — behavioral/property
    tests are the validation.
-6. **Core stays parity-inert.** The subsystem drives Core through public seams only (the `Sim.Evac`
-   discipline). No pedestrian code path executes on a parity scenario.
+6. **Pedestrians run in a separate engine; the parity lane core stays inert.** Pedestrian motion is the
+   `OrcaCrowd`/`Sim.Pedestrians` solver — a *wholly different engine* from the lane car-following core. A
+   pedestrian is never stepped through the lane engine's `PlanMovements`/Krauss path; the two worlds meet
+   **only** through the neutral `WorldDisc`/`ICrowdFootprintSource` seam (cars see peds as discs, peds see
+   cars as discs). Likewise, pedestrian **network** geometry (sidewalks, crossings, walkingAreas) is read
+   by a *separate* ped-network ingest, not the parity `NetworkParser` (which today does not parse lane
+   `allow`/`vClass` at all and must not be perturbed). Consequence, and the point of this principle:
+   **developing pedestrians cannot move SUMO parity** — no pedestrian code path executes on a parity
+   scenario, and the determinism hash `909605E965BFFE59` is structurally out of reach of this work.
 
 ---
 
@@ -240,15 +247,29 @@ nothing needs reacting to. The moment something *does* (§5), they promote.
 **Low-power** = §4 deterministic follower: O(1)/step, no neighbor query, no ORCA. **High-power** = full
 `OrcaCrowd` agent with routing + reactive avoidance. The population split targets ~10k high / ~90k low.
 
-**Promotion (low → high)** — triggered by a pure function of frozen state, any of:
-- proximity to an incident (evac);
-- proximity to any external entity (`ExternalObstacle` / `WorldDisc` — Req 3's external car/pedestrian);
-- proximity to an active crosswalk with approaching traffic (Req 3/5);
-- entering a parking lot or a dense bottleneck (Req 5/6);
-- entering a designated area of interest (e.g. near a hero camera / scripted zone).
+**The high-power set is defined by a dynamic set of "interest sources", not a fixed trigger list.** An
+*interest source* is a volume (radius/region) that promotes any low-power ped inside it. Sources are:
+- **Movable, entity-attached** — the common case: an external/player-controlled entity (an avatar, an
+  external car, or a pedestrian who just got out of a car) carries its own high-power bubble as it moves
+  through the city, so the crowd around it becomes interactive wherever it goes (Use case 1). An IG
+  camera is the same shape of source (Use case 3): a moving frustum/region that promotes what it looks
+  at, so the crowd renders as believably-interacting under inspection rather than path-following robots.
+- **Static, scripted** — a designated area of interest known up front (Use case 2).
+- **Intrinsic** — a crosswalk with approaching traffic, a parking lot, a dense bottleneck, or an evac
+  incident promotes peds in its vicinity regardless of any camera/avatar.
 
-**Demotion (high → low)** — none of the above for a **dwell time**, *and* the agent can be re-projected
-onto a deterministic path at its nearest arc-length.
+There can be **several active interest sources at once, each moving independently** (Use case 4). A ped is
+high-power iff it lies within the promotion volume of *any* active source. Concretely this is an
+**interest field**: a small, per-step set of source volumes (typically tens, not thousands), queried per
+low-power ped via the same spatial hash the crowd already uses — cheap because sources are few. Promotion
+is a pure function of frozen state (source positions are start-of-step), with a fixed tie-break, so it is
+deterministic and thread-order-independent. Note the two roles a **camera** plays are still orthogonal
+(Principle 3): as an *interest source* it drives **sim-LOD** (promote to interactive compute); as a
+**net-LOD** frustum it drives *which* high-power peds that channel receives. A camera can do both, but the
+two decisions are made independently.
+
+**Demotion (high → low)** — outside every active interest source's (larger, hysteretic) volume for a
+**dwell time**, *and* the agent can be re-projected onto a deterministic path at its nearest arc-length.
 
 **Hysteresis (no flapping):** promotion radius > demotion radius, plus a minimum dwell in each state.
 Thresholds are on frozen distances with fixed tie-breaks → deterministic.
