@@ -1,4 +1,5 @@
 using Sim.Core;
+using Sim.Core.Orca;
 
 namespace Sim.Replication;
 
@@ -81,4 +82,52 @@ public readonly struct CrowdRecord
     public double Vx { get; }
     public double Vy { get; }
     public double Radius { get; }
+}
+
+// POC-7b (docs/PEDESTRIAN-POC-PLAN.md POC-7; docs/PEDESTRIAN-DESIGN.md §7) — the QUANTIZED pedestrian
+// analog of `CrowdRecord`, for the high-power (`OrcaCrowd`/`FreeKinematic`) population. This is a
+// SEPARATE record kind from `CrowdRecord` on purpose: `CrowdRecord` is unquantized float32 and other
+// consumers may already depend on its 32 B layout (CLAUDE.md additive-only rule), so it is left byte-
+// for-byte unchanged. `PedFreeKinematicRecord` is the logical (unquantized, double) view; the codec
+// (`FrameCodec.WritePedFreeKinematicFrame`/`ReadPedFreeKinematicFrame`) does the cm-precision packing
+// into the compact wire form (see that file's header comment for the exact 18 B layout and the
+// int32-cm-absolute-vs-int16-cm-relative tradeoff).
+//
+// No `Z`: unlike `CrowdRecord`, pedestrians are assumed to ride the walkable ground plane; elevation is
+// resolved on the IG from the static walkable-surface geometry (navmesh bake), exactly as `VehicleRecord`
+// carries no `Z` either (resolved from lane geometry). This is a deliberate scope cut for POC-7b, not a
+// claim that multi-level (bridge/underpass) peds are unsupported forever.
+public readonly struct PedFreeKinematicRecord
+{
+    public PedFreeKinematicRecord(VehicleHandle handle, double x, double y, double vx, double vy, double radius)
+    {
+        Handle = handle; X = x; Y = y; Vx = vx; Vy = vy; Radius = radius;
+    }
+
+    public VehicleHandle Handle { get; }
+    public double X { get; }
+    public double Y { get; }
+    public double Vx { get; }
+    public double Vy { get; }
+    public double Radius { get; }
+}
+
+// POC-7b — the wire counterpart of the low-power ped's one-time payload (docs/PEDESTRIAN-DESIGN.md §7
+// "PathArc DR model"; the logical/event-model analog is `Sim.Pedestrians.Lod.PathArcRecord`, which this
+// mirrors but does not depend on -- `Sim.Replication` stays free of a `Sim.Pedestrians` reference, so
+// this type uses `Sim.Core.Orca.Vec2` directly, same as `Sim.Pedestrians` does). Sent ONCE per ped (on
+// spawn, and again on each demotion with a fresh re-routed path) on the low-rate/durable lifecycle
+// topic -- never repeated per step -- so it must not be counted as per-step bandwidth (only amortized
+// over the ped's path lifetime, plus the separate low-rate heartbeat).
+public readonly struct PathArcRecord
+{
+    public PathArcRecord(VehicleHandle handle, double speed, double startTime, IReadOnlyList<Vec2> path)
+    {
+        Handle = handle; Speed = speed; StartTime = startTime; Path = path;
+    }
+
+    public VehicleHandle Handle { get; }
+    public double Speed { get; }
+    public double StartTime { get; }
+    public IReadOnlyList<Vec2> Path { get; }
 }

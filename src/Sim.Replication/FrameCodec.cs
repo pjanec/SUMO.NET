@@ -1,5 +1,6 @@
 using System.Buffers.Binary;
 using Sim.Core;
+using Sim.Core.Orca;
 
 namespace Sim.Replication;
 
@@ -13,18 +14,48 @@ namespace Sim.Replication;
 // VehicleRecord (48 B): index(u32) gen(u16) model(u8) pad(u8) laneHandle(i32)
 //                       pos/posLat/speed/accel/latSpeed(5*f32) upcoming[4](4*i32).
 // CrowdRecord (32 B): index(u32) gen(u16) pad(u16) x/y/z/vx/vy/radius(6*f32).
+//
+// POC-7b additions (docs/PEDESTRIAN-POC-PLAN.md POC-7; docs/PEDESTRIAN-DESIGN.md §7) — additive, new
+// KIND values, existing kinds/layouts above are byte-for-byte unchanged:
+//
+// PedFreeKinematicRecord (18 B, QUANTIZED): handle-index(u32) x_cm(i32) y_cm(i32) vx_cmps(i16)
+//   vy_cmps(i16) radius_cm(u16). Position tradeoff (chosen: int32-cm absolute):
+//     - int32 cm absolute (chosen): 8 B for (x,y), range +-21,474,836 m (>> any realistic world extent,
+//       no per-frame/chunk origin bookkeeping, no "ped wandered out of chunk range" failure mode).
+//       ~1 cm precision (round-to-nearest-cm on write).
+//     - int16 cm relative to a per-frame/chunk origin (NOT chosen): would shave the record to ~14 B, but
+//       needs a maintained origin per frame/spatial-chunk and silently clamps/wraps if a ped strays
+//       further than +-327.67 m from that origin -- real risk for a population spread across a city-scale
+//       net. Left as a documented follow-up if the extra ~2 B/record/step ever matters (it does not at
+//       the measured scale here, see docs/PEDESTRIAN-POC7B-FINDINGS.md).
+//   `Radius` IS still carried per record here (unlike the car stack's "physical dims sent once" pattern)
+//   because the task spec calls for it in this compact record; it is small (2 B) and rarely changes, so
+//   the cost is negligible. `Handle` carries only the u32 index (the generation is NOT on this hot-path
+//   wire record -- it is authoritative on the separate lifecycle topic which already keys by full handle;
+//   dropping it here is a deliberate size/robustness tradeoff for the high-rate stream).
+//
+// PathArcRecord (variable, 14 B + 8 B/point): handle-index(u32) speed_f32(4) startTime_f32(4)
+//   pointCount(u16) points[pointCount] * (x_cm(i32) y_cm(i32)). Sent ONCE per ped (lifecycle topic), so
+//   its per-step amortized cost is what matters, not its raw size; see the frame-size helper below.
 public static class FrameCodec
 {
     public const byte Version = 1;
     public const byte KindVehicle = 1;
     public const byte KindCrowd = 2;
+    public const byte KindPedFreeKinematic = 3;
+    public const byte KindPathArc = 4;
 
     public const int HeaderSize = 16;
     public const int VehicleRecordSize = 48;
     public const int CrowdRecordSize = 32;
+    public const int PedFreeKinematicRecordSize = 18;
+
+    // cm-precision quantization scale shared by the ped wire records.
+    private const double CmScale = 100.0;
 
     public static int VehicleFrameSize(int count) => HeaderSize + count * VehicleRecordSize;
     public static int CrowdFrameSize(int count) => HeaderSize + count * CrowdRecordSize;
+    public static int PedFreeKinematicFrameSize(int count) => HeaderSize + count * PedFreeKinematicRecordSize;
 
     public readonly struct FrameHeader
     {
@@ -155,6 +186,137 @@ public static class FrameCodec
 
         return n;
     }
+
+    // --- Ped FreeKinematic frame (POC-7b, quantized) ---
+
+    public static int WritePedFreeKinematicFrame(Span<byte> dst, uint step, float time, ReadOnlySpan<PedFreeKinematicRecord> recs)
+    {
+        var size = PedFreeKinematicFrameSize(recs.Length);
+        if (dst.Length < size) throw new ArgumentException("destination too small for the ped free-kinematic frame.", nameof(dst));
+
+        WriteHeader(dst, KindPedFreeKinematic, step, time, recs.Length);
+        var o = HeaderSize;
+        for (var i = 0; i < recs.Length; i++)
+        {
+            ref readonly var r = ref recs[i];
+            BinaryPrimitives.WriteUInt32LittleEndian(dst.Slice(o, 4), r.Handle.Index); o += 4;
+            BinaryPrimitives.WriteInt32LittleEndian(dst.Slice(o, 4), QuantizeCm32(r.X)); o += 4;
+            BinaryPrimitives.WriteInt32LittleEndian(dst.Slice(o, 4), QuantizeCm32(r.Y)); o += 4;
+            BinaryPrimitives.WriteInt16LittleEndian(dst.Slice(o, 2), QuantizeCmPerS16(r.Vx)); o += 2;
+            BinaryPrimitives.WriteInt16LittleEndian(dst.Slice(o, 2), QuantizeCmPerS16(r.Vy)); o += 2;
+            BinaryPrimitives.WriteUInt16LittleEndian(dst.Slice(o, 2), QuantizeCm16(r.Radius)); o += 2;
+        }
+
+        return size;
+    }
+
+    public static int ReadPedFreeKinematicFrame(ReadOnlySpan<byte> src, Span<PedFreeKinematicRecord> dst)
+    {
+        var h = ReadHeader(src);
+        if (h.Kind != KindPedFreeKinematic) throw new ArgumentException("not a ped free-kinematic frame.", nameof(src));
+        var n = Math.Min(h.Count, dst.Length);
+        var o = HeaderSize;
+        for (var i = 0; i < n; i++)
+        {
+            var index = BinaryPrimitives.ReadUInt32LittleEndian(src.Slice(o, 4)); o += 4;
+            var x = DequantizeCm32(BinaryPrimitives.ReadInt32LittleEndian(src.Slice(o, 4))); o += 4;
+            var y = DequantizeCm32(BinaryPrimitives.ReadInt32LittleEndian(src.Slice(o, 4))); o += 4;
+            var vx = DequantizeCmPerS16(BinaryPrimitives.ReadInt16LittleEndian(src.Slice(o, 2))); o += 2;
+            var vy = DequantizeCmPerS16(BinaryPrimitives.ReadInt16LittleEndian(src.Slice(o, 2))); o += 2;
+            var radius = DequantizeCm16(BinaryPrimitives.ReadUInt16LittleEndian(src.Slice(o, 2))); o += 2;
+            // Generation is not carried on this wire record (see header comment) -- decoded handles use
+            // generation 0; a consumer that needs the authoritative generation resolves it from the
+            // lifecycle topic keyed by the same index.
+            dst[i] = new PedFreeKinematicRecord(new VehicleHandle(index, 0), x, y, vx, vy, radius);
+        }
+
+        return n;
+    }
+
+    // --- PathArc frame (POC-7b, sent once per ped on the low-rate/durable topic) ---
+
+    // Variable-length record: 4 (handle index) + 4 (speed f32) + 4 (startTime f32) + 2 (point count)
+    // + 8 * pointCount (x_cm i32, y_cm i32 per point).
+    public static int PathArcRecordSize(int pointCount) => 14 + pointCount * 8;
+
+    public static int PathArcFrameSize(ReadOnlySpan<PathArcRecord> recs)
+    {
+        var size = HeaderSize;
+        for (var i = 0; i < recs.Length; i++) size += PathArcRecordSize(recs[i].Path.Count);
+        return size;
+    }
+
+    public static int WritePathArcFrame(Span<byte> dst, uint step, float time, ReadOnlySpan<PathArcRecord> recs)
+    {
+        var size = PathArcFrameSize(recs);
+        if (dst.Length < size) throw new ArgumentException("destination too small for the path-arc frame.", nameof(dst));
+
+        WriteHeader(dst, KindPathArc, step, time, recs.Length);
+        var o = HeaderSize;
+        for (var i = 0; i < recs.Length; i++)
+        {
+            ref readonly var r = ref recs[i];
+            BinaryPrimitives.WriteUInt32LittleEndian(dst.Slice(o, 4), r.Handle.Index); o += 4;
+            WriteF32(dst.Slice(o, 4), (float)r.Speed); o += 4;
+            WriteF32(dst.Slice(o, 4), (float)r.StartTime); o += 4;
+            var path = r.Path;
+            BinaryPrimitives.WriteUInt16LittleEndian(dst.Slice(o, 2), (ushort)path.Count); o += 2;
+            for (var k = 0; k < path.Count; k++)
+            {
+                BinaryPrimitives.WriteInt32LittleEndian(dst.Slice(o, 4), QuantizeCm32(path[k].X)); o += 4;
+                BinaryPrimitives.WriteInt32LittleEndian(dst.Slice(o, 4), QuantizeCm32(path[k].Y)); o += 4;
+            }
+        }
+
+        return size;
+    }
+
+    // Allocates: unlike the fixed-size frames above, a PathArc record's point count is only known once
+    // decoded, so (unlike the alloc-free fixed-record reads) this allocates one array per record plus the
+    // result array. Acceptable here: PathArc decoding happens once per ped's path lifetime (spawn/
+    // demotion), never per step.
+    public static PathArcRecord[] ReadPathArcFrame(ReadOnlySpan<byte> src)
+    {
+        var h = ReadHeader(src);
+        if (h.Kind != KindPathArc) throw new ArgumentException("not a path-arc frame.", nameof(src));
+        var result = new PathArcRecord[h.Count];
+        var o = HeaderSize;
+        for (var i = 0; i < h.Count; i++)
+        {
+            var index = BinaryPrimitives.ReadUInt32LittleEndian(src.Slice(o, 4)); o += 4;
+            var speed = ReadF32(src.Slice(o, 4)); o += 4;
+            var startTime = ReadF32(src.Slice(o, 4)); o += 4;
+            var pointCount = BinaryPrimitives.ReadUInt16LittleEndian(src.Slice(o, 2)); o += 2;
+            var points = new Vec2[pointCount];
+            for (var k = 0; k < pointCount; k++)
+            {
+                var x = DequantizeCm32(BinaryPrimitives.ReadInt32LittleEndian(src.Slice(o, 4))); o += 4;
+                var y = DequantizeCm32(BinaryPrimitives.ReadInt32LittleEndian(src.Slice(o, 4))); o += 4;
+                points[k] = new Vec2(x, y);
+            }
+
+            result[i] = new PathArcRecord(new VehicleHandle(index, 0), speed, startTime, points);
+        }
+
+        return result;
+    }
+
+    // --- cm-precision quantization helpers (POC-7b) ---
+
+    private static int QuantizeCm32(double meters) =>
+        (int)Math.Round(Math.Clamp(meters * CmScale, int.MinValue, int.MaxValue), MidpointRounding.AwayFromZero);
+
+    private static double DequantizeCm32(int q) => q / CmScale;
+
+    private static short QuantizeCmPerS16(double metersPerSecond) =>
+        (short)Math.Round(Math.Clamp(metersPerSecond * CmScale, short.MinValue, short.MaxValue), MidpointRounding.AwayFromZero);
+
+    private static double DequantizeCmPerS16(short q) => q / CmScale;
+
+    private static ushort QuantizeCm16(double meters) =>
+        (ushort)Math.Round(Math.Clamp(meters * CmScale, 0, ushort.MaxValue), MidpointRounding.AwayFromZero);
+
+    private static double DequantizeCm16(ushort q) => q / CmScale;
 
     private static void WriteHeader(Span<byte> dst, byte kind, uint step, float time, int count)
     {

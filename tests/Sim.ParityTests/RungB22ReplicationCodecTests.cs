@@ -1,4 +1,5 @@
 using Sim.Core;
+using Sim.Core.Orca;
 using Sim.Ingest;
 using Sim.Replication;
 using Xunit;
@@ -74,6 +75,86 @@ public class RungB22ReplicationCodecTests
             Assert.Equal(recs[i].Vx, outp[i].Vx, 4);
             Assert.Equal(recs[i].Vy, outp[i].Vy, 4);
             Assert.Equal(recs[i].Radius, outp[i].Radius, 4);
+        }
+    }
+
+    // POC-7b (docs/PEDESTRIAN-POC-PLAN.md POC-7; docs/PEDESTRIAN-DESIGN.md §7) — the quantized ped
+    // FreeKinematic record round-trips within the ~1 cm precision the int32/int16-cm packing targets.
+    [Fact]
+    public void PedFreeKinematicFrame_RoundTrips_WithinCentimeter()
+    {
+        var recs = new[]
+        {
+            new PedFreeKinematicRecord(new VehicleHandle(1, 5), x: 1234.567, y: -987.321, vx: 1.35, vy: -0.42, radius: 0.32),
+            new PedFreeKinematicRecord(new VehicleHandle(2, 9), x: -20000.005, y: 0.0, vx: 0.0, vy: 2.999, radius: 0.28),
+        };
+
+        var buf = new byte[FrameCodec.PedFreeKinematicFrameSize(recs.Length)];
+        var written = FrameCodec.WritePedFreeKinematicFrame(buf, step: 11, time: 1.1f, recs);
+        Assert.Equal(buf.Length, written);
+        Assert.Equal(recs.Length * FrameCodec.PedFreeKinematicRecordSize, buf.Length - FrameCodec.HeaderSize);
+        Assert.Equal(18, FrameCodec.PedFreeKinematicRecordSize);
+
+        var header = FrameCodec.ReadHeader(buf);
+        Assert.Equal(FrameCodec.KindPedFreeKinematic, header.Kind);
+        Assert.Equal(2, header.Count);
+
+        var outp = new PedFreeKinematicRecord[2];
+        Assert.Equal(2, FrameCodec.ReadPedFreeKinematicFrame(buf, outp));
+        for (var i = 0; i < 2; i++)
+        {
+            // Generation is intentionally not on this compact wire record (see FrameCodec header comment).
+            Assert.Equal(recs[i].Handle.Index, outp[i].Handle.Index);
+            Assert.Equal(0, outp[i].Handle.Generation);
+
+            const double cmTol = 0.01; // 1 cm
+            Assert.True(Math.Abs(recs[i].X - outp[i].X) <= cmTol, $"X drift {recs[i].X} vs {outp[i].X}");
+            Assert.True(Math.Abs(recs[i].Y - outp[i].Y) <= cmTol, $"Y drift {recs[i].Y} vs {outp[i].Y}");
+            Assert.True(Math.Abs(recs[i].Vx - outp[i].Vx) <= cmTol, $"Vx drift {recs[i].Vx} vs {outp[i].Vx}");
+            Assert.True(Math.Abs(recs[i].Vy - outp[i].Vy) <= cmTol, $"Vy drift {recs[i].Vy} vs {outp[i].Vy}");
+            Assert.True(Math.Abs(recs[i].Radius - outp[i].Radius) <= cmTol, $"Radius drift {recs[i].Radius} vs {outp[i].Radius}");
+        }
+    }
+
+    // POC-7b — a PathArc record (the low-power ped's one-time payload) round-trips its handle, speed,
+    // startTime, and full polyline, including the point-count-dependent variable record size.
+    [Fact]
+    public void PathArcFrame_RoundTrips()
+    {
+        var path0 = new[] { new Vec2(0.0, 0.0), new Vec2(5.5, 0.0), new Vec2(5.5, 10.25), new Vec2(20.0, 10.25) };
+        var path1 = new[] { new Vec2(-100.0, 50.0) }; // single-point path (degenerate but legal)
+        var recs = new[]
+        {
+            new PathArcRecord(new VehicleHandle(3, 1), speed: 1.4, startTime: 12.5, path0),
+            new PathArcRecord(new VehicleHandle(4, 2), speed: 0.9, startTime: 0.0, path1),
+        };
+
+        var expectedSize = FrameCodec.HeaderSize
+            + FrameCodec.PathArcRecordSize(path0.Length)
+            + FrameCodec.PathArcRecordSize(path1.Length);
+        Assert.Equal(expectedSize, FrameCodec.PathArcFrameSize(recs));
+
+        var buf = new byte[expectedSize];
+        var written = FrameCodec.WritePathArcFrame(buf, step: 3, time: 0.3f, recs);
+        Assert.Equal(expectedSize, written);
+
+        var header = FrameCodec.ReadHeader(buf);
+        Assert.Equal(FrameCodec.KindPathArc, header.Kind);
+        Assert.Equal(2, header.Count);
+
+        var outp = FrameCodec.ReadPathArcFrame(buf);
+        Assert.Equal(2, outp.Length);
+        for (var i = 0; i < 2; i++)
+        {
+            Assert.Equal(recs[i].Handle.Index, outp[i].Handle.Index);
+            Assert.Equal(recs[i].Speed, outp[i].Speed, 3);
+            Assert.Equal(recs[i].StartTime, outp[i].StartTime, 3);
+            Assert.Equal(recs[i].Path.Count, outp[i].Path.Count);
+            for (var k = 0; k < recs[i].Path.Count; k++)
+            {
+                Assert.Equal(recs[i].Path[k].X, outp[i].Path[k].X, 2); // cm-quantized
+                Assert.Equal(recs[i].Path[k].Y, outp[i].Path[k].Y, 2);
+            }
         }
     }
 
