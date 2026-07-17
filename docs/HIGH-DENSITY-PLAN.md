@@ -244,6 +244,7 @@ when I first need to regenerate a golden. OK to do that as part of landing the f
   - [x] P1E-3 A* router + effort fn (== Dijkstra on fixed weights) ✅ (533 green)
   - [x] P1E-4 periodic reroute trigger + parallel batch + route-slot recycling + jitter + integration
   - [x] P1E-5 scenarios/45-reroute-congestion faithful anchor (EXACT parity, all-single-lane) + jitter/recycling tests (539 green)
+  - [x] P1E-6 pre-insertion rerouting -> multi-lane route split exact (scenarios/46, behavioural; 543 green). Residual multi-lane pos/speed divergence = pre-existing P2-G gap (confirmed: identical without rerouting), tracked separately.
 - [ ] P1-F teleport valve  ·  `scenarios/NN-teleport-jam`  ·  parity green
 - [ ] P2-G/H verify-then-fix (after P0, real dense config)
 - [ ] X1 attention-aware popping (functional/statistical tests, no parity)

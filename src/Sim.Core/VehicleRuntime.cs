@@ -384,4 +384,17 @@ internal sealed class VehicleRuntime
     public bool RerouteEquipped;
     public double NextRerouteTime = double.PositiveInfinity;
     public double LastRoutingTime = double.NegativeInfinity;
+
+    // P1E-6 (HIGH-DENSITY-P1E-DESIGN.md §11): true once this vehicle's ONE pre-insertion reroute
+    // attempt (Engine.InsertDepartingVehicles' pre-insertion pass) has run -- regardless of whether
+    // it actually installed a new route (structural failure / identical-edge-list short-circuit
+    // both still set this, exactly like the periodic pass always re-arms NextRerouteTime whether or
+    // not it installs, §1B). Guards the pass to fire AT MOST ONCE per vehicle lifetime, at/after its
+    // own depart time, distinct from and never touched by the periodic schedule
+    // (NextRerouteTime/LastRoutingTime above keep firing depart+period, +period, ... unchanged --
+    // SUMO does both). Defaults false for every vehicle; `new VehicleRuntime{...}` in
+    // Engine.BuildRuntime always constructs a fresh instance (never carries over a recycled slot's
+    // old value), so a recycled EntityIndex's occupant starts with PreInsertionRerouteDone=false
+    // again, same as any other freshly-built vehicle -- no separate reset code needed.
+    public bool PreInsertionRerouteDone;
 }

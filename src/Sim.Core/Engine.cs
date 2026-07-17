@@ -354,6 +354,14 @@ public sealed partial class Engine : IEngine
     // start of each use; never read stale across calls.
     private readonly List<VehicleRuntime> _rerouteBatchScratch = new();
     private IReadOnlyList<string>?[] _rerouteCandidateScratch = Array.Empty<IReadOnlyList<string>?>();
+
+    // P1E-6 (§11) scratch: same zero-steady-state-alloc discipline as the periodic pass's own
+    // scratch above, but kept as SEPARATE fields (rather than reused) since the pre-insertion pass
+    // runs earlier in the SAME step, inside InsertDepartingVehicles -- before UpdatePeriodicReroutes
+    // clears/reuses its own scratch later this same AdvanceOneStep call. Cleared/resized at the
+    // start of each use; never read stale across calls.
+    private readonly List<VehicleRuntime> _preInsertRerouteBatchScratch = new();
+    private IReadOnlyList<string>?[] _preInsertRerouteCandidateScratch = Array.Empty<IReadOnlyList<string>?>();
     private readonly Dictionary<string, double> _rerouteEdgeSpeedSumScratch = new(StringComparer.Ordinal);
     private readonly Dictionary<string, int> _rerouteEdgeSpeedCountScratch = new(StringComparer.Ordinal);
 
@@ -2636,6 +2644,14 @@ public sealed partial class Engine : IEngine
             candidates.Add(v);
         }
 
+        // P1E-6 (§11): pre-insertion rerouting -- BEFORE any candidate's route/edge/lane is read
+        // below (ResolveBestDepartLane's strategic-continuation choice included), give each
+        // equipped, not-yet-pre-insertion-rerouted candidate its ONE reroute attempt on the
+        // current edge-weight snapshot, so the placement logic below sees the vehicle's NEW route
+        // if one installed. Order-independent (parallel fan-out internally); entirely inert
+        // (returns immediately) whenever ScenarioConfig.ReroutePeriod<=0, so every non-rerouting
+        // scenario's insertion path is byte-identical.
+        PreInsertionReroute(candidates, time);
 
         // L0d: `_vehicles` (hence `candidates`) is in ascending-EntityIndex definition order, so an
         // in-place sort keyed by (Depart, EntityIndex) is byte-identical to the former stable
@@ -2651,7 +2667,12 @@ public sealed partial class Engine : IEngine
         blockedLanes.Clear();
         foreach (var v in candidates)
         {
-            var route = _routesById[v.Def.RouteId];
+            // P1E-6: EffectiveRouteId, not v.Def.RouteId directly -- picks up a route the
+            // pre-insertion pass above just installed (RegisterPeriodicReroute writes
+            // _effectiveRouteIdByEntity). Falls back to v.Def.RouteId when unset (every vehicle
+            // that was never reroute-registered), so this is byte-identical to before for every
+            // scenario without device.rerouting (or without a vehicle actually rerouted).
+            var route = _routesById[EffectiveRouteId(v)];
             var edge = _network!.EdgesById[route.Edges[0]];
 
             // P0-C1: departLane="best" resolves its CONCRETE lane index HERE, before the by-index
@@ -2784,7 +2805,9 @@ public sealed partial class Engine : IEngine
             }
         }
 
-        var route = _routesById[v.Def.RouteId];
+        // P1E-6: EffectiveRouteId, not v.Def.RouteId directly -- see InsertDepartingVehicles' own
+        // comment on this same substitution.
+        var route = _routesById[EffectiveRouteId(v)];
 
         v.LaneId = lane.Id;
         // D2: keep LaneHandle in lockstep with LaneId at every write site -- the lane just
@@ -2816,7 +2839,10 @@ public sealed partial class Engine : IEngine
         // the route requires an intra-edge lane change.
         // P0-C1: keyed by the RESOLVED departLaneIndex, so a Best vehicle's lane sequence is
         // resolved on the fly and cached lazily here (PrewarmInsertRouteCache only prewarms Given).
-        var routeKey = (v.Def.RouteId, departLaneIndex);
+        // P1E-6: keyed by EffectiveRouteId, not v.Def.RouteId -- a pre-insertion-rerouted vehicle
+        // must NOT hit the ORIGINAL route's prewarmed cache entry; falls back to v.Def.RouteId
+        // (identical to before) whenever no reroute has been registered for this vehicle.
+        var routeKey = (EffectiveRouteId(v), departLaneIndex);
         if (!_insertRouteSeqCache.TryGetValue(routeKey, out var seq))
         {
             seq = _network!.ResolveLaneSequenceHandlesWithArrival(route.Edges, departLaneIndex);
@@ -2889,7 +2915,10 @@ public sealed partial class Engine : IEngine
             return false;
         }
 
-        var route = _routesById[v.Def.RouteId];
+        // P1E-6: EffectiveRouteId, not v.Def.RouteId directly -- see InsertDepartingVehicles' own
+        // comment on this same substitution (harmless for rail, which is not device.rerouting-
+        // equipped in any committed scenario, but keeps this read consistent with the other three).
+        var route = _routesById[EffectiveRouteId(v)];
         var (poolSeq, _) = _network!.ResolveLaneSequenceHandlesWithArrival(route.Edges, departLaneIndex);
         foreach (var handle in poolSeq)
         {
@@ -3660,6 +3689,126 @@ public sealed partial class Engine : IEngine
         if (_rerouteCandidateScratch.Length < n)
         {
             _rerouteCandidateScratch = new IReadOnlyList<string>?[n];
+        }
+    }
+
+    // P1E-6 (HIGH-DENSITY-P1E-DESIGN.md §11): pre-insertion rerouting. SUMO reroutes each
+    // device.rerouting-equipped vehicle ONCE at/around departure (MSDevice_Routing::
+    // preInsertionReroute), not only periodically -- without this, a SumoSharp vehicle
+    // pre-positions (departLane="best"'s strategic-continuation choice, ResolveBestDepartLane)
+    // for its ORIGINAL route until its first periodic reroute fires at depart+period, landing in a
+    // different lane than SUMO's already-rerouted vehicle on a multi-lane road. This runs from
+    // InsertDepartingVehicles, over exactly the vehicles that method already gathered as due-to-
+    // insert this step (time >= Depart, not yet Inserted/Arrived) -- BEFORE that method reads any
+    // vehicle's route for lane/edge resolution, so a rerouted vehicle inserts and pre-positions on
+    // its NEW route. Reuses the SAME machinery as UpdatePeriodicReroutes (§1B/§3/§4): A*/Dijkstra
+    // per RoutingAlgorithm, cost = the settled previous-step _edgeWeights snapshot (never a same-
+    // step write -- UpdateRerouteEdgeWeights still only runs at end of step), no improvement gate,
+    // identical-edge-list short-circuit, one reusable per-entity route slot (RegisterPeriodicReroute
+    // -- never a second id per vehicle). Entirely inert whenever ScenarioConfig.ReroutePeriod<=0
+    // (_edgeWeights stays null), so every pre-P1E-6 / non-rerouting scenario's insertion path never
+    // even calls this and stays byte-identical (see the guard below).
+    //
+    // Distinct from and never touches NextRerouteTime/LastRoutingTime (the periodic schedule
+    // depart+period, +period, ... is untouched -- SUMO does both pre-insertion AND periodic).
+    // Guarded to run AT MOST ONCE per vehicle via PreInsertionRerouteDone (set true regardless of
+    // whether a new route actually installs -- done is done, exactly like the periodic pass always
+    // re-arms its schedule whether or not it installs, §1B).
+    private void PreInsertionReroute(List<VehicleRuntime> insertCandidates, double time)
+    {
+        if (_config!.ReroutePeriod <= 0.0 || _edgeWeights is null)
+        {
+            return;
+        }
+
+        var network = _network!;
+        var edgeWeights = _edgeWeights;
+
+        // Collect the sub-batch: equipped, not yet pre-insertion-rerouted, among this step's
+        // due-to-insert candidates (insertCandidates is already exactly "time >= Depart, not yet
+        // Inserted/Arrived" -- InsertDepartingVehicles' own header comment). A vehicle stays a
+        // candidate across multiple steps if insertion keeps failing (gap/leader checks), but this
+        // guard means it is only ever routed here ONCE, on the first step it becomes eligible.
+        var batch = _preInsertRerouteBatchScratch;
+        batch.Clear();
+        foreach (var v in insertCandidates)
+        {
+            if (!v.RerouteEquipped || v.PreInsertionRerouteDone)
+            {
+                continue;
+            }
+
+            batch.Add(v);
+        }
+
+        if (batch.Count == 0)
+        {
+            return;
+        }
+
+        _router ??= new NetworkRouter(network);
+        var router = _router;
+
+        // PARALLEL fan-out (§4, mirrors UpdatePeriodicReroutes): each vehicle's router call is a
+        // PURE read of the frozen edge-weight snapshot into its OWN scratch slot -- no shared
+        // writes, so the result is independent of thread scheduling/order (parallel is
+        // bit-identical to serial). Source = the vehicle's ORIGINAL (as-yet uninstalled) route's
+        // first edge (its fixed departure edge -- never changes here, only what comes after it);
+        // destination = that same route's last edge (unchanged, per §11's design).
+        if (_preInsertRerouteCandidateScratch.Length < batch.Count)
+        {
+            _preInsertRerouteCandidateScratch = new IReadOnlyList<string>?[batch.Count];
+        }
+
+        var candidates = _preInsertRerouteCandidateScratch;
+        var useAStar = string.Equals(_config.RoutingAlgorithm, "astar", StringComparison.Ordinal);
+        System.Threading.Tasks.Parallel.For(0, batch.Count, _parallelOptions, i =>
+        {
+            var v = batch[i];
+            var originalEdges = _routesById[v.Def.RouteId].Edges;
+            var currentEdge = originalEdges[0];
+            var destEdge = originalEdges[^1];
+            var vehicleMaxSpeed = v.VType.MaxSpeed * v.SpeedFactor;
+            double EdgeEffort(string edgeId) => edgeWeights.Effort(edgeId, vehicleMaxSpeed);
+
+            candidates[i] = useAStar
+                ? router.RouteAStar(currentEdge, destEdge, EdgeEffort)
+                : router.Route(currentEdge, destEdge, EdgeEffort);
+        });
+
+        // SERIAL apply (§4): mark done regardless of outcome (this vehicle's ONE pre-insertion
+        // attempt is spent either way); install iff the candidate is non-empty/structurally valid
+        // and NOT identical to the vehicle's current (still-original, since it has not yet
+        // installed anything) full route edge list -- the same identical-list short-circuit §1B
+        // uses, just compared against the ORIGINAL route's edges directly (a not-yet-inserted
+        // vehicle has no lane-sequence slice for CurrentRemainingRouteEdges to walk).
+        for (var i = 0; i < batch.Count; i++)
+        {
+            var v = batch[i];
+            v.PreInsertionRerouteDone = true;
+
+            var candidate = candidates[i];
+            if (candidate is null || candidate.Count == 0)
+            {
+                // Structural failure (unreachable destination) -- leave the vehicle on its
+                // original route, exactly like the periodic pass's own "no alternate exists" arm.
+                continue;
+            }
+
+            var originalEdges = _routesById[v.Def.RouteId].Edges;
+            if (candidate.SequenceEqual(originalEdges))
+            {
+                continue; // §1B: identical edge list -- short-circuit, no new route object
+            }
+
+            // Reuse the SAME per-entity route slot as the periodic pass (§0.5.3) -- never a second
+            // id per vehicle, and harmless to overwrite again later if/when the periodic pass also
+            // fires for this vehicle. No CommandBuffer/_laneSeqPool splice needed here (unlike
+            // UpdatePeriodicReroutes): this vehicle has not been inserted yet, so it has no
+            // existing lane sequence to replace -- InsertDepartingVehicles/TryInsertOnLane (which
+            // now resolve routes via EffectiveRouteId, not v.Def.RouteId) will build its lane
+            // sequence fresh from this new route when they place it later in this same call.
+            RegisterPeriodicReroute(v, candidate);
         }
     }
 
