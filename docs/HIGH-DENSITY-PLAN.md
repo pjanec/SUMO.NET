@@ -237,7 +237,7 @@ when I first need to regenerate a golden. OK to do that as part of landing the f
 - [x] P0-C1 symbolic departs (max/best + lane-stop)  ·  scenarios/42-symbolic-depart  ·  parity green (497)
 - [ ] P0-C2 parkingArea departPos=stop  ·  scenario + golden  ·  parity green
 - [x] P0-B vTypeDistribution  ·  scenarios/43-vtypedist + statistical test  ·  parity green (507)
-- [ ] P0-D summary/statistic writers  ·  scenario + golden  ·  parity green
+- [x] P0-D summary/statistic writers + harness parsers + comparator  ·  scenarios/44-summary-output  ·  parity green (521)
 - [ ] P1-E device.rerouting  ·  `scenarios/NN-reroute-congestion`  ·  parity green
 - [ ] P1-F teleport valve  ·  `scenarios/NN-teleport-jam`  ·  parity green
 - [ ] P2-G/H verify-then-fix (after P0, real dense config)

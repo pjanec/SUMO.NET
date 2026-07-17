@@ -787,6 +787,13 @@ public sealed partial class Engine : IEngine
     // needed since observers are not simulated entities).
     public void AddExportObserver(ISimExportObserver observer) => _exportObservers.Add(observer);
 
+    // P0-D (`--statistic-output`'s `<teleports total=.../>`): a running counter surfaced now so
+    // a `StatisticWriter` has something real to read. Phase 1 runs with `time-to-teleport="-1"`
+    // (CLAUDE.md "Determinism (phase 1)": teleport off), so this stays 0 for every existing
+    // scenario/test -- P1-F (when teleport-on grid-lock handling lands) is the only future change
+    // that will ever increment it, and it will do so from wherever it detects a teleport, not here.
+    public int TeleportCount { get; private set; }
+
     // SUMOSHARP-API.md §4.4: resolve a lane's string id to the int lane handle ONCE at setup, so the
     // per-step obstacle path never touches a string. Requires a loaded scenario.
     public int GetLane(string laneId) =>
@@ -8618,6 +8625,39 @@ public sealed partial class Engine : IEngine
         return Math.Max(0.0, KraussModel.BrakeGap(followerSpeed, followerDecel, followerTau, dt) - leaderBrakeGap);
     }
 
+    // P0-D (--summary-output `meanSpeedRelative`, MSNet.cpp:607-647): MSEdge::getSpeedLimit()
+    // analog -- the max speed limit over the CURRENT edge's own lanes (an edge's lanes may in
+    // principle post different limits, e.g. a faster HOV lane; SUMO takes the max). Every phase-1
+    // scenario's lanes all share one <lane speed=.../> per edge, so this is numerically identical
+    // to "the current lane's own speed" for every committed golden -- computed from the edge, not
+    // the lane, so a future net with per-lane speed overrides still matches SUMO's own definition.
+    private double EdgeSpeedLimitOf(Lane lane)
+    {
+        var edge = _network!.EdgesById[lane.EdgeId];
+        var limit = 0.0;
+        foreach (var edgeLane in edge.Lanes)
+        {
+            if (edgeLane.Speed > limit)
+            {
+                limit = edgeLane.Speed;
+            }
+        }
+
+        return limit;
+    }
+
+    // P0-D (--summary-output `stopped`, MSVehicleControl::getStoppedVehiclesCount() analog): true
+    // iff this vehicle's own front stop (StopRuntime, D3 side table) is currently `Reached` --
+    // i.e. it is being held at a <stop> this step (ProcessNextStop's `stop.Reached` branch), not
+    // merely scheduled for later. No stops at all (GetStops returns null) or a front stop not yet
+    // reached both read false, matching "not currently stopped" exactly like MSVehicle's own
+    // `isStopped()` (myStops.front().reached).
+    private bool IsStoppedAtStop(VehicleRuntime v)
+    {
+        var stops = GetStops(v);
+        return stops is { Count: > 0 } && stops.Peek().Reached;
+    }
+
     // The engine emits FULL double-precision trajectory values. The goldens are regenerated
     // with SUMO's `--precision` raised well above the default 2 (see scripts/regen-goldens.sh
     // and each scenario's provenance) so the committed FCD carries enough digits for the
@@ -8725,7 +8765,9 @@ public sealed partial class Engine : IEngine
                 giveWaySide: v.GiveWaySide,
                 overtakeActive: v.OvertakeActive,
                 cooperativeShift: v.CooperativeShift,
-                posLat: v.Kinematics.LatOffset);
+                posLat: v.Kinematics.LatOffset,
+                edgeSpeedLimit: EdgeSpeedLimitOf(lane),
+                isStoppedAtStop: IsStoppedAtStop(v));
 
             trajectory.Add(new TrajectoryPoint(
                 VehicleId: snapshot.VehicleId,

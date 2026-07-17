@@ -250,4 +250,4 @@ wrongLane= />` — all 0 until P1-F.
 - [x] P0-C1 symbolic departs (max/best, lane-stop) — specs + gated insertion resolution + scenario 42 ✅ (497 green)
 - [ ] P0-C2 parkingArea subsystem (parkingArea-stop departPos) — parse + getLastFreePos + scenario NN
 - [x] P0-B vTypeDistribution — parse (attribute vTypes=/probabilities=, colon shorthand, nested <vType probability=>) + per-entity salted-RNG resolution at BuildRuntime + scenario 43 ✅ (507 passed + 3 pre-existing skips, 510 total)
-- [ ] P0-D summary/statistic writers + harness parsers + comparator + scenario 44
+- [x] P0-D summary/statistic writers + harness parsers + comparator + scenario 44 ✅ (521 passed + 3 pre-existing skips, 524 total)

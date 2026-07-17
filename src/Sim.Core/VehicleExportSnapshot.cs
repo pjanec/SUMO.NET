@@ -73,6 +73,19 @@ public readonly struct VehicleExportSnapshot
     // resulting lateral drift (which shows up in Y).
     public readonly bool CooperativeShift;
 
+    // P0-D (--summary-output aggregates, MSNet.cpp:607-647/MSVehicleControl.cpp:516-543): the
+    // CURRENT lane's edge's speed limit (MSEdge::getSpeedLimit() analog -- max over the edge's own
+    // lanes, since a lane may in principle post a different limit than its neighbours) and whether
+    // this vehicle is presently held at the front of its own stop queue with that stop `Reached`
+    // (MSVehicleControl::getStoppedVehiclesCount()'s per-vehicle predicate). Both computed once per
+    // vehicle per Export-phase frame from the SAME start-of-frame state FCD/TrajectoryPoint already
+    // reads (EmitTrajectory's serial loop), so a `SummaryWriterObserver` registered here aggregates
+    // over EXACTLY the frame the committed FCD trajectory does. Inert (0.0/false) for every consumer
+    // that does not read them -- FcdWriterObserver, TrajectorySet and every prior scenario/test never
+    // touch these two fields, so this is additive, not a behavior change.
+    public readonly double EdgeSpeedLimit;
+    public readonly bool IsStoppedAtStop;
+
     public VehicleExportSnapshot(
         Entity entity,
         int entityIndex,
@@ -88,7 +101,9 @@ public readonly struct VehicleExportSnapshot
         int giveWaySide = 0,
         bool overtakeActive = false,
         bool cooperativeShift = false,
-        double posLat = 0.0)
+        double posLat = 0.0,
+        double edgeSpeedLimit = 0.0,
+        bool isStoppedAtStop = false)
     {
         Entity = entity;
         EntityIndex = entityIndex;
@@ -105,5 +120,7 @@ public readonly struct VehicleExportSnapshot
         OvertakeActive = overtakeActive;
         CooperativeShift = cooperativeShift;
         PosLat = posLat;
+        EdgeSpeedLimit = edgeSpeedLimit;
+        IsStoppedAtStop = isStoppedAtStop;
     }
 }
