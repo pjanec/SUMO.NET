@@ -1,0 +1,12 @@
+<additional>
+    <!-- Open walkable surfaces that SUMO does not model as pedestrian infrastructure:
+         a plaza and a parking-lot surface. Consumed by the ped-network ingest as
+         walkable polygons (navmesh input), NOT by SUMO. Entry/exit POIs mark where
+         the parking surface connects to the road/lane world (car mode-switch points). -->
+    <poly id="plaza" type="walkable_plaza" color="0.8,0.8,0.7" fill="1" layer="-1"
+          shape="130,20 180,20 180,70 130,70 130,20"/>
+    <poly id="parkinglot" type="walkable_parking" color="0.6,0.6,0.6" fill="1" layer="-1"
+          shape="-180,-20 -130,-20 -130,-80 -180,-80 -180,-20"/>
+    <poi id="parkinglot_entry" type="parking_entry" x="-130" y="-30"/>
+    <poi id="parkinglot_exit"  type="parking_exit"  x="-130" y="-70"/>
+</additional>
