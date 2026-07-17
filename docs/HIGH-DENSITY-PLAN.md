@@ -258,8 +258,13 @@ when I first need to regenerate a golden. OK to do that as part of landing the f
   - [ ] P2G-2 (FOLLOW-UP, evidence-gated) follower-block + cooperative LC (LCA_COOPERATIVE /
     informBlocker) -- proven binding: it is scenario 46's residual 7 m facet AND the reason the
     follower half can't be applied alone (regressed willpass-saturation 0->30 stuck). Owner-driven.
-  - [ ] P2G-3 (FOLLOW-UP) general best-lanes continuation distance for keep-right (multi-edge lane
-    continuity) -- the other candidate facet of scenario 46's junction-continuation lane choice.
+  - [~] P2G-3 scenario-46 speedGain residual -- DIAGNOSED (docs/HIGH-DENSITY-P2G3-DESIGN.md). Root
+    cause is NOT the neighDist gate (proven: continuation distance implemented + instrumented, gate
+    passes at 82.5 but the speedGain still never fires) and NOT cooperative LC (SUMO log: reason
+    speedGain, zero cooperative). It is a CROSS-JUNCTION LEADER ANTICIPATION gap: the LC incentive's
+    thisLaneVSafe uses a same-edge leader lookup and loses the leader across the junction internal
+    lane, so the accumulator never builds; SUMO's getRawSpeed anticipates the leader across the
+    best-lanes continuation. Deep (LC-model extension); reverted, deferred pending owner decision.
 - [x] P2-H max-depart-delay / insertion backlog (design: docs/HIGH-DENSITY-P2H-DESIGN.md) ✅
   - [x] P2H-1 config max-depart-delay + InsertDepartingVehicles eviction (EvictOverdueDeparture,
     DiscardedDepartureCount) + scenarios/50-max-depart-delay BIT-EXACT anchor (blocker stops the
