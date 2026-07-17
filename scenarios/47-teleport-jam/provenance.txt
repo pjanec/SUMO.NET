@@ -1,0 +1,10 @@
+sumo_version=1.20.0
+generated_utc=2026-07-17T15:41:32Z
+command=sumo -c config.sumocfg --fcd-output golden.fcd.xml --fcd-output.acceleration --precision 6 --save-state.times 1 --save-state.files golden.state.xml --summary-output golden.summary.xml --statistic-output golden.statistic.xml --no-step-log true
+state_time=1
+# input hashes:
+input=net.net.xml sha256=90909ade5cd5aff1e7e4a23c4a0c3898c6f9389da4f946b438b203f263ce88bb
+input=rou.rou.xml sha256=66a39e1be47bbc67896cadb9ee408f07c1e5cc33aaab412a773a5d805a6fa3e1
+input=config.sumocfg sha256=94b54a8301ba610fdcd9aa930a1185e604ebd9c56037edc6d5a854f069f3a5e7
+input=nodes.nod.xml sha256=f10cc3135511e56ba41cce949a56e057abe2b240f02f5a980a144a4ee01f377f
+input=edges.edg.xml sha256=1a1dc3b6525d7f58f95f14330199571bac71c2fab9257ad30c88e4cbf5094c80

@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<!-- generated on 2026-07-17 15:40:50 by Eclipse SUMO netconvert Version 1.20.0
+<configuration xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://sumo.dlr.de/xsd/netconvertConfiguration.xsd">
+
+    <input>
+        <node-files value="nodes.nod.xml"/>
+        <edge-files value="edges.edg.xml"/>
+    </input>
+
+    <output>
+        <output-file value="net.net.xml"/>
+    </output>
+
+    <junctions>
+        <no-turnarounds value="true"/>
+    </junctions>
+
+</configuration>
+-->
+
+<net version="1.20" junctionCornerDetail="5" limitTurnSpeed="5.50" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://sumo.dlr.de/xsd/net_file.xsd">
+
+    <location netOffset="0.00,0.00" convBoundary="0.00,0.00,2000.00,0.00" origBoundary="0.00,0.00,2000.00,0.00" projParameter="!"/>
+
+    <edge id=":N1_0" function="internal">
+        <lane id=":N1_0_0" index="0" speed="13.89" length="0.10" shape="1000.00,-1.60 1000.00,-1.60"/>
+    </edge>
+
+    <edge id="eA" from="N0" to="N1" priority="-1">
+        <lane id="eA_0" index="0" speed="13.89" length="1000.00" shape="0.00,-1.60 1000.00,-1.60"/>
+    </edge>
+    <edge id="eB" from="N1" to="N2" priority="-1">
+        <lane id="eB_0" index="0" speed="13.89" length="1000.00" shape="1000.00,-1.60 2000.00,-1.60"/>
+    </edge>
+
+    <junction id="N0" type="dead_end" x="0.00" y="0.00" incLanes="" intLanes="" shape="0.00,0.00 0.00,-3.20"/>
+    <junction id="N1" type="priority" x="1000.00" y="0.00" incLanes="eA_0" intLanes=":N1_0_0" shape="1000.00,0.00 1000.00,-3.20 1000.00,0.00">
+        <request index="0" response="0" foes="0" cont="0"/>
+    </junction>
+    <junction id="N2" type="dead_end" x="2000.00" y="0.00" incLanes="eB_0" intLanes="" shape="2000.00,-3.20 2000.00,0.00"/>
+
+    <connection from="eA" to="eB" fromLane="0" toLane="0" via=":N1_0_0" dir="s" state="M"/>
+
+    <connection from=":N1_0" to="eB" fromLane="0" toLane="0" dir="s" state="M"/>
+
+</net>

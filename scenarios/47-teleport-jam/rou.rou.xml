@@ -1,0 +1,8 @@
+<routes>
+    <vType id="car" vClass="passenger" sigma="0"/>
+    <route id="r" edges="eA eB"/>
+    <vehicle id="blocker" type="car" route="r" depart="0" departPos="0" departSpeed="0" departLane="0">
+        <stop lane="eA_0" startPos="985" endPos="990" duration="100000"/>
+    </vehicle>
+    <vehicle id="follower" type="car" route="r" depart="5" departPos="0" departSpeed="0" departLane="0"/>
+</routes>
