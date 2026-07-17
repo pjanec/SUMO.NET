@@ -1,6 +1,6 @@
 # HIGH-DENSITY-PLAN.md — verified gap findings + proposed plan
 
-**Status:** CHECKPOINT (merged to main @baa0a73, 556 green). P0 (A/B/C1/C2/D) + P1-E + P1-F DONE. Remaining: P2-G multi-lane car-following gap, P2-H max-depart-delay, X1 attention-aware popping. Continuation handoff: `docs/HIGH-DENSITY-HANDOFF.md`.
+**Status:** SESSION 2 (fast-forwarded to main, 571 green). DONE: P0 (A/B/C1/C2/D) + P1-E + P1-F + **P2-G keep-right leader veto** + **P2-H max-depart-delay** + **X1 attention-aware popping**. Remaining (deep, owner-decision): P2G-3 cross-junction leader anticipation + P2G-2 cooperative LC (both close scenario 46's sub-10 m residual, diagnosed in `docs/HIGH-DENSITY-P2G3-DESIGN.md`). Entry point: `docs/HIGH-DENSITY-HANDOFF.md`.
 
 ### Owner steer (received)
 - **Standing architectural principle — performance may beat exact SUMO parity in production.**
