@@ -916,6 +916,15 @@ public sealed partial class Engine : IEngine
     // TeleportCount (total) and this, so here total == jam. 0 for every pre-P1F scenario.
     public int TeleportCountJam { get; private set; }
 
+    // P2-H (HIGH-DENSITY-P2H-DESIGN.md): count of pending vehicles DELETED because they waited past
+    // <max-depart-delay> without an insertion gap (SUMO's MSInsertionControl deleteVehicle(veh, true)).
+    // Observability only -- no committed golden reads it (FCD sees the vehicle's absence directly).
+    // Stays 0 for every scenario that does not set max-depart-delay (the eviction branch is gated off).
+    private int _discardedDepartures;
+
+    // P2-H: read-only accessor for the discarded-departure tally (see _discardedDepartures).
+    public int DiscardedDepartureCount => _discardedDepartures;
+
     // SUMOSHARP-API.md §4.4: resolve a lane's string id to the int lane handle ONCE at setup, so the
     // per-step obstacle path never touches a string. Requires a loaded scenario.
     public int GetLane(string laneId) =>
@@ -1360,6 +1369,7 @@ public sealed partial class Engine : IEngine
         _jamCandidates.Clear();
         TeleportCount = 0;
         TeleportCountJam = 0;
+        _discardedDepartures = 0; // P2-H: reset the max-depart-delay eviction tally per scenario
         _laneSource = null; // §6.3: rebuild the render lane-source lazily for the new network
         _bestLanesCache.Clear(); // L0b: route/edge-keyed memo is scenario-specific
         _insertRouteSeqCache.Clear(); // insert route-resolution memo is scenario-specific
@@ -2878,18 +2888,55 @@ public sealed partial class Engine : IEngine
                 }
             }
 
+            // A candidate is "not inserted this step" if it is FIFO-blocked behind an earlier
+            // same-lane failure (blockedLanes) OR its own TryInsertOnLane fails -- SUMO treats both
+            // as refused emits (MSInsertionControl::tryInsert returning 0 into refusedEmits). Track
+            // that so the P2-H max-depart-delay eviction below can fire for either case.
+            var inserted = false;
             if (blockedLanes.Contains(laneId))
             {
                 // An earlier (same-step) candidate on this lane already failed -- FIFO: later
                 // candidates queue behind it and are not attempted this step.
-                continue;
             }
-
-            if (!TryInsertOnLane(v, laneHandle, departLaneIndex))
+            else if (TryInsertOnLane(v, laneHandle, departLaneIndex))
+            {
+                inserted = true;
+            }
+            else
             {
                 blockedLanes.Add(laneId);
             }
+
+            // P2-H (HIGH-DENSITY-P2H-DESIGN.md): SUMO's max-depart-delay. A vehicle that FAILED to
+            // insert this step and has waited longer than max-depart-delay is DELETED from the pending
+            // queue, not retried forever (MSInsertionControl.cpp:168:
+            // `if (myMaxDepartDelay >= 0 && time - depart > myMaxDepartDelay) deleteVehicle(veh, true)`
+            // -- strict `>`, measured from the ORIGINAL depart time, and only AFTER the insertion
+            // attempt above, so a vehicle that CAN insert on the very step it crosses the threshold
+            // still departs). Gated on MaxDepartDelay >= 0 (default -1 = never), so byte-identical for
+            // every scenario that does not set the option: the branch never runs.
+            if (!inserted
+                && _config!.MaxDepartDelay >= 0.0
+                && time - v.Def.Depart > _config.MaxDepartDelay)
+            {
+                EvictOverdueDeparture(v);
+            }
         }
+    }
+
+    // P2-H: delete a pending vehicle that waited past max-depart-delay without finding an insertion
+    // gap (SUMO's MSInsertionControl deleteVehicle(veh, true) -- "discard": loaded but never
+    // inserted). Reuses Despawn's pending-removal idiom: marking it Inserted+Arrived drops it from
+    // InsertDepartingVehicles' candidate scan AND every active scan, so it never emits an FCD point --
+    // exactly SUMO's "absent from the road". Not counted as running (summary reads active vehicles
+    // only) nor as a teleport (the statistic comparator's only subset), so no committed golden's
+    // aggregate is disturbed. `_discardedDepartures` is a plain observability tally (no golden reads
+    // it). Serial: InsertDepartingVehicles is the single-threaded insertion pass.
+    private void EvictOverdueDeparture(VehicleRuntime v)
+    {
+        v.Inserted = true;   // never (re)considered by InsertDepartingVehicles again
+        v.Arrived = true;    // drops it from ActiveVehicles / the read snapshot; never emitted to FCD
+        _discardedDepartures++;
     }
 
     // MSLane::isInsertionSuccess's leader-gap check only (see InsertDepartingVehicles' header

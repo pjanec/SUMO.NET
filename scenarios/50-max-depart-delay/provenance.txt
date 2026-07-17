@@ -1,0 +1,12 @@
+sumo_version=1.20.0
+generated_utc=2026-07-17T18:17:42Z
+command=sumo -c config.sumocfg --fcd-output golden.fcd.xml --fcd-output.acceleration --precision 6 --save-state.times 1 --save-state.files golden.state.xml --no-step-log true
+state_time=1
+# max-depart-delay=5 (set in config.sumocfg <processing>); dropped by SUMO: v2,v3,v4,v5,v6,v7,v8,v9,v11
+# present (inserted): blocker,v1,v10,v12
+# input hashes:
+input=net.net.xml sha256=86e4fa7bbb0a47f2dd6948a3a3b13b6662e73113473ea25f1de261bb82e8efeb
+input=rou.rou.xml sha256=51619a2f54641ed0584f82335493d6b745aed61e8c3257122f36855f40b2bec4
+input=config.sumocfg sha256=731cd2de39db5902276ef24163a008be7e8bcea152ea3cebf39bdd055ca9ded2
+input=nodes.nod.xml sha256=e70fee5e5e9cfa553e66b1f84f540af78e46f2d5c1f8a38ecccffd55ef76c044
+input=edges.edg.xml sha256=b6ad73db74bab639ca6a26ac2d0cac60be28a663625760510972c003adb0959c

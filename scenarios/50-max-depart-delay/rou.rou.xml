@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<routes xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://sumo.dlr.de/xsd/routes_file.xsd">
+    <vType id="car" vClass="passenger" sigma="0"/>
+    <route id="r0" edges="AB"/>
+    <vehicle id="blocker" type="car" route="r0" depart="0" departPos="0" departSpeed="0" departLane="0">
+        <stop lane="AB_0" startPos="0" endPos="10" duration="10"/>
+    </vehicle>
+    <vehicle id="v1" type="car" route="r0" depart="1" departPos="0" departSpeed="0" departLane="0"/>
+    <vehicle id="v2" type="car" route="r0" depart="2" departPos="0" departSpeed="0" departLane="0"/>
+    <vehicle id="v3" type="car" route="r0" depart="3" departPos="0" departSpeed="0" departLane="0"/>
+    <vehicle id="v4" type="car" route="r0" depart="4" departPos="0" departSpeed="0" departLane="0"/>
+    <vehicle id="v5" type="car" route="r0" depart="5" departPos="0" departSpeed="0" departLane="0"/>
+    <vehicle id="v6" type="car" route="r0" depart="6" departPos="0" departSpeed="0" departLane="0"/>
+    <vehicle id="v7" type="car" route="r0" depart="7" departPos="0" departSpeed="0" departLane="0"/>
+    <vehicle id="v8" type="car" route="r0" depart="8" departPos="0" departSpeed="0" departLane="0"/>
+    <vehicle id="v9" type="car" route="r0" depart="9" departPos="0" departSpeed="0" departLane="0"/>
+    <vehicle id="v10" type="car" route="r0" depart="10" departPos="0" departSpeed="0" departLane="0"/>
+    <vehicle id="v11" type="car" route="r0" depart="11" departPos="0" departSpeed="0" departLane="0"/>
+    <vehicle id="v12" type="car" route="r0" depart="12" departPos="0" departSpeed="0" departLane="0"/>
+</routes>

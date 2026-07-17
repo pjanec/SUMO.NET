@@ -57,7 +57,11 @@ public static class ScenarioConfigParser
             RerouteJitter: ParseBool(processingEl, "device.rerouting.jitter", defaultValue: false),
             // P1F-1: SUMO's <processing><time-to-teleport.remove> (default false). Absent for
             // every pre-P1F scenario, so the default keeps the jam valve's re-insertion behaviour.
-            TimeToTeleportRemove: ParseBool(processingEl, "time-to-teleport.remove", defaultValue: false));
+            TimeToTeleportRemove: ParseBool(processingEl, "time-to-teleport.remove", defaultValue: false),
+            // P2-H: SUMO's <processing><max-depart-delay> (seconds; -1 = never delete, the default).
+            // Absent for every pre-P2-H scenario, so the InsertDepartingVehicles eviction branch stays
+            // inert (gated on MaxDepartDelay >= 0) and all prior goldens are byte-identical.
+            MaxDepartDelay: ParseDouble(processingEl, "max-depart-delay", -1.0));
     }
 
     // P0-A: SUMO's <route-files value="a.rou.xml,b.rou.xml"/> / <additional-files value="..."/>

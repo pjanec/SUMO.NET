@@ -260,5 +260,9 @@ when I first need to regenerate a golden. OK to do that as part of landing the f
     follower half can't be applied alone (regressed willpass-saturation 0->30 stuck). Owner-driven.
   - [ ] P2G-3 (FOLLOW-UP) general best-lanes continuation distance for keep-right (multi-edge lane
     continuity) -- the other candidate facet of scenario 46's junction-continuation lane choice.
-- [ ] P2-H max-depart-delay / insertion backlog (confirmed gap; small)
+- [x] P2-H max-depart-delay / insertion backlog (design: docs/HIGH-DENSITY-P2H-DESIGN.md) ✅
+  - [x] P2H-1 config max-depart-delay + InsertDepartingVehicles eviction (EvictOverdueDeparture,
+    DiscardedDepartureCount) + scenarios/50-max-depart-delay BIT-EXACT anchor (blocker stops the
+    insertion zone; SUMO drops 9 of 13 followers past the 5 s delay, inserts 4 -- incl. v10/v12 on
+    their exact eviction step, proving attempt-before-evict order); 561 green, byte-identical ✅
 - [ ] X1 attention-aware popping (functional/statistical tests, no parity)

@@ -68,7 +68,13 @@ public sealed record ScenarioConfig(
     // pre-P1F scenario) the teleporting vehicle is jumped to succEdge(1) and re-inserted. Inert
     // whenever TimeToTeleport<=0 (the whole jam valve is off), so byte-identical for every
     // existing scenario regardless of this flag's value.
-    bool TimeToTeleportRemove = false)
+    bool TimeToTeleportRemove = false,
+    // P2-H (HIGH-DENSITY-P2H-DESIGN.md): SUMO's <processing><max-depart-delay> (seconds). A vehicle
+    // that has waited longer than this for a safe insertion gap is DELETED from the pending queue
+    // (MSInsertionControl.cpp:168, deleteVehicle(veh, true)) instead of retried forever. The default
+    // -1 disables deletion (SUMO's default), so the eviction branch in InsertDepartingVehicles is
+    // inert and every pre-P2-H scenario is byte-identical.
+    double MaxDepartDelay = -1.0)
 {
     // Same "records can't default a reference-type param to an allocated empty collection" pattern
     // as VehicleDef.Stops / DemandModel.ProbabilisticFlows: callers that omit these (i.e. every
