@@ -61,7 +61,14 @@ public sealed record ScenarioConfig(
     int RerouteAdaptationSteps = 180,
     double RerouteAdaptationInterval = 1.0,
     string RoutingAlgorithm = "dijkstra",
-    bool RerouteJitter = false)
+    bool RerouteJitter = false,
+    // P1F-1 (HIGH-DENSITY-P1F-DESIGN.md §2, §1D): SUMO's <processing><time-to-teleport.remove>
+    // (MSGlobals::gRemoveGridlocked). When TRUE, a vehicle selected for a jam-teleport is simply
+    // removed from the net (no downstream re-insertion); when FALSE (SUMO's default, and every
+    // pre-P1F scenario) the teleporting vehicle is jumped to succEdge(1) and re-inserted. Inert
+    // whenever TimeToTeleport<=0 (the whole jam valve is off), so byte-identical for every
+    // existing scenario regardless of this flag's value.
+    bool TimeToTeleportRemove = false)
 {
     // Same "records can't default a reference-type param to an allocated empty collection" pattern
     // as VehicleDef.Stops / DemandModel.ProbabilisticFlows: callers that omit these (i.e. every

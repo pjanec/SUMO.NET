@@ -175,6 +175,34 @@ public sealed partial class Engine : IEngine
     // (Count==0) every stop-consuming call site already handles.
     private readonly Dictionary<int, Queue<StopRuntime>> _stopsByEntity = new();
 
+    // P1F-2 (HIGH-DENSITY-P1F-DESIGN.md §1C, §2, §5): the persistent teleport transfer queue --
+    // the MSVehicleTransfer::myVehicles analog. A vehicle picked for a jam-teleport is lifted off
+    // its lane (InTransfer=true) and appended here with the route-edge index of the edge it has
+    // been jumped onto (succEdge(1)) and its virtual-proceed clock; the re-insertion pass
+    // (ProcessTransferQueue, the checkInsertions analog) drains it, sorted by EntityIndex
+    // ("for repeatable parallel simulation", MSVehicleTransfer.cpp:98). Empty and never touched
+    // whenever TimeToTeleport<=0 (the valve is off), so byte-identical for every pre-P1F scenario.
+    private readonly List<TransferEntry> _transferQueue = new();
+
+    // P1F-2: reusable scratch for the jam-check phase (CheckJamTeleports) -- the per-lane frontmost
+    // non-stopped vehicle (MSLane::executeMovements' firstNotStopped) and the collected teleport
+    // candidates. Cleared at the top of each jam-check; never allocated on the pre-P1F path (the
+    // phase is gated on TimeToTeleport>0, so these stay empty for every existing scenario).
+    private readonly Dictionary<int, VehicleRuntime> _jamFrontmost = new();
+    private readonly List<VehicleRuntime> _jamCandidates = new();
+
+    // P1F-2: one queued teleporting vehicle. EdgeIndex is the index INTO its route's Edges list of
+    // the edge it is currently (virtually) sitting on -- succEdge(1) at teleport time, advanced by
+    // the virtual-proceed hop. ProceedTime is the sim-time the virtual-proceed hop becomes due
+    // (MSVehicleTransfer's myProceedTime); -1 = not yet initialized (still trying to re-insert on
+    // the current edge this step).
+    private sealed class TransferEntry
+    {
+        public required VehicleRuntime Veh;
+        public required int EdgeIndex;
+        public double ProceedTime = -1.0;
+    }
+
     // D3: this vehicle's already-routed-around-once edge set, keyed by EntityIndex -- replaces
     // the old per-vehicle `HashSet<string> AvoidedEdges` managed field. Lazily created only when
     // a vehicle first reroutes (UpdateReroutes); off the hot path (reroute is opt-in via
@@ -528,7 +556,8 @@ public sealed partial class Engine : IEngine
         for (var i = 0; i < vehicles.Count; i++)
         {
             var v = vehicles[i];
-            if (v.Inserted && !v.Arrived)
+            // P1F-2: exclude mid-teleport vehicles (InTransfer) -- inert unless TimeToTeleport>0.
+            if (v.Inserted && !v.Arrived && !v.InTransfer)
             {
                 _regionActive[_laneRegion[v.LaneHandle]].Add(i);
             }
@@ -611,7 +640,9 @@ public sealed partial class Engine : IEngine
         for (var i = 0; i < vehicles.Count; i++)
         {
             var v = vehicles[i];
-            if (v.Inserted && !v.Arrived)
+            // P1F-2: exclude mid-teleport vehicles (InTransfer) -- inert (never set) unless
+            // TimeToTeleport>0, so byte-identical for every pre-P1F scenario.
+            if (v.Inserted && !v.Arrived && !v.InTransfer)
             {
                 _activeIndices.Add(i);
             }
@@ -877,6 +908,13 @@ public sealed partial class Engine : IEngine
     // scenario/test -- P1-F (when teleport-on grid-lock handling lands) is the only future change
     // that will ever increment it, and it will do so from wherever it detects a teleport, not here.
     public int TeleportCount { get; private set; }
+
+    // P1F-2 (HIGH-DENSITY-P1F-DESIGN.md §1E, §4): the JAM sub-count of TeleportCount
+    // (MSVehicleControl::registerTeleportJam). For P1-F scope only the jam classification is
+    // produced (single-lane queue behind a blocked leader); yield/wrongLane need junction/link-
+    // priority reasoning and are deferred (reported 0, §4). Every jam-teleport increments BOTH
+    // TeleportCount (total) and this, so here total == jam. 0 for every pre-P1F scenario.
+    public int TeleportCountJam { get; private set; }
 
     // SUMOSHARP-API.md §4.4: resolve a lane's string id to the int lane handle ONCE at setup, so the
     // per-step obstacle path never touches a string. Requires a loaded scenario.
@@ -1207,6 +1245,12 @@ public sealed partial class Engine : IEngine
         _effectiveRouteIdByEntity.Clear(); // reroute-registered ids belong to the previous scenario
         _rerouteRouteCounter = 0;
         _freeEntitySlots.Clear(); // §9: recycled slots belong to the previous scenario's index space
+        // P1F-2: the teleport transfer queue + counters belong to the previous scenario's run.
+        _transferQueue.Clear();
+        _jamFrontmost.Clear();
+        _jamCandidates.Clear();
+        TeleportCount = 0;
+        TeleportCountJam = 0;
         _laneSource = null; // §6.3: rebuild the render lane-source lazily for the new network
         _bestLanesCache.Clear(); // L0b: route/edge-keyed memo is scenario-specific
         _insertRouteSeqCache.Clear(); // insert route-resolution memo is scenario-specific
@@ -2151,7 +2195,9 @@ public sealed partial class Engine : IEngine
             && _vehicleGeneration[idx] == handle.Generation)
         {
             v = _vehicles[idx];
-            if (v.Inserted && !v.Arrived)
+            // P1F-2: a mid-teleport vehicle is not resolvable as an active vehicle (inert unless
+            // TimeToTeleport>0).
+            if (v.Inserted && !v.Arrived && !v.InTransfer)
             {
                 return true;
             }
@@ -2270,6 +2316,19 @@ public sealed partial class Engine : IEngine
             var pInsert = PhaseStart();
             InsertDepartingVehicles(time);
             PhaseEnd("insert", pInsert);
+
+            // [SystemPhase.Input] P1F-2 (HIGH-DENSITY-P1F-DESIGN.md §1C/§1F, §2): the teleport
+            // transfer re-insertion pass -- MSVehicleTransfer::checkInsertions, called from
+            // MSNet.cpp:825 AFTER regular insertion. A vehicle lifted off its lane by the previous
+            // step's jam-check (CheckJamTeleports, below) is put back onto the free lane of its
+            // jumped-to edge here, BEFORE this frame is emitted, so its discontinuous jump lands in
+            // the trajectory at the same step SUMO shows it (see the design's timing derivation).
+            // Gated on TimeToTeleport>0 and short-circuits on an empty queue, so byte-identical for
+            // every pre-P1F scenario.
+            if (_config!.TimeToTeleport > 0.0)
+            {
+                ProcessTransferQueue(time);
+            }
 
             // [SystemPhase.Input] C10-i: advance any in-progress continuous lane-change maneuver
             // (lanechange.duration > 0) by one step BEFORE this frame is emitted, so the emitted lane
@@ -2413,6 +2472,19 @@ public sealed partial class Engine : IEngine
             var pExec = PhaseStart();
             ExecuteMoves(time, dt);
             PhaseEnd("execute", pExec);
+
+            // [SystemPhase.PostSimulation] P1F-2 (HIGH-DENSITY-P1F-DESIGN.md §1A/§1F, §2): the
+            // jam-teleport detection phase -- MSLane::executeMovements' firstNotStopped check,
+            // which SUMO runs INSIDE executeMovements (after this step's moves settle, before
+            // changeLanes). It reads the post-ExecuteMoves WaitingTime (already updated + its
+            // command buffer flushed above) and lifts each lane's frontmost stuck vehicle into the
+            // transfer queue. Positioned AFTER ExecuteMoves and BEFORE DecideSpeedGainChanges so
+            // the just-transferred vehicle is already excluded from the speed-gain pass. Gated on
+            // TimeToTeleport>0, so byte-identical (never runs) for every pre-P1F scenario.
+            if (_config!.TimeToTeleport > 0.0)
+            {
+                CheckJamTeleports(time, dt);
+            }
 
             // [SystemPhase.PostSimulation] Rung A2 (speed-gain/overtaking lane change): SUMO's
             // own per-step order is planMovements -> executeMovements -> changeLanes
@@ -7908,11 +7980,15 @@ public sealed partial class Engine : IEngine
             // C4-ii: waiting-time accumulation (MSVehicle::updateWaitingTime, MSVehicle.cpp:4081-4088).
             // `+= dt` while halted (speed <= SUMO_const_haltingSpeed 0.1) and not accelerating away
             // (this step's acceleration <= accelThresholdForWaiting = 0.5*maxAccel, MSVehicle.h:2059);
-            // else reset. isStopped()/isIdling() (scheduled <stop>s) and the influencer branch are
-            // out of scope (no scenario here schedules a stop), so `!isStopped()` is constant-true
-            // and omitted. Written unconditionally for every vehicle; read only by the all-way-stop
-            // arm of JunctionYieldConstraint.
-            v.WaitingTime = v.Intent.NewSpeed <= KraussModel.HaltingSpeed && v.Acceleration <= 0.5 * v.VType.Accel
+            // else reset. Written unconditionally for every vehicle; read by the all-way-stop arm of
+            // JunctionYieldConstraint and (P1F) by the jam-teleport check.
+            // P1F-1 (HIGH-DENSITY-P1F-DESIGN.md §6 risk 2): the SUMO `(!isStopped()||isIdling())`
+            // factor -- a vehicle currently AT a scheduled <stop> (IsStoppedAtStop, its front stop
+            // reached) does NOT accumulate WaitingTime, so a parked <stop>-blocker never teleports.
+            // Byte-identical for the existing suite: scenarios with no stops never hit IsStoppedAtStop
+            // (GetStops returns null), and a stopped vehicle's WaitingTime is never read by any
+            // committed scenario (none pairs a scheduled stop with an allway_stop junction / teleport).
+            v.WaitingTime = v.Intent.NewSpeed <= KraussModel.HaltingSpeed && v.Acceleration <= 0.5 * v.VType.Accel && !IsStoppedAtStop(v)
                 ? v.WaitingTime + dt
                 : 0.0;
             v.Kinematics.Pos += _config!.Ballistic
@@ -9107,6 +9183,293 @@ public sealed partial class Engine : IEngine
         return stops is { Count: > 0 } && stops.Peek().Reached;
     }
 
+    // P1F-2 (HIGH-DENSITY-P1F-DESIGN.md §1C, §3): SUMO's MSVehicleTransfer TeleportMinSpeed
+    // (1 m/s) -- the virtual-proceed hop speed when a teleporting vehicle's jumped-to edge is
+    // ALSO jammed (MSVehicleTransfer.cpp:191/203: proceed to the next edge after
+    // edgeLength / TeleportMinSpeed seconds).
+    private const double TeleportMinSpeed = 1.0;
+
+    // P1F-2 (HIGH-DENSITY-P1F-DESIGN.md §1A, §2 item 3): the jam-teleport detection phase, ported
+    // from MSLane::executeMovements' firstNotStopped / time-to-teleport check (MSLane.cpp:2239-2260).
+    // Runs serially after ExecuteMoves (WaitingTime already settled + flushed); gated by the caller
+    // on TimeToTeleport>0. Picks each lane's frontmost NON-stopped vehicle and, if it has waited
+    // strictly longer than time-to-teleport, teleports it.
+    private void CheckJamTeleports(double time, double dt)
+    {
+        var ttt = _config!.TimeToTeleport;
+
+        // firstNotStopped per lane: the frontmost (max Pos) vehicle NOT held at a scheduled <stop>
+        // (MSLane.cpp:2239-2246). A parked blocker (IsStoppedAtStop) is skipped -- it never
+        // accumulates WaitingTime anyway (the !isStopped guard in ExecuteMoveVehicle), and it must
+        // not be the lane's teleport candidate. Deterministic: ActiveVehicles() walks ascending
+        // EntityIndex, and the strict `>` keeps the earlier (lower-index) vehicle on a Pos tie.
+        _jamFrontmost.Clear();
+        foreach (var v in ActiveVehicles())
+        {
+            if (IsStoppedAtStop(v))
+            {
+                continue;
+            }
+
+            if (!_jamFrontmost.TryGetValue(v.LaneHandle, out var cur) || v.Kinematics.Pos > cur.Kinematics.Pos)
+            {
+                _jamFrontmost[v.LaneHandle] = v;
+            }
+        }
+
+        // Lanes whose frontmost-stuck vehicle has waited STRICTLY longer than ttt (MSLane.cpp:2260
+        // `r1 = ttt>0 && getWaitingTime() > ttt`). With dt=1, ttt=120 => fires at 121s of waiting.
+        _jamCandidates.Clear();
+        foreach (var kv in _jamFrontmost)
+        {
+            if (kv.Value.WaitingTime > ttt)
+            {
+                _jamCandidates.Add(kv.Value);
+            }
+        }
+
+        if (_jamCandidates.Count == 0)
+        {
+            return;
+        }
+
+        // Deterministic teleport order regardless of Dictionary enumeration: ascending EntityIndex,
+        // mirroring MSVehicleTransfer's numerical-id sort.
+        _jamCandidates.Sort(static (a, b) => a.EntityIndex.CompareTo(b.EntityIndex));
+        foreach (var v in _jamCandidates)
+        {
+            TeleportVehicle(v);
+        }
+
+        // Apply removals recorded above (remove-variant / past-last-edge). The lift-into-transfer
+        // path mutates InTransfer directly (serial phase, like InsertDepartingVehicles), so it
+        // needs no flush.
+        _commandBuffer.Flush();
+    }
+
+    // P1F-2 (HIGH-DENSITY-P1F-DESIGN.md §1C item 1, §2 item 4): MSVehicleTransfer::add. Count the
+    // jam-teleport, then either REMOVE the vehicle (time-to-teleport.remove, or no succEdge(1)) or
+    // lift it into the transfer queue having jumped it onto succEdge(1).
+    private void TeleportVehicle(VehicleRuntime v)
+    {
+        // registerTeleportJam: counted once here at the decision, regardless of whether a later
+        // virtual-proceed hop eventually removes the vehicle (MSVehicleControl.cpp:561-564). For
+        // P1-F only the jam bucket is produced (§4), so total == jam.
+        TeleportCount++;
+        TeleportCountJam++;
+
+        var route = _routesById[EffectiveRouteId(v)];
+        var edges = route.Edges;
+        var curEdgeId = _network!.LanesByHandle[v.LaneHandle].EdgeId;
+        var nextEdgeIndex = NextRouteEdgeIndex(edges, curEdgeId);
+
+        if (_config!.TimeToTeleportRemove || nextEdgeIndex < 0)
+        {
+            // gRemoveGridlocked (MSLane.cpp:2295-2297), or succEdge(1)==nullptr -- teleport past the
+            // arrival edge (MSVehicleTransfer.cpp:65-70): end the trip, no re-insertion.
+            _commandBuffer.Destroy(v);
+            return;
+        }
+
+        // Lift off the lane and enqueue on succEdge(1). Serial phase -> set InTransfer directly.
+        v.InTransfer = true;
+        _transferQueue.Add(new TransferEntry { Veh = v, EdgeIndex = nextEdgeIndex });
+    }
+
+    // P1F-2: index into `edges` of the NEXT NORMAL route edge after `curEdgeId` (SUMO's succEdge(1),
+    // which returns normal edges only -- the route's Edges list contains only normal edges, never
+    // internal/junction ones). -1 when there is none (curEdgeId is the last edge, or -- out of P1F
+    // scope -- the vehicle sits on an internal lane not in the route). The frontmost-stuck jam
+    // candidate is always on a normal edge in the committed scenario, so this resolves succEdge(1)
+    // exactly (NOTE: this deliberately reads the route rather than _laneSeqPool[..+1], which for a
+    // multi-edge route holds the intervening INTERNAL lane, not succEdge(1)'s normal edge).
+    private static int NextRouteEdgeIndex(IReadOnlyList<string> edges, string curEdgeId)
+    {
+        for (var i = 0; i < edges.Count; i++)
+        {
+            if (edges[i] == curEdgeId)
+            {
+                return i + 1 < edges.Count ? i + 1 : -1;
+            }
+        }
+
+        return -1;
+    }
+
+    // P1F-2 (HIGH-DENSITY-P1F-DESIGN.md §1C items 2-3, §2 item 5): MSVehicleTransfer::checkInsertions.
+    // Drains the transfer queue -- sorted by EntityIndex ("for repeatable parallel simulation",
+    // MSVehicleTransfer.cpp:98) -- trying to re-insert each vehicle on the free lane of its current
+    // (jumped-to) edge; failing that, virtual-proceeds it downstream at TeleportMinSpeed. Serial
+    // Input-phase pass (the insertion analog), so it relocates vehicle/pool state directly like
+    // TryInsertOnLane; removals go through the command buffer. Gated by the caller on
+    // TimeToTeleport>0 (and short-circuits on an empty queue).
+    private void ProcessTransferQueue(double time)
+    {
+        if (_transferQueue.Count == 0)
+        {
+            return;
+        }
+
+        _transferQueue.Sort(static (a, b) => a.Veh.EntityIndex.CompareTo(b.Veh.EntityIndex));
+
+        var anyRemoved = false;
+        for (var qi = 0; qi < _transferQueue.Count;)
+        {
+            var entry = _transferQueue[qi];
+            var v = entry.Veh;
+            var edges = _routesById[EffectiveRouteId(v)].Edges;
+            var edge = _network!.EdgesById[edges[entry.EdgeIndex]];
+
+            // getFreeLane: the least-occupied lane of the current edge (single-lane => lane 0).
+            var lane = SelectFreeLane(edge);
+            if (lane is not null && TryTeleportInsert(v, lane, edges, entry.EdgeIndex))
+            {
+                // Re-inserted -> teleport ends (MSVehicleTransfer.cpp:173-177).
+                _transferQueue.RemoveAt(qi);
+                continue;
+            }
+
+            // Could not insert -> virtual-proceed (MSVehicleTransfer.cpp:180-206). The proceed
+            // clock uses the CURRENT (this-iteration) edge's travel time at TeleportMinSpeed.
+            if (entry.ProceedTime < 0)
+            {
+                entry.ProceedTime = time + EdgeTravelTime(edge);
+                qi++;
+            }
+            else if (entry.ProceedTime < time)
+            {
+                var nextIdx = entry.EdgeIndex + 1;
+                if (nextIdx >= edges.Count)
+                {
+                    // teleport beyond the arrival edge -> remove (MSVehicleTransfer.cpp:194-199).
+                    _commandBuffer.Destroy(v);
+                    _transferQueue.RemoveAt(qi);
+                    anyRemoved = true;
+                    continue;
+                }
+
+                // Hop to the next edge; re-arm the clock off THIS iteration's edge (SUMO uses the
+                // pre-hop `e` at MSVehicleTransfer.cpp:205).
+                entry.EdgeIndex = nextIdx;
+                entry.ProceedTime = time + EdgeTravelTime(edge);
+                qi++;
+            }
+            else
+            {
+                qi++;
+            }
+        }
+
+        if (anyRemoved)
+        {
+            _commandBuffer.Flush();
+        }
+    }
+
+    // P1F-2: MSEdge::getFreeLane analog (reduced) -- the least-occupied lane of `edge` (fewest
+    // active vehicles), ties broken by lowest lane index. For the committed single-lane jam this
+    // is always lane 0. Returns null only for an edge with no lanes (never in scope).
+    private Lane? SelectFreeLane(Edge edge)
+    {
+        Lane? best = null;
+        var bestCount = int.MaxValue;
+        for (var li = 0; li < edge.Lanes.Count; li++)
+        {
+            var lane = edge.Lanes[li];
+            var count = 0;
+            foreach (var other in ActiveVehicles())
+            {
+                if (other.LaneHandle == lane.Handle)
+                {
+                    count++;
+                }
+            }
+
+            if (count < bestCount)
+            {
+                bestCount = count;
+                best = lane;
+            }
+        }
+
+        return best;
+    }
+
+    // P1F-2: edge travel time at TeleportMinSpeed -- the virtual-proceed hop delay
+    // (MSVehicleTransfer.cpp:191, e->getCurrentTravelTime(TeleportMinSpeed)). In a jam the edge's
+    // mean speed floors at TeleportMinSpeed, so this reduces to laneLength / TeleportMinSpeed (the
+    // "hop downstream at 1 m/s" the design describes).
+    private static double EdgeTravelTime(Edge edge) => edge.Lanes[0].Length / TeleportMinSpeed;
+
+    // P1F-2 (HIGH-DENSITY-P1F-DESIGN.md §1C item 2): MSLane::freeInsertion for a teleporting
+    // vehicle. Relocates `v` onto `lane` at the minimal free position and installs its route
+    // continuation from the jumped-to edge onward. Returns false (leaving `v` in the transfer
+    // queue) when the lane is too full to admit it, so the caller virtual-proceeds.
+    private bool TryTeleportInsert(VehicleRuntime v, Lane lane, IReadOnlyList<string> edges, int edgeIndex)
+    {
+        // minPos = MIN2(laneLength, vehLength) for a teleport (MSLane.cpp:492-494) -- for an empty
+        // lane the vehicle lands with its back at 0, front at vehLength (the golden's eB pos=5.0).
+        // Requested speed = MIN2(laneSpeedLimit, vType max*speedFactor) (MSVehicleTransfer.cpp:171).
+        var minPos = Math.Min(lane.Length, v.VType.Length);
+        var reqSpeed = KraussModel.LaneVehicleMaxSpeed(lane.Speed, v.SpeedFactor, v.VType);
+
+        // Rearmost active vehicle already on the target lane (MSLane::freeInsertion's leader-gap
+        // check, reduced to the last-vehicle branch -- sufficient for the P1-F queue-drain case).
+        VehicleRuntime? rearmost = null;
+        foreach (var other in ActiveVehicles())
+        {
+            if (other.LaneHandle != lane.Handle)
+            {
+                continue;
+            }
+
+            if (rearmost is null || other.Kinematics.Pos < rearmost.Kinematics.Pos)
+            {
+                rearmost = other;
+            }
+        }
+
+        var insertSpeed = reqSpeed;
+        if (rearmost is not null)
+        {
+            // Can we sit at minPos behind the rearmost vehicle? gap = its back - minPos - minGap.
+            var gap = (rearmost.Kinematics.Pos - rearmost.VType.Length) - minPos - v.VType.MinGap;
+            if (gap < 0)
+            {
+                return false; // no room -> caller virtual-proceeds
+            }
+
+            insertSpeed = Math.Min(reqSpeed, KraussModel.MaximumSafeFollowSpeed(
+                gap, reqSpeed, rearmost.Kinematics.Speed, rearmost.VType.Decel,
+                v.VType, _config!.StepLength, onInsertion: true));
+        }
+        // Empty-lane NOTE (P1F scope): MSLane::freeInsertion's getMissingRearGap correction (a
+        // follower approaching on a predecessor lane pushing minPos further downstream) is not
+        // modeled -- the committed jam scenario has none, and SUMO inserts at exactly minPos.
+
+        // Relocate + install the route continuation from this (jumped-to) edge onward. For a single
+        // remaining edge this resolves to that one lane (matching TryInsertOnLane's single-edge case).
+        var continuation = edgeIndex == 0
+            ? edges
+            : edges.Skip(edgeIndex).ToList();
+        var (poolSeq, arrivalSeq) = _network!.ResolveLaneSequenceHandlesWithArrival(continuation, lane.Index);
+
+        v.LaneId = lane.Id;
+        v.LaneHandle = lane.Handle;
+        v.Kinematics = new Kinematics { Pos = minPos, Speed = insertSpeed, LatOffset = 0.0 };
+        v.LaneSeqStart = _laneSeqPool.Count;
+        v.LaneSeqLen = poolSeq.Length;
+        _laneSeqPool.AddRange(poolSeq);
+        _laneSeqArrival.AddRange(arrivalSeq);
+        v.LaneSeqIndex = 0;
+        // The vehicle is moving again -> clear the mid-teleport flag and the stale waiting-time
+        // (ExecuteMoves would reset it this step anyway since speed>HaltingSpeed, but a junction
+        // waiting-time reader must never see the pre-teleport 121s).
+        v.WaitingTime = 0.0;
+        v.InTransfer = false;
+        return true;
+    }
+
     // The engine emits FULL double-precision trajectory values. The goldens are regenerated
     // with SUMO's `--precision` raised well above the default 2 (see scripts/regen-goldens.sh
     // and each scenario's provenance) so the committed FCD carries enough digits for the
@@ -9157,7 +9520,9 @@ public sealed partial class Engine : IEngine
             System.Threading.Tasks.Parallel.For(0, _vehicles.Count, _parallelOptions, i =>
             {
                 var v = _vehicles[i];
-                if (!v.Inserted || v.Arrived)
+                // P1F-2: a mid-teleport vehicle (InTransfer) is off the network -- not emitted,
+                // exactly like an un-inserted/arrived one. Inert unless TimeToTeleport>0.
+                if (!v.Inserted || v.Arrived || v.InTransfer)
                 {
                     scratch[i] = null;
                     return;

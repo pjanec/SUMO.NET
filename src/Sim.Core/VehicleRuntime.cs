@@ -397,4 +397,15 @@ internal sealed class VehicleRuntime
     // old value), so a recycled EntityIndex's occupant starts with PreInsertionRerouteDone=false
     // again, same as any other freshly-built vehicle -- no separate reset code needed.
     public bool PreInsertionRerouteDone;
+
+    // P1F-2 (HIGH-DENSITY-P1F-DESIGN.md §2, §5): true while this vehicle is mid-teleport -- it has
+    // been lifted off its lane by the jam-check phase (MSVehicleTransfer::add) and is sitting in
+    // Engine._transferQueue awaiting re-insertion (MSVehicleTransfer::checkInsertions). While set,
+    // the vehicle is excluded from EVERY active-vehicle query (VehicleQuery, BuildActiveIndices,
+    // BuildRegionActive, the parallel-emit scan, TryResolveActive) exactly as SUMO's transferring
+    // vehicle is off the network (not planned, not moved, not emitted in FCD). Cleared when the
+    // re-insertion pass places it back on a lane. Default false; ONLY ever set when
+    // ScenarioConfig.TimeToTeleport>0, so every pre-P1F scenario (time-to-teleport=-1) never
+    // touches it and the active-query filters stay byte-identical.
+    public bool InTransfer;
 }

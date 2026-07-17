@@ -54,7 +54,10 @@ public static class ScenarioConfigParser
             RerouteAdaptationSteps: ParseInt(processingEl, "device.rerouting.adaptation-steps", 180),
             RerouteAdaptationInterval: ParseDouble(processingEl, "device.rerouting.adaptation-interval", 1.0),
             RoutingAlgorithm: processingEl?.Element("routing-algorithm")?.Attribute("value")?.Value ?? "dijkstra",
-            RerouteJitter: ParseBool(processingEl, "device.rerouting.jitter", defaultValue: false));
+            RerouteJitter: ParseBool(processingEl, "device.rerouting.jitter", defaultValue: false),
+            // P1F-1: SUMO's <processing><time-to-teleport.remove> (default false). Absent for
+            // every pre-P1F scenario, so the default keeps the jam valve's re-insertion behaviour.
+            TimeToTeleportRemove: ParseBool(processingEl, "time-to-teleport.remove", defaultValue: false));
     }
 
     // P0-A: SUMO's <route-files value="a.rou.xml,b.rou.xml"/> / <additional-files value="..."/>

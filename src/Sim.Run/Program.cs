@@ -136,7 +136,7 @@ internal static class Program
 
         if (statisticOut is not null)
         {
-            StatisticWriter.Write(statisticOut, engine.TeleportCount);
+            StatisticWriter.Write(statisticOut, engine.TeleportCount, teleportsJam: engine.TeleportCountJam);
         }
 
         Console.WriteLine(

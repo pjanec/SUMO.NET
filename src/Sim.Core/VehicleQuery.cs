@@ -51,7 +51,10 @@ internal readonly struct ActiveVehicleQuery
                 }
 
                 var v = _vehicles[_index];
-                if (v.Inserted && !v.Arrived)
+                // P1F-2: a mid-teleport vehicle (InTransfer) is off the network -- excluded from
+                // the active set exactly like an arrived one. Inert (never set) unless
+                // TimeToTeleport>0, so byte-identical for every pre-P1F scenario.
+                if (v.Inserted && !v.Arrived && !v.InTransfer)
                 {
                     return true;
                 }
