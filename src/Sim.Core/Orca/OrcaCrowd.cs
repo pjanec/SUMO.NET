@@ -29,9 +29,42 @@ public sealed class OrcaCrowd : ICrowdFootprintSource
 
     // Scratch reused across steps (plan/execute needs the frozen snapshot + a place for new values).
     private Vec2[] _newVelocity;
-    private OrcaSolver.Agent[] _neighbourScratch;
-    private double[] _neighbourDistSq;   // parallel to _neighbourScratch, only used when MaxNeighbours > 0
-    private OrcaLine[] _lineScratch;
+
+    // POC-7a: every buffer Plan() writes while computing one agent's new velocity (neighbour list,
+    // its parallel distance-sq array, the ORCA line list, the obstacle-segment list, the spatial-hash
+    // candidate list) is now bundled into one ScratchSet instead of five separate instance fields, so
+    // it can be OWNED PER PARALLEL WORKER instead of shared. The serial path keeps exactly one
+    // instance-owned ScratchSet (`_scratch`, grown the same way the old fields were) and reuses it
+    // across steps and agents just like before -- so with UseParallelStep=false the memory-reuse
+    // pattern, and therefore every result, is byte-identical to pre-POC-7a. The parallel path (see
+    // ParallelPlan) hands each Parallel.For worker its OWN ScratchSet via localInit, so concurrent
+    // Plan(i) calls never touch each other's buffers -- no lock, no false sharing beyond normal cache
+    // effects, and the PER-AGENT math is untouched (same reads of frozen state, same writes to
+    // `_newVelocity[i]` only), so parallel output is bit-identical to serial (see
+    // OrcaParallelStepTests).
+    private sealed class ScratchSet
+    {
+        public OrcaSolver.Agent[] NeighbourScratch;
+        public double[] NeighbourDistSq;   // parallel to NeighbourScratch, only used when MaxNeighbours > 0
+        public OrcaLine[] LineScratch;
+        public ObstacleSegment[] ObstacleSegmentScratch = Array.Empty<ObstacleSegment>();
+        public int[] CandidateScratch = Array.Empty<int>();
+
+        // Minimal scratch, grown lazily on first use -- what a fresh Parallel.For worker starts with.
+        public ScratchSet()
+            : this(1)
+        {
+        }
+
+        public ScratchSet(int capacity)
+        {
+            NeighbourScratch = new OrcaSolver.Agent[capacity];
+            NeighbourDistSq = new double[capacity];
+            LineScratch = new OrcaLine[capacity];
+        }
+    }
+
+    private readonly ScratchSet _scratch;
 
     // Removal-on-arrival: an arrived agent (RemoveOnArrival, within ArrivalRadius of its goal) is
     // deactivated -- it stops moving AND stops constraining others. All-true until deactivated; the
@@ -47,19 +80,20 @@ public sealed class OrcaCrowd : ICrowdFootprintSource
     // every trajectory) are bit-identical to brute-force; the grid is a pure pre-filter that only skips
     // out-of-range agents cheaply. Pooled per-bucket arrays are reused across steps (no per-step alloc
     // once warm). Agent-agent only; the few external discs / obstacles stay brute-force.
+    // Rebuilt SERIALLY once per Step (frozen positions, single writer) before the plan loop; read-only
+    // for the rest of the step, including from every parallel worker in ParallelPlan -- concurrent
+    // READS of a Dictionary and of the pooled bucket arrays are safe with no concurrent writer.
     private readonly Dictionary<long, int> _cellToBucket = new();
     private int[][] _bucketAgents = Array.Empty<int[]>();
     private int[] _bucketFill = Array.Empty<int>();
     private int _bucketCount;
     private double _cellSize;
-    private int[] _candidateScratch = Array.Empty<int>();
 
     // Static obstacles (walls): a flat array of vertices, each closed polyline appended by
     // AddObstacle. Empty by default, so a stand-alone crowd (no AddObstacle call) is byte-identical
     // to the pre-obstacle behaviour -- obstacles span is empty, numObstLines == 0, nothing changes.
     private OrcaObstacle[] _obstacles = Array.Empty<OrcaObstacle>();
     private int _obstacleCount;
-    private ObstacleSegment[] _obstacleSegmentScratch = Array.Empty<ObstacleSegment>();
 
     // Cross-regime bridge (Direction A -- crowd avoids vehicles): external world-space discs from the
     // OTHER regime (lane vehicles, projected to discs) that every agent also avoids, ONE-SIDED
@@ -119,6 +153,37 @@ public sealed class OrcaCrowd : ICrowdFootprintSource
     // they never need it); set a small value (~0.05 m/s) for degenerate symmetric setups.
     public double SymmetryBreak { get; set; }
 
+    // POC-7a (docs/PEDESTRIAN-POC-PLAN.md POC-7, PEDESTRIAN-DESIGN.md §3c/§9): opt-in parallel PLAN
+    // phase. Default false -> the code path is the ORIGINAL serial for-loop over the one instance-
+    // owned `_scratch`, byte-for-byte unchanged, so every existing (default-serial) test stays
+    // byte-identical. When true (and the crowd is big enough, see ParallelStepThreshold), Step() plans
+    // agents with System.Threading.Tasks.Parallel.For instead, each worker holding its OWN ScratchSet
+    // (Parallel.For's localInit/localFinally overload) so there is no shared-buffer race. The PLAN is
+    // embarrassingly parallel by construction -- every _newVelocity[i] is a pure function of the
+    // frozen start-of-step state, and each iteration writes ONLY its own slot -- so results are
+    // bit-identical to serial regardless of thread count or scheduling (see OrcaParallelStepTests).
+    public bool UseParallelStep { get; set; }
+
+    // Caps the degree of parallelism of the Parallel.For plan/execute loops when UseParallelStep is
+    // set. Default -1 == unlimited (TPL's own default). Mirrors Engine.MaxParallelism; never changes
+    // the trajectory, only the wall-clock -- cached as a ParallelOptions so the hot loop allocates
+    // nothing per step.
+    private System.Threading.Tasks.ParallelOptions _parallelOptions = new() { MaxDegreeOfParallelism = -1 };
+    public int MaxParallelism
+    {
+        get => _parallelOptions.MaxDegreeOfParallelism;
+        set => _parallelOptions = new System.Threading.Tasks.ParallelOptions
+        {
+            MaxDegreeOfParallelism = value > 0 ? value : -1,
+        };
+    }
+
+    // Below this agent count, Step() plans serially even when UseParallelStep is set -- the
+    // Parallel.For dispatch/localInit overhead is not worth it for small crowds. Mirrors the lane
+    // engine's ParallelPlanThreshold (Engine.cs), including its "gate on total count, a cheap O(1)
+    // proxy for crowd size, not the exact active count" convention.
+    private const int ParallelStepThreshold = 256;
+
     private int _stepIndex;
 
     public OrcaCrowd(int capacity = 16)
@@ -130,10 +195,8 @@ public sealed class OrcaCrowd : ICrowdFootprintSource
         _radius = new double[capacity];
         _maxSpeed = new double[capacity];
         _newVelocity = new Vec2[capacity];
-        _neighbourScratch = new OrcaSolver.Agent[capacity];
-        _neighbourDistSq = new double[capacity];
-        _lineScratch = new OrcaLine[capacity];
         _active = new bool[capacity];
+        _scratch = new ScratchSet(capacity);
     }
 
     public int Count => _count;
@@ -248,30 +311,88 @@ public sealed class OrcaCrowd : ICrowdFootprintSource
             RebuildGrid();
         }
 
-        // PLAN: every new velocity is a pure function of the frozen start-of-step state.
-        for (var i = 0; i < _count; i++)
-        {
-            if (!_active[i])
-            {
-                continue;   // parked agent: stays put, keeps zero velocity
-            }
+        // POC-7a: parallelize only when opted in AND the crowd is big enough to amortize dispatch
+        // overhead (ParallelStepThreshold) -- default/small-crowd path is the untouched serial loop.
+        var parallel = UseParallelStep && _count >= ParallelStepThreshold;
 
-            _newVelocity[i] = Plan(i, dt);
+        // PLAN: every new velocity is a pure function of the frozen start-of-step state.
+        if (parallel)
+        {
+            PlanParallel(dt);
+        }
+        else
+        {
+            for (var i = 0; i < _count; i++)
+            {
+                if (!_active[i])
+                {
+                    continue;   // parked agent: stays put, keeps zero velocity
+                }
+
+                _newVelocity[i] = Plan(i, dt, _scratch);
+            }
         }
 
-        // EXECUTE: commit velocities and integrate positions together.
-        for (var i = 0; i < _count; i++)
+        // EXECUTE: commit velocities and integrate positions together. Trivially parallel (each
+        // iteration reads/writes only its own index, no scratch needed) -- gated the same way as PLAN
+        // purely to keep one threshold/knob for the whole step; bit-identical either way.
+        if (parallel)
         {
-            if (!_active[i])
+            var velocity = _velocity;
+            var position = _position;
+            var newVelocity = _newVelocity;
+            var active = _active;
+            System.Threading.Tasks.Parallel.For(0, _count, _parallelOptions, i =>
             {
-                continue;
-            }
+                if (!active[i])
+                {
+                    return;
+                }
 
-            _velocity[i] = _newVelocity[i];
-            _position[i] += _velocity[i] * dt;
+                velocity[i] = newVelocity[i];
+                position[i] += velocity[i] * dt;
+            });
+        }
+        else
+        {
+            for (var i = 0; i < _count; i++)
+            {
+                if (!_active[i])
+                {
+                    continue;
+                }
+
+                _velocity[i] = _newVelocity[i];
+                _position[i] += _velocity[i] * dt;
+            }
         }
 
         _stepIndex++;   // advances the deterministic symmetry-break jitter (no effect when it is 0)
+    }
+
+    // POC-7a parallel PLAN: each Parallel.For worker gets its OWN ScratchSet via localInit (never
+    // shared, so no race on the buffers Plan() writes) and reuses it across the iterations the TPL
+    // partitions to that worker (localFinally is a no-op -- nothing to flush, ScratchSet is pure
+    // scratch). Each iteration writes only `_newVelocity[i]`, its own slot -- order-independent,
+    // bit-identical to the serial loop above regardless of partitioning or thread count.
+    private void PlanParallel(double dt)
+    {
+        var active = _active;
+        var newVelocity = _newVelocity;
+
+        System.Threading.Tasks.Parallel.For(
+            0, _count, _parallelOptions,
+            () => new ScratchSet(),
+            (i, _, local) =>
+            {
+                if (active[i])
+                {
+                    newVelocity[i] = Plan(i, dt, local);
+                }
+
+                return local;
+            },
+            _ => { });
     }
 
     // True once every agent is within `epsilon` of its goal (the crowd has settled). Handy as a
@@ -290,7 +411,13 @@ public sealed class OrcaCrowd : ICrowdFootprintSource
         return true;
     }
 
-    private Vec2 Plan(int i, double dt)
+    // `scratch` is the caller's ScratchSet -- the one instance-owned `_scratch` on the serial path, a
+    // per-worker one (from PlanParallel's Parallel.For localInit) on the parallel path. Everything
+    // this method reads besides `scratch` is either frozen start-of-step state (positions/velocities/
+    // obstacles/external discs) or the read-only-during-this-phase spatial-hash buckets -- never
+    // mutated here -- so concurrent calls for different `i` (each with their own `scratch`) never
+    // race.
+    private Vec2 Plan(int i, double dt, ScratchSet scratch)
     {
         var self = new OrcaSolver.Agent(_position[i], _velocity[i], _radius[i]);
         var maxSpeed = _maxSpeed[i];
@@ -323,20 +450,20 @@ public sealed class OrcaCrowd : ICrowdFootprintSource
         // Gather near neighbours (frozen state), excluding self and anything out of range. Room for
         // every other agent PLUS every external (cross-regime) disc.
         var cap = _count + _externalDiscCount;
-        if (_neighbourScratch.Length < cap)
+        if (scratch.NeighbourScratch.Length < cap)
         {
-            Array.Resize(ref _neighbourScratch, cap);
-            Array.Resize(ref _neighbourDistSq, cap);
+            Array.Resize(ref scratch.NeighbourScratch, cap);
+            Array.Resize(ref scratch.NeighbourDistSq, cap);
         }
 
         // Line scratch holds obstacle lines FIRST, then agent lines, so it must fit both.
         var lineCap = _obstacleCount + cap;
-        if (_lineScratch.Length < lineCap)
+        if (scratch.LineScratch.Length < lineCap)
         {
-            Array.Resize(ref _lineScratch, lineCap);
+            Array.Resize(ref scratch.LineScratch, lineCap);
         }
 
-        var near = _neighbourScratch.AsSpan(0, cap);
+        var near = scratch.NeighbourScratch.AsSpan(0, cap);
         var rangeSq = NeighbourDist * NeighbourDist;
         var maxN = MaxNeighbours;
 
@@ -345,12 +472,12 @@ public sealed class OrcaCrowd : ICrowdFootprintSource
         int k;
         if (UseSpatialHash)
         {
-            var candidates = GridCandidates(i);
-            k = GatherAgentNeighbours(i, near, maxN, rangeSq, candidates, useAll: false);
+            var candidates = GridCandidates(i, scratch);
+            k = GatherAgentNeighbours(i, near, maxN, rangeSq, candidates, useAll: false, scratch);
         }
         else
         {
-            k = GatherAgentNeighbours(i, near, maxN, rangeSq, default, useAll: true);
+            k = GatherAgentNeighbours(i, near, maxN, rangeSq, default, useAll: true, scratch);
         }
 
         // Cross-regime discs (vehicles): avoided ONE-SIDED (responsibility 1.0) -- the crowd yields
@@ -389,12 +516,12 @@ public sealed class OrcaCrowd : ICrowdFootprintSource
         // straight-walking agent from ~4.85 units away, well before any real contact; adding the
         // filter fixed it. (A 2-vertex "thin wall" is the degenerate case: its two directed edges are
         // the same segment reversed, so exactly one of them ever passes this test -- the other side.)
-        if (_obstacleSegmentScratch.Length < _obstacleCount)
+        if (scratch.ObstacleSegmentScratch.Length < _obstacleCount)
         {
-            Array.Resize(ref _obstacleSegmentScratch, Math.Max(_obstacleCount, 8));
+            Array.Resize(ref scratch.ObstacleSegmentScratch, Math.Max(_obstacleCount, 8));
         }
 
-        var obst = _obstacleSegmentScratch.AsSpan(0, _obstacleCount);
+        var obst = scratch.ObstacleSegmentScratch.AsSpan(0, _obstacleCount);
         var oCount = 0;
         var obstRange = TimeHorizonObst * maxSpeed + _radius[i];
         var rangeSqObst = obstRange * obstRange;
@@ -421,7 +548,7 @@ public sealed class OrcaCrowd : ICrowdFootprintSource
 
         return OrcaSolver.ComputeNewVelocity(
             self, near[..k], obst[..oCount], pref, maxSpeed, TimeHorizon, TimeHorizonObst, dt,
-            _lineScratch.AsSpan(0, oCount + k));
+            scratch.LineScratch.AsSpan(0, oCount + k));
     }
 
     // Cross-regime bridge (Direction A): replace the external world-disc list every agent avoids this
@@ -465,7 +592,8 @@ public sealed class OrcaCrowd : ICrowdFootprintSource
     // candidate indices (already sorted ascending), applying the exact same self/active/range filter
     // and the exact same unlimited-append or nearest-k bounded insertion. Returns the count written.
     private int GatherAgentNeighbours(
-        int i, Span<OrcaSolver.Agent> near, int maxN, double rangeSq, ReadOnlySpan<int> candidates, bool useAll)
+        int i, Span<OrcaSolver.Agent> near, int maxN, double rangeSq, ReadOnlySpan<int> candidates, bool useAll,
+        ScratchSet scratch)
     {
         var k = 0;
         var m = useAll ? _count : candidates.Length;
@@ -490,21 +618,22 @@ public sealed class OrcaCrowd : ICrowdFootprintSource
             }
 
             // Nearest-k (RVO2's insertAgentNeighbor): keep the maxN closest, sorted nearest-first.
-            if (k == maxN && dsq >= _neighbourDistSq[k - 1])
+            var neighbourDistSq = scratch.NeighbourDistSq;
+            if (k == maxN && dsq >= neighbourDistSq[k - 1])
             {
                 continue;   // full and no closer than the current farthest kept
             }
 
             var pos = k < maxN ? k : k - 1;   // when full, overwrite the farthest slot
-            while (pos > 0 && _neighbourDistSq[pos - 1] > dsq)
+            while (pos > 0 && neighbourDistSq[pos - 1] > dsq)
             {
                 near[pos] = near[pos - 1];
-                _neighbourDistSq[pos] = _neighbourDistSq[pos - 1];
+                neighbourDistSq[pos] = neighbourDistSq[pos - 1];
                 pos--;
             }
 
             near[pos] = new OrcaSolver.Agent(_position[j], _velocity[j], _radius[j]);   // reciprocal 0.5
-            _neighbourDistSq[pos] = dsq;
+            neighbourDistSq[pos] = dsq;
             if (k < maxN)
             {
                 k++;
@@ -553,13 +682,14 @@ public sealed class OrcaCrowd : ICrowdFootprintSource
 
     // Candidate agent indices for ego `i`: every agent in the 3x3 cell block around ego's cell, SORTED
     // ascending so the downstream gather matches brute-force order exactly. Reuses _candidateScratch.
-    private ReadOnlySpan<int> GridCandidates(int i)
+    private ReadOnlySpan<int> GridCandidates(int i, ScratchSet scratch)
     {
-        if (_candidateScratch.Length < _count)
+        if (scratch.CandidateScratch.Length < _count)
         {
-            Array.Resize(ref _candidateScratch, _count);
+            Array.Resize(ref scratch.CandidateScratch, _count);
         }
 
+        var candidateScratch = scratch.CandidateScratch;
         var cx = FloorDiv(_position[i].X, _cellSize);
         var cy = FloorDiv(_position[i].Y, _cellSize);
         var n = 0;
@@ -573,14 +703,14 @@ public sealed class OrcaCrowd : ICrowdFootprintSource
                     var arr = _bucketAgents[bi];
                     for (var t = 0; t < fill; t++)
                     {
-                        _candidateScratch[n++] = arr[t];
+                        candidateScratch[n++] = arr[t];
                     }
                 }
             }
         }
 
-        Array.Sort(_candidateScratch, 0, n);
-        return _candidateScratch.AsSpan(0, n);
+        Array.Sort(candidateScratch, 0, n);
+        return candidateScratch.AsSpan(0, n);
     }
 
     private void EnsureBucket(int bi)
@@ -609,9 +739,9 @@ public sealed class OrcaCrowd : ICrowdFootprintSource
         Array.Resize(ref _radius, newCapacity);
         Array.Resize(ref _maxSpeed, newCapacity);
         Array.Resize(ref _newVelocity, newCapacity);
-        Array.Resize(ref _neighbourScratch, newCapacity);
-        Array.Resize(ref _neighbourDistSq, newCapacity);
-        Array.Resize(ref _lineScratch, newCapacity);
         Array.Resize(ref _active, newCapacity);
+        Array.Resize(ref _scratch.NeighbourScratch, newCapacity);
+        Array.Resize(ref _scratch.NeighbourDistSq, newCapacity);
+        Array.Resize(ref _scratch.LineScratch, newCapacity);
     }
 }
