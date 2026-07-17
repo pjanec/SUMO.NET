@@ -30,13 +30,26 @@ public sealed class SumoNavMesh : IPedNavigation
         _space = space;
     }
 
-    public IReadOnlyList<Vec2>? FindPath(Vec2 start, Vec2 goal)
+    public IReadOnlyList<Vec2>? FindPath(Vec2 start, Vec2 goal) => FindPath(start, goal, blockedPolygonIndices: null);
+
+    // ADDITIVE (POC-5, docs/PEDESTRIAN-POC-PLAN.md POC-5 "reroute"; docs/PEDESTRIAN-DESIGN.md §6
+    // "full occlusion of a portal triggers a strategic reroute"): same A* as the two-argument
+    // overload above, but polygons in `blockedPolygonIndices` are excluded from the adjacency graph
+    // entirely -- neither traversable nor a valid start/goal location -- so a caller whose portal
+    // (e.g. a crossing) is fully occluded can re-query for a path that routes around it. Passing
+    // `null` or an empty set reproduces the two-argument overload's result exactly (same code path,
+    // same deterministic tie-breaks), so that overload's behaviour for every existing caller
+    // (POC-1/POC-3) is unchanged byte-for-byte.
+    public IReadOnlyList<Vec2>? FindPath(Vec2 start, Vec2 goal, IReadOnlySet<int>? blockedPolygonIndices)
     {
-        var startPolygon = LocatePolygon(start);
-        var goalPolygon = LocatePolygon(goal);
+        var blocked = (blockedPolygonIndices is { Count: > 0 }) ? blockedPolygonIndices : null;
+
+        var startPolygon = LocatePolygon(start, blocked);
+        var goalPolygon = LocatePolygon(goal, blocked);
         if (startPolygon < 0 || goalPolygon < 0)
         {
-            return null; // walkable space is empty, or the point cannot be located/clamped at all
+            return null; // walkable space is empty, every candidate polygon is blocked, or the
+                         // point cannot be located/clamped at all
         }
 
         if (startPolygon == goalPolygon)
@@ -46,10 +59,10 @@ public sealed class SumoNavMesh : IPedNavigation
             return new[] { start, goal };
         }
 
-        var nodePath = FindNodePath(startPolygon, goalPolygon);
+        var nodePath = FindNodePath(startPolygon, goalPolygon, blocked);
         if (nodePath is null)
         {
-            return null; // disconnected in the adjacency graph -> genuinely unreachable
+            return null; // disconnected in the (possibly blocked) adjacency graph -> unreachable
         }
 
         var waypoints = new List<Vec2> { start };
@@ -68,9 +81,12 @@ public sealed class SumoNavMesh : IPedNavigation
     // Locates the polygon containing `p`; if none does, snaps `p` onto walkable space first (the
     // interface's documented off-mesh spawn/goal case) and locates from there, falling back to the
     // nearest polygon by boundary distance if even the clamped point lands exactly on a seam.
-    private int LocatePolygon(Vec2 p)
+    // `blocked` (nullable -- the common, unblocked case skips the containment check entirely) polygons
+    // are never returned: a blocked polygon is not a legal start/goal location either, not just a
+    // non-traversable graph node.
+    private int LocatePolygon(Vec2 p, IReadOnlySet<int>? blocked)
     {
-        var direct = IndexOfContaining(p);
+        var direct = IndexOfContaining(p, blocked);
         if (direct >= 0)
         {
             return direct;
@@ -82,7 +98,7 @@ public sealed class SumoNavMesh : IPedNavigation
         }
 
         var clamped = _space.ClampToWalkable(p);
-        var afterClamp = IndexOfContaining(clamped);
+        var afterClamp = IndexOfContaining(clamped, blocked);
         if (afterClamp >= 0)
         {
             return afterClamp;
@@ -92,6 +108,11 @@ public sealed class SumoNavMesh : IPedNavigation
         var bestDistSq = double.MaxValue;
         for (var i = 0; i < _polygons.Count; i++)
         {
+            if (blocked is not null && blocked.Contains(i))
+            {
+                continue;
+            }
+
             PolygonGeometry.NearestPointOnBoundary(_polygons[i].Vertices, clamped, out var distSq);
             if (distSq < bestDistSq)
             {
@@ -103,10 +124,15 @@ public sealed class SumoNavMesh : IPedNavigation
         return best;
     }
 
-    private int IndexOfContaining(Vec2 p)
+    private int IndexOfContaining(Vec2 p, IReadOnlySet<int>? blocked)
     {
         for (var i = 0; i < _polygons.Count; i++)
         {
+            if (blocked is not null && blocked.Contains(i))
+            {
+                continue;
+            }
+
             if (PolygonGeometry.Contains(_polygons[i].Vertices, p))
             {
                 return i;
@@ -116,7 +142,7 @@ public sealed class SumoNavMesh : IPedNavigation
         return -1;
     }
 
-    private List<int>? FindNodePath(int start, int goal)
+    private List<int>? FindNodePath(int start, int goal, IReadOnlySet<int>? blocked)
     {
         var open = new List<int> { start };
         var inOpen = new HashSet<int> { start };
@@ -151,6 +177,11 @@ public sealed class SumoNavMesh : IPedNavigation
                 if (closed.Contains(portal.Neighbor))
                 {
                     continue;
+                }
+
+                if (blocked is not null && blocked.Contains(portal.Neighbor))
+                {
+                    continue; // blocked polygon: excluded from the graph entirely (POC-5 reroute)
                 }
 
                 var tentativeG = gScore[current] + CentroidDistance(current, portal.Neighbor);
