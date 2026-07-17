@@ -201,22 +201,35 @@ per-entity dawdle-RNG seeding to reuse its hashing).
 
 ## P0-D — engine writers for `--summary-output` + `--statistic-output`
 
-**Mechanism.** `--summary-output` writes per-step `<step time= running= halting= stopped=
-meanSpeed= meanSpeedRelative= .../>`; `--statistic-output` writes a `<statistics>` doc including
-`<teleports total= .../>`. These are SumoData's calibration signals.
+**Mechanism (VERIFIED against `sumo/src/microsim/MSNet.cpp:607-647` + `MSVehicleControl.cpp:516-543`
++ `StdDefs.h:58`).** `--summary-output` writes one `<step>` per sim step with (P0-D subset):
+- `time` — sim time of the step.
+- `running` — `getRunningVehicleNo()` (inserted, not yet ended).
+- `halting` — count of **on-road** vehicles with `speed < 0.1` (`SUMO_const_haltingSpeed`).
+- `stopped` — `getStoppedVehiclesCount()` (vehicles currently at a `<stop>`).
+- `meanSpeed` — mean `speed` over **on-road AND non-stopped** vehicles; **`-1` if that count is 0**.
+- `meanSpeedRelative` — mean of `speed / edge.speedLimit` over the same set; **`-1` if count 0**.
+  (Relative to the **edge speed limit**, NOT vType maxSpeed — verified: scenario 02 gives
+  5.0/13.89 = 0.36.)
+`--statistic-output` writes `<statistics>` with (P0-D subset) `<teleports total= jam= yield=
+wrongLane= />` — all 0 until P1-F.
 
 **Design.**
-1. Engine writer (new observer in `Sim.Run` / a `SummaryWriterObserver`, mirroring
-   `FcdWriterObserver`) emitting all five per-step attributes. Aggregates largely exist; add
-   `halting` (speed < 0.1 m/s threshold, SUMO's `haltingSpeedThreshold`), `stopped`,
-   `meanSpeedRelative` (mean of v/vLimit).
-2. `--statistic-output` writer emitting `<teleports total=…>` (0 until P1-F exists; wired now so
-   P1-F just increments the counter).
-3. **Harness parity side (bigger than a writer):** extend `Sim.Harness/SummaryOutputParser.cs` +
-   `SummaryStepRecord.cs` to read `halting/stopped/meanSpeedRelative`; add a new
-   `StatisticOutputParser` for `<teleports total>`. Add a comparator so the parity test can diff
-   engine summary vs golden summary.
-4. `Sim.Run` CLI flags `--summary-output PATH` / `--statistic-output PATH`.
+1. Engine per-step aggregates computed from the **same per-step state the FCD export uses** (so a
+   scenario whose FCD already matches golden yields matching summary values). A `SummaryWriter`
+   emitting `<step time running halting stopped meanSpeed meanSpeedRelative/>` each step aligned to
+   the FCD emission point. Reuse/extend whatever `Sim.BenchCity`'s partial `WriteSummary` computes
+   for running/meanSpeed; add halting/stopped/meanSpeedRelative with the exact definitions above.
+   **Emit `-1` for meanSpeed/meanSpeedRelative when the on-road-non-stopped count is 0.**
+2. `StatisticWriter` emitting `<statistics><teleports total="0" jam="0" yield="0" wrongLane="0"/>…`
+   — teleport counter surfaced now (0), so P1-F only has to increment it. (A teleport counter field
+   on Engine, 0 in phase 1.)
+3. **Harness parity side:** extend `Sim.Harness/SummaryOutputParser.cs` + `SummaryStepRecord.cs` to
+   read `halting/stopped/meanSpeedRelative` (currently only `time/running/arrived/meanSpeed`); add a
+   new `StatisticOutputParser` for `<teleports total>`. Add a summary comparator (per-attribute
+   numeric tolerance over the step series, mirroring the FCD comparator's shape).
+4. `Sim.Run` CLI flags `--summary-output PATH` / `--statistic-output PATH` (additive; absent = no
+   writer, unchanged behaviour).
 
 **Files touched:** `Sim.Run/Program.cs`, new `SummaryWriterObserver`/`StatisticWriterObserver`
 (likely in Sim.Core or Sim.Run export seam), `Sim.Harness/SummaryOutputParser.cs`,
