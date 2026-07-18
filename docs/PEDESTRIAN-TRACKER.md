@@ -88,8 +88,14 @@ Graduation into production (making the *routed ambient crowd* lively):
 - [x] **P2-1** Harden SUMO-geometry bake (mitred strips, bent-sidewalk adjacency) + static-obstacle index
       *(OrcaCrowd.UseObstacleSpatialIndex bit-identical serial+parallel, sub-linear scaling; mitred
       sidewalks + 2-polygon-cluster adjacency + spine threading; 585 parity green)*
-- [ ] **P2-2** Dynamic blockers + reroute in `IPedNavigation` (no thrash)
-- [ ] **P2-3** Production navmesh integration contract + example + ped OD demand
+- [x] **P2-2** Dynamic blockers + reroute in `IPedNavigation` (no thrash) *(`Obstacles/MovingBlocker` +
+      `Navigation/RerouteDriver`: a ped detours around a dynamic blocker via a hysteretic reroute that does
+      not thrash; `ObstacleDodgeTests` + the Req3 property test (ped avoids a moving blocker) exercise it;
+      landed within the 139-ped-test suite that P3/P5/P6 build on)*
+- [x] **P2-3** Production navmesh integration contract + example + ped OD demand *(`Navigation/INavigation`
+      contract + `SumoNavMesh` provider; `Demand/PedDemand` Poisson OD spawn (VehicleRng SplitMix64,
+      per-salt deterministic) routed over the navmesh; consumed by the `--ped-od-routing`/`--ped-lively-crowd`
+      demos and every downstream P3/P5 task; in the 139-ped-test suite)*
 
 ## Stage P3 — Networking (DDS multicast, end-to-end)
 
