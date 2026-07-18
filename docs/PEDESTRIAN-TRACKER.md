@@ -15,9 +15,11 @@ once the POCs converge.
 
 - [x] `PEDESTRIAN-LIVELINESS-DESIGN.md` — design + POC plan (Walk/Pause/Dwell/Interact timeline, animation
       tags, POI schema, social planner, buildings-as-sinks, micro-scenarios, subarea §11)
-- [~] **LIVE-POC-1** — Walk+Pause+Dwell activity timeline, server==IG deterministic (`ActivityTimeline`
-      generalizing `PathArcMotion`; `--ped-liveliness` Sim.Viz scene; sweep test asserting exact
-      server==IG over the whole timeline; `visible:false` window exposes no disc)
+- [x] **LIVE-POC-1** — Walk+Pause+Dwell activity timeline, server==IG deterministic *(`ActivityTimeline`
+      generalizes `PathArcMotion`; pure `PoseAt`→(pos,heading,animTag,visible); `ActivityTimelineRecord`
+      broadcast-once + `HeadlessIg.ReconstructSample` share `PoseAt`; 4 tests inc. a 300+‑sample exact
+      server==IG sweep; `--ped-liveliness` scene renders walk/sip/sit + hidden-window disc drop 5→4
+      verified; 589 parity + 91 ped green)*
 - [ ] **LIVE-POC-2** — pre-scheduled two-ped Interact (meet, step aside, "talk", resume) — server==IG
 - [ ] **LIVE-POC-3** — waiter micro-scenario (templated scripted actor serving open-air tables)
 - [ ] **LIVE-POC-4** — auto-deduced liveliness demand in a subarea + density knob + shared-mask legitimacy

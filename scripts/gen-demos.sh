@@ -276,6 +276,9 @@ try ped-dodge-reroute "Obstacle dodge + reroute" \
 try ped-parking "Parking lot (car/pedestrian mutual avoidance)" \
   "A non-holonomic car maneuvers into a parking slot among static parked cars while pedestrians weave the drive aisle; one walker boards the car once it parks, another alights once it returns to the exit (LotCoupling)." \
   "Pedestrians" demo_ped parking ped-parking
+try ped-liveliness "Liveliness (activity timeline replay)" \
+  "Low-power pedestrians walk, pause to sip a drink, sit at a table, then vanish into a building and re-emerge -- every pose and animation tag is a pure deterministic function of (ActivityTimeline, now), so server and IG replay identically (LIVE-POC-1, ActivityTimeline.PoseAt)." \
+  "Pedestrians" demo_ped liveliness ped-liveliness
 
 # Integration & driver behavior
 try ballistic-integration "Ballistic integration" \

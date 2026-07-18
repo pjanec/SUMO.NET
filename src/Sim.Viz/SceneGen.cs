@@ -31,6 +31,8 @@ internal static class SceneGen
     private const int KindReroutingPedestrian = 3; // #f59e0b -- pedestrian on the reroute-demonstration route
     internal const int KindObstacle = 12;      // #78716c -- static/dynamic box obstacle
     private const int KindParkingCar = 13;     // #4f8ef7 -- the one maneuvering car in the parking demo
+    internal const int KindPedPaused = 14;     // #eab308 -- ActivityTimeline Pause / idle-clamp pedestrian
+    internal const int KindPedDwellSit = 15;   // #22d3ee -- ActivityTimeline Dwell(visible) pedestrian
 
     // ---------------------------------------------------------------------------------------
     // Scene C -- "Car avoids a pedestrian": the cross-regime bridge. A laneless-RVO lane vehicle
@@ -490,6 +492,115 @@ internal static class SceneGen
             network,
             new double[] { 0, 0 },
             Dt * Decimate,
+            frames.ToArray());
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // Scene -- "Liveliness" (LIVE-POC-1, docs/PEDESTRIAN-LIVELINESS-DESIGN.md §12): a handful of
+    // pedestrians, each a pure deterministic ActivityTimeline replay -- Walk to a sip stop (Pause),
+    // Walk to a table (Dwell, visible -- sat down), Walk to a building door (Dwell, INVISIBLE -- gone
+    // inside), re-emerge, Walk to the exit. No behavior loop runs here at all: every frame just calls
+    // ActivityTimeline.PoseAt(now) per ped -- the exact function the server AND the IG would call
+    // (HeadlessIg.ReconstructSample), open-space (no net file), open-space pure ORCA-free schedule.
+    // Disc colour/label is driven by the sampled AnimTag (grey = walk, yellow = paused/idle, cyan =
+    // dwelling/seated); a Dwell(visible:false) sample emits NO disc for that ped that frame -- the
+    // "gone inside, no cheating" liveliness/no-visible-cheating synergy (§6, §11).
+    // ---------------------------------------------------------------------------------------
+    internal static ScenePayload BuildLiveliness()
+    {
+        const int pedCount = 5;
+        const double laneSpacing = 4.5;
+        const double speed = 1.3;
+        const double dt = 0.2;
+        const int decimate = 1;
+
+        var timelines = new List<(int Id, ActivityTimeline Timeline)>();
+        for (var i = 0; i < pedCount; i++)
+        {
+            var laneY = (i - (pedCount - 1) / 2.0) * laneSpacing;
+            var spawn = new Vec2(-24.0, laneY);
+            var sipPoint = new Vec2(-12.0, laneY);
+            var tablePoint = new Vec2(-2.0, laneY + 2.2);
+            var doorPoint = new Vec2(10.0, laneY - 2.0);
+            var exit = new Vec2(24.0, laneY);
+
+            // Staggered spawn so every ped is in a DIFFERENT segment of its own timeline at any given
+            // frame -- someone is always walking, someone paused, someone seated, someone inside.
+            var t0 = i * 3.0;
+
+            var segments = new ActivitySegment[]
+            {
+                new WalkSegment(new[] { spawn, sipPoint }, speed),
+                new PauseSegment(2.5, "sip"),
+                new WalkSegment(new[] { sipPoint, tablePoint }, speed),
+                new DwellSegment(tablePoint, new Vec2(0.0, 1.0), 4.0, "sit", Visible: true),
+                new WalkSegment(new[] { tablePoint, doorPoint }, speed),
+                new DwellSegment(doorPoint, new Vec2(1.0, 0.0), 3.0, "enter", Visible: false),
+                new WalkSegment(new[] { doorPoint, exit }, speed),
+            };
+
+            timelines.Add((i + 1, new ActivityTimeline(t0, segments)));
+        }
+
+        var maxEnd = 0.0;
+        foreach (var (_, timeline) in timelines)
+        {
+            maxEnd = Math.Max(maxEnd, timeline.EndTime);
+        }
+
+        var steps = (int)((maxEnd + 3.0) / dt);
+        var snapshots = new List<List<(string Key, double[] Disc)>>(steps);
+
+        for (var step = 0; step < steps; step++)
+        {
+            if (step % decimate != 0)
+            {
+                continue;
+            }
+
+            var now = step * dt;
+            var discs = new List<(string, double[])>(pedCount);
+            foreach (var (id, timeline) in timelines)
+            {
+                var sample = timeline.PoseAt(now);
+                if (!sample.Visible)
+                {
+                    continue; // inside the building this frame -- no disc, no cheating
+                }
+
+                var kind = sample.AnimTag switch
+                {
+                    ActivityTimeline.WalkAnimTag => KindPedLowPower,
+                    "sit" => KindPedDwellSit,
+                    _ => KindPedPaused, // "sip", the before/after Idle clamp, and any future Pause tag
+                };
+
+                discs.Add(($"ped{id}", new[] { R(sample.Pos.X), R(sample.Pos.Y), 0.3, (double)kind }));
+            }
+
+            snapshots.Add(discs);
+        }
+
+        var frames = new List<FramePayload>(snapshots.Count);
+        var noVehicles = Array.Empty<double[]?>();
+        foreach (var _ in snapshots)
+        {
+            frames.Add(new FramePayload(noVehicles, Array.Empty<double[]?>()));
+        }
+
+        AssignStableDiscSlots(frames, snapshots);
+
+        return new ScenePayload(
+            "Liveliness (activity timeline replay)",
+            "Deterministic activity-timeline replay (LIVE-POC-1): each low-power pedestrian's pose AND "
+            + "animation state is a pure function of (timeline, now) -- ActivityTimeline.PoseAt -- the "
+            + "same one-time-broadcast, server==IG trick as PathArc, generalized to Walk+Pause+Dwell. "
+            + "Grey = walking, yellow = paused (sipping/idle), cyan = dwelling (seated at a table); a "
+            + "pedestrian INSIDE the building (Dwell, hidden) renders no disc at all until it re-emerges.",
+            new double[] { -28, -13, 28, 13 },
+            null,
+            new double[] { 0, 0 },
+            dt * decimate,
             frames.ToArray());
     }
 

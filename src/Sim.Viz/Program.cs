@@ -39,6 +39,7 @@ internal static class Program
             Console.Error.WriteLine("       Sim.Viz --ped-od-routing <outPath>");
             Console.Error.WriteLine("       Sim.Viz --ped-dodge-reroute <outPath>");
             Console.Error.WriteLine("       Sim.Viz --ped-parking <outPath>");
+            Console.Error.WriteLine("       Sim.Viz --ped-liveliness <outPath>");
             return args.Length == 0 ? 2 : 0;
         }
 
@@ -52,8 +53,45 @@ internal static class Program
             "--ped-od-routing" => RunPedOdRouting(args),
             "--ped-dodge-reroute" => RunPedDodgeReroute(args),
             "--ped-parking" => RunPedParking(args),
+            "--ped-liveliness" => RunPedLiveliness(args),
             _ => RunSingle(args),
         };
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // Pedestrian showcase: "Liveliness" (LIVE-POC-1, docs/PEDESTRIAN-LIVELINESS-DESIGN.md §12).
+    // ---------------------------------------------------------------------------------------
+    private static int RunPedLiveliness(string[] args)
+    {
+        if (args.Length < 2)
+        {
+            Console.Error.WriteLine("error: --ped-liveliness requires an output path");
+            return 2;
+        }
+
+        var outPath = args[1];
+        var scene = SceneGen.BuildLiveliness();
+        var payload = new ReplayData(new[] { scene });
+        if (!WriteHtml(payload, scene.Name, outPath))
+        {
+            return 2;
+        }
+
+        var maxDiscs = 0;
+        var minDiscs = int.MaxValue;
+        foreach (var frame in scene.Frames)
+        {
+            var n = 0;
+            foreach (var d in frame.D) if (d is not null) n++;
+            if (n > maxDiscs) maxDiscs = n;
+            if (n < minDiscs) minDiscs = n;
+        }
+
+        var size = new FileInfo(outPath).Length;
+        Console.WriteLine(
+            $"wrote {outPath}  ({size} bytes)  frames={scene.Frames.Length} maxConcurrentDiscs={maxDiscs} " +
+            $"minConcurrentDiscs={minDiscs}");
+        return 0;
     }
 
     // ---------------------------------------------------------------------------------------
