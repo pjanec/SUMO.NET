@@ -54,6 +54,11 @@ internal static class Program
         var warmupSteps = 0;
         string? summaryOut = null;
         string? statisticOut = null;
+        // P2G-2: the coordinated dense lane-change model is OPT-IN (`--coordinated-lc`) -- believable
+        // multi-lane overtaking/merging, perf-neutral, but NOT yet robust on organic/rerouted nets (a
+        // lane-sequence desync crash, see HIGH-DENSITY-P2G2-COOPERATIVE-LC-DESIGN.md), so it is not the
+        // default until that is hardened. `--parity` is the explicit deterministic SUMO-anchor mode.
+        var coordinatedLc = false;
         for (var i = 1; i < args.Length; i++)
         {
             switch (args[i])
@@ -73,6 +78,12 @@ internal static class Program
                 case "--statistic-output" when i + 1 < args.Length:
                     statisticOut = args[++i];
                     break;
+                case "--parity":
+                    coordinatedLc = false; // deterministic SUMO-anchor mode (matches the committed goldens)
+                    break;
+                case "--coordinated-lc":
+                    coordinatedLc = true; // explicit (already the default)
+                    break;
                 default:
                     Console.Error.WriteLine($"error: unrecognized argument: {args[i]}");
                     return 2;
@@ -91,7 +102,7 @@ internal static class Program
         var steps = stepsOverride ?? (int)Math.Round((config.End - config.Begin) / config.StepLength);
         fcdOut ??= Path.Combine(scenarioDir, "engine.fcd.xml");
 
-        var engine = new Engine();
+        var engine = new Engine { CoordinatedLaneChange = coordinatedLc };
         // P0-A: a cfg with an <input> section (net-file/route-files) is SUMO-faithful and self-
         // describing -- drive it off the new 1-arg LoadScenario(cfgPath) overload, which resolves
         // <input> paths against the cfg's own directory. Otherwise (every pre-P0-A scenario dir)

@@ -8669,14 +8669,16 @@ public sealed partial class Engine : IEngine
             // remaining-length stop-speed floor). Default OFF keeps the single-lane distance -> the
             // whole speed-gain path is byte-identical.
             double currentDist, neighDist;
-            if (CoordinatedLaneChange)
+            if (CoordinatedLaneChange && TryBestLanesForEdge(v, lane.EdgeId, out var sgBestLanes))
             {
-                var sgBestLanes = BestLanesCached(EffectiveRouteId(v), _routesById[EffectiveRouteId(v)].Edges, lane.EdgeId);
                 currentDist = ContinuationLength(sgBestLanes, lane.Index, lane.Length) - v.Kinematics.Pos;
                 neighDist = ContinuationLength(sgBestLanes, leftLane.Index, leftLane.Length) - v.Kinematics.Pos;
             }
             else
             {
+                // Default (parity) distance, AND the coordinated fallback when ego is briefly on an edge
+                // not in its nominal route (organic/rerouted nets do this) -- ComputeBestLanes would throw
+                // there, so TryBestLanesForEdge returns false and we use the single-lane distance.
                 currentDist = lane.Length - v.Kinematics.Pos;
                 neighDist = leftLane.Length - v.Kinematics.Pos;
             }
@@ -9021,6 +9023,28 @@ public sealed partial class Engine : IEngine
             (routeId, edgeId),
             static (key, state) => state.Network.ComputeBestLanes(state.RouteEdges, key.EdgeId),
             (Network: _network!, RouteEdges: routeEdges));
+
+    // P2G-3: robust best-lanes accessor for the coordinated LC path. Returns false (instead of letting
+    // ComputeBestLanes THROW "edge not part of route") when ego's current edge is not in its nominal
+    // route -- which happens transiently on organic / rerouted nets where a vehicle traverses an edge its
+    // route does not list. The speed-gain caller then falls back to the single-lane distance. The
+    // membership scan is O(routeLen) (~10-20 edges) and only on the coordinated multi-lane speed-gain path.
+    private bool TryBestLanesForEdge(VehicleRuntime v, string edgeId, out IReadOnlyList<LaneContinuation> bestLanes)
+    {
+        var routeId = EffectiveRouteId(v);
+        var edges = _routesById[routeId].Edges;
+        for (var i = 0; i < edges.Count; i++)
+        {
+            if (edges[i] == edgeId)
+            {
+                bestLanes = BestLanesCached(routeId, edges, edgeId);
+                return true;
+            }
+        }
+
+        bestLanes = System.Array.Empty<LaneContinuation>();
+        return false;
+    }
 
     // P2G-3 (docs/HIGH-DENSITY-P2G3-DESIGN.md §5.2): best-lanes CONTINUATION length for a lane index
     // (SUMO's LaneQ.length) -- the on-route distance drivable without a lane change, accumulated across

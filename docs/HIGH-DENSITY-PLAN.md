@@ -262,9 +262,15 @@ when I first need to regenerate a golden. OK to do that as part of landing the f
     0 with coordination ON); gate OFF byte-identical (585 prior goldens unchanged); 3 functional tests
     (`RungHDp2g2CoordinatedLaneChangeTests`). Analysis: required for PARITY not flow; GAIN = SUMO-faithful
     overtaking/merging fidelity + merge capacity; LOSE = LC-phase perf (the gate) + deep-core risk.
-    Remaining to make gate-ON BIT-EXACT (next iterations, non-blocking): scenario-46 downstream cascade;
-    full SUMO informFollower/informLeader formula; cooperative CHANGE (amBlockingFollowerPlusNB);
-    keep-right follower half; a flag-gated bit-exact anchor + golden; perf measurement.
+    PERF MEASURED: perf-neutral (dense: ~= or faster than parity; light: within noise) -- Sim.BenchCity
+    --coordinated-lc / --parity. Deterministic under parallel (serial vs --region byte-identical).
+    ROBUSTNESS BLOCKER to making it the DEFAULT (docs/HIGH-DENSITY-P2G2-COOPERATIVE-LC-DESIGN.md §3.7):
+    coordinated mode CRASHES on large organic multi-lane nets (city-organic-L2) -- a lane-sequence
+    desync (IndexOutOfRange in ExecuteMoveVehicle) the aggressive LC exposes; the off-route-edge crash
+    was fixed (TryBestLanesForEdge). So coordinated stays OPT-IN (--coordinated-lc, default OFF); harden
+    the lane-seq convergence path, THEN flip the default. Benchmarks + Windows instructions:
+    docs/BENCHMARK-INSTRUCTIONS.md + scripts/bench-coordinated.ps1 (+ existing scripts/bench-scaling.ps1).
+    Bit-exact gate-ON de-prioritised (owner: believable+fast > bit-exact).
   - [~] P2G-3 scenario-46 speedGain residual -- DIAGNOSED (docs/HIGH-DENSITY-P2G3-DESIGN.md). Root
     cause is NOT the neighDist gate (proven: continuation distance implemented + instrumented, gate
     passes at 82.5 but the speedGain still never fires) and NOT cooperative LC (SUMO log: reason

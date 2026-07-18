@@ -76,7 +76,7 @@ internal static class Program
         var fastGate = false;
         var spatial = false;
         var region = false;
-        var coordinatedLc = false;
+        var coordinatedLc = false; // P2G-2: coordinated dense LC is OPT-IN (--coordinated-lc); default off until organic-net robustness is hardened
         var regionGrid = 4;
         string? sumoSummaryPath = null;
         string? sumoTripinfoPath = null;
@@ -161,10 +161,15 @@ internal static class Program
                     fastGate = true;
                     break;
                 case "--coordinated-lc":
-                    // P2G-2: opt into the coordinated dense lane-change model (cooperative informFollower
-                    // + cross-junction speed-gain). Believable multi-lane overtaking/merging at a
-                    // per-step LC cost; measure the delta vs the default (gate off) with this flag.
+                    // P2G-2: the coordinated dense lane-change model (cooperative informFollower +
+                    // cross-junction speed-gain). This is now the DEFAULT; the flag is kept as an explicit
+                    // opt-in for scripts/back-compat. Believable multi-lane overtaking/merging.
                     coordinatedLc = true;
+                    break;
+                case "--parity":
+                    // Deterministic SUMO-anchor mode (byte-identical to the committed goldens) -- the
+                    // A/B baseline for benchmarking the coordinated default against the parity path.
+                    coordinatedLc = false;
                     break;
                 default:
                     Console.Error.WriteLine($"error: unrecognized argument: {args[i]}");

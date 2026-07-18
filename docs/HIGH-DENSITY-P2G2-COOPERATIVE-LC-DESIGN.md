@@ -137,6 +137,29 @@ list is DE-PRIORITISED — pursue those only if a believability defect (not a pa
 scenario-46 downstream divergence is a parity delta, not a believability defect (all vehicles flow +
 arrive, 0 stuck), so it is acceptable.
 
+## 3.7 ROBUSTNESS BLOCKER (session 3) — coordinated mode is OPT-IN, not the default yet
+
+Attempting to make coordinated the product default surfaced a **robustness gap**: on a large ORGANIC
+multi-lane net (`scenarios/_bench/city-organic-L2`, ~620 veh) coordinated mode **crashes** while parity
+mode runs clean. Two distinct failures:
+1. `ComputeBestLanes` "edge not part of route" when a vehicle is transiently on an edge not in its
+   nominal route (organic/rerouted nets do this). **FIXED** — `TryBestLanesForEdge` guards the speed-gain
+   continuation lookup and falls back to the single-lane distance.
+2. **Lane-sequence desync** — an `IndexOutOfRange` in `ExecuteMoveVehicle` accessing
+   `_laneSeqPool[LaneSeqStart + LaneSeqIndex]`. The coordinated mode's MORE AGGRESSIVE lane-changing
+   moves a vehicle off its planned pool lane in a way the lane-seq convergence machinery
+   (`TryReResolveFromActualLane`) does not fully handle on a complex net, so `LaneSeqIndex` runs past
+   `LaneSeqLen`. This is a **pre-existing lane-seq fragility EXPOSED (not caused) by the extra lane
+   changes** — NOT hit on clean grids (the functional tests + the saturated grid run coordinated clean).
+   **NOT yet fixed** — needs the lane-seq convergence path hardened against aggressive LC.
+
+**Decision:** coordinated stays **OPT-IN** (`Engine.CoordinatedLaneChange`, `--coordinated-lc`), default
+OFF — it must not be the default while it can crash on organic nets. It is validated + perf-neutral on
+grids; the ORGANIC-NET robustness (failure 2) is the gate to making it the default. Next step: reproduce
+the lane-seq desync minimally, harden `TryReResolveFromActualLane` / the pool-index advance against an
+LC-induced off-pool-lane state, THEN flip the default.
+
 ## 4. Tracked as
-`docs/HIGH-DENSITY-PLAN.md` P2G-2 (config-gated). Foundation + spike + perf LANDED; the coordinated mode
-is a believable, perf-neutral opt-in. Bit-exact gate-ON is de-prioritised per the owner steer above.
+`docs/HIGH-DENSITY-PLAN.md` P2G-2 (config-gated). Foundation + spike + perf LANDED; coordinated is a
+believable, perf-neutral **opt-in** (validated on grids). Blocker to making it the default: the organic-net
+lane-seq desync crash (§3.7). Bit-exact gate-ON de-prioritised per the owner steer.
