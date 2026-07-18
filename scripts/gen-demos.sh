@@ -143,6 +143,14 @@ demo_evac() {
   run src/Sim.Viz --evac-organic "$SITE/$slug.html"
 }
 
+# demo_ped <mode> <slug>
+# Sim.Viz's dedicated --ped-<mode> modes build a self-contained pedestrian showcase (crowd + LOD +
+# routing + parking) straight to the site dir; no scenario-dir round-trip, no external SUMO run.
+demo_ped() {
+  local mode="$1" slug="$2"
+  run src/Sim.Viz "--ped-$mode" "$SITE/$slug.html"
+}
+
 # --- the curated set: category | slug | title | description | scenario dir | pattern ---------
 # One row per feature. Categories are emitted as section headings on the gallery index in this
 # same order; demos within a category keep this order too.
@@ -251,6 +259,23 @@ try external-agents "External non-SUMO agents (5 reactions)" \
 try evac-organic "Panic evacuation (organic town)" \
   "A realistic organic town under panic evacuation: congestion plus a large local foot exodus." \
   "Panic evacuation" demo_evac evac-organic
+
+# Pedestrians
+try ped-crossing-gate "Crossing gate (car stops for pedestrian)" \
+  "Pedestrians queue at a signalized crosswalk while the light is red, then surge across on the real walk phase; a car crossing the junction on its own green halts for a pedestrian in its lane -- emergent ORCA vehicle/pedestrian avoidance, not a scripted stop (CrossingGate + Engine.CrowdSource)." \
+  "Pedestrians" demo_ped crossing-gate ped-crossing-gate
+try ped-lod-promotion "Sim-LOD promotion (low-power to full ORCA)" \
+  "Low-power PathArc pedestrians walk fixed sidewalk routes at O(1) cost; a moving interest source promotes any it nears to reactive full-ORCA high-power agents and demotes them once it passes (PedLodManager + InterestField)." \
+  "Pedestrians" demo_ped lod-promotion ped-lod-promotion
+try ped-od-routing "Origin-destination routed crowd" \
+  "PedDemand spawns pedestrians on a Poisson process, each routed origin-to-destination across the junction's real sidewalks, crossings, and walkingareas via SumoNavMesh, then despawned on arrival (PedDemand + PedLodManager)." \
+  "Pedestrians" demo_ped od-routing ped-od-routing
+try ped-dodge-reroute "Obstacle dodge + reroute" \
+  "A bidirectional pedestrian stream swerves around a static box obstacle purely via ORCA local avoidance; separately, a pedestrian pair reroutes around a blocker that appears mid-crossing (PedRouteController + BlockerRegistry + RerouteDriver)." \
+  "Pedestrians" demo_ped dodge-reroute ped-dodge-reroute
+try ped-parking "Parking lot (car/pedestrian mutual avoidance)" \
+  "A non-holonomic car maneuvers into a parking slot among static parked cars while pedestrians weave the drive aisle; one walker boards the car once it parks, another alights once it returns to the exit (LotCoupling)." \
+  "Pedestrians" demo_ped parking ped-parking
 
 # Integration & driver behavior
 try ballistic-integration "Ballistic integration" \

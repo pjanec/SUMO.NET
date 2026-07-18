@@ -60,8 +60,17 @@
     5: "#34d399", // escaped pedestrian (panic evac)
     6: "#b91c1c", // abandoned car (panic evac)
     8: "#fb923c", // car pushing onto the shoulder / abandoning the lane (panic evac, phase 3)
+    9: "#94a3b8",  // low-power (PathArc) pedestrian, sim-LOD demo
+    10: "#f97316", // promoted (full-ORCA) pedestrian, sim-LOD demo
+    11: "#facc15", // sim-LOD interest source marker
+    12: "#78716c", // static/dynamic box obstacle
+    13: "#4f8ef7", // the one maneuvering car in the parking demo
   };
-  var DISC_LABELS = { 0: "stream / agent A", 1: "stream / agent B", 2: "pedestrian" };
+  var DISC_LABELS = {
+    0: "stream / agent A", 1: "stream / agent B", 2: "pedestrian", 3: "pedestrian (rerouting)",
+    9: "pedestrian (low-power / PathArc)", 10: "pedestrian (promoted / full ORCA)",
+    11: "interest source", 12: "obstacle", 13: "maneuvering car",
+  };
 
   // Speed heatmap: cold (slow) -> hot (fast), 0..cap m/s.
   var SPEED_COLOR_CAP = 20.0;

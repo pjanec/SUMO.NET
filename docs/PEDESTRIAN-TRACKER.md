@@ -68,6 +68,12 @@ Legend: `[ ]` not started · `[~]` in progress · `[x]` done · `[!]` blocked/ne
 
 ## Stage P7 — Pedestrian visualization (existing 3D viewers, in-process + remote-DR)
 
+- [x] **P7-0** HTML Sim.Viz pedestrian demo gallery (mobile-watchable; kept as demo/test scenarios for
+      GitHub Pages) — five self-contained `--ped-*` scenes (crossing-gate, lod-promotion, od-routing,
+      dodge-reroute, parking), wired into `gen-demos.sh` under a "Pedestrians" category; each renders
+      from the real components (Engine.CrowdSource, PedLodManager+InterestField, PedDemand+SumoNavMesh,
+      RerouteDriver, LotCoupling), screenshot-verified, `everPromoted=True` on the LOD scene *(user
+      requested HTML demos before 3D)*
 - [ ] **P7-1** Native viewer (`Sim.Viewer`/Raylib) in-process ped render (generalize evac overlay;
       regime-aware; board/alight appear/disappear) — *schedule early for a visible demo*
 - [ ] **P7-2** Native viewer remote ped render over DR/DDS (FreeKinematic extrapolate + PathArc follow;

@@ -34,6 +34,11 @@ internal static class Program
             Console.Error.WriteLine("       Sim.Viz --bundle <outPath>");
             Console.Error.WriteLine("       Sim.Viz --evac-organic <outPath>");
             Console.Error.WriteLine("       Sim.Viz --evac-city <outPath>");
+            Console.Error.WriteLine("       Sim.Viz --ped-crossing-gate <outPath>");
+            Console.Error.WriteLine("       Sim.Viz --ped-lod-promotion <outPath>");
+            Console.Error.WriteLine("       Sim.Viz --ped-od-routing <outPath>");
+            Console.Error.WriteLine("       Sim.Viz --ped-dodge-reroute <outPath>");
+            Console.Error.WriteLine("       Sim.Viz --ped-parking <outPath>");
             return args.Length == 0 ? 2 : 0;
         }
 
@@ -42,8 +47,202 @@ internal static class Program
             "--bundle" => RunBundle(args),
             "--evac-organic" => RunEvacOrganic(args),
             "--evac-city" => RunEvacCity(args),
+            "--ped-crossing-gate" => RunPedCrossingGate(args),
+            "--ped-lod-promotion" => RunPedLodPromotion(args),
+            "--ped-od-routing" => RunPedOdRouting(args),
+            "--ped-dodge-reroute" => RunPedDodgeReroute(args),
+            "--ped-parking" => RunPedParking(args),
             _ => RunSingle(args),
         };
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // Pedestrian showcase: "Parking" (LotCoupling).
+    // ---------------------------------------------------------------------------------------
+    private static int RunPedParking(string[] args)
+    {
+        if (args.Length < 2)
+        {
+            Console.Error.WriteLine("error: --ped-parking requires an output path");
+            return 2;
+        }
+
+        var outPath = args[1];
+        var scene = SceneGen.BuildParking();
+        var payload = new ReplayData(new[] { scene });
+        if (!WriteHtml(payload, scene.Name, outPath))
+        {
+            return 2;
+        }
+
+        var maxDiscs = 0;
+        foreach (var frame in scene.Frames)
+        {
+            var n = 0;
+            foreach (var d in frame.D) if (d is not null) n++;
+            if (n > maxDiscs) maxDiscs = n;
+        }
+
+        var size = new FileInfo(outPath).Length;
+        Console.WriteLine(
+            $"wrote {outPath}  ({size} bytes)  frames={scene.Frames.Length} maxConcurrentDiscs={maxDiscs}");
+        return 0;
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // Pedestrian showcase: "Dodge / reroute" (local avoidance + BlockerRegistry/RerouteDriver).
+    // ---------------------------------------------------------------------------------------
+    private static int RunPedDodgeReroute(string[] args)
+    {
+        if (args.Length < 2)
+        {
+            Console.Error.WriteLine("error: --ped-dodge-reroute requires an output path");
+            return 2;
+        }
+
+        var outPath = args[1];
+        var repoRoot = RepoRoot();
+        var scenarioDir = Path.Combine(repoRoot, "scenarios", "_ped", "poc0-crossing-plaza");
+
+        var scene = SceneGen.BuildDodgeReroute(scenarioDir);
+        var payload = new ReplayData(new[] { scene });
+        if (!WriteHtml(payload, scene.Name, outPath))
+        {
+            return 2;
+        }
+
+        var maxPeds = 0;
+        foreach (var frame in scene.Frames)
+        {
+            var n = 0;
+            foreach (var d in frame.D) if (d is not null) n++;
+            if (n > maxPeds) maxPeds = n;
+        }
+
+        var size = new FileInfo(outPath).Length;
+        Console.WriteLine(
+            $"wrote {outPath}  ({size} bytes)  frames={scene.Frames.Length} maxConcurrentDiscs={maxPeds}");
+        return 0;
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // Pedestrian showcase: "OD routing" (PedDemand + SumoNavMesh).
+    // ---------------------------------------------------------------------------------------
+    private static int RunPedOdRouting(string[] args)
+    {
+        if (args.Length < 2)
+        {
+            Console.Error.WriteLine("error: --ped-od-routing requires an output path");
+            return 2;
+        }
+
+        var outPath = args[1];
+        var repoRoot = RepoRoot();
+        var scenarioDir = Path.Combine(repoRoot, "scenarios", "_ped", "poc0-crossing-plaza");
+
+        var scene = SceneGen.BuildOdRouting(scenarioDir);
+        var payload = new ReplayData(new[] { scene });
+        if (!WriteHtml(payload, scene.Name, outPath))
+        {
+            return 2;
+        }
+
+        var maxPeds = 0;
+        foreach (var frame in scene.Frames)
+        {
+            var n = 0;
+            foreach (var d in frame.D) if (d is not null) n++;
+            if (n > maxPeds) maxPeds = n;
+        }
+
+        var size = new FileInfo(outPath).Length;
+        Console.WriteLine(
+            $"wrote {outPath}  ({size} bytes)  frames={scene.Frames.Length} maxConcurrentPeds={maxPeds}");
+        return 0;
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // Pedestrian showcase: "LOD promotion" (docs/PEDESTRIAN-POC-PLAN.md POC-3).
+    // ---------------------------------------------------------------------------------------
+    private static int RunPedLodPromotion(string[] args)
+    {
+        if (args.Length < 2)
+        {
+            Console.Error.WriteLine("error: --ped-lod-promotion requires an output path");
+            return 2;
+        }
+
+        var outPath = args[1];
+        var repoRoot = RepoRoot();
+        var scenarioDir = Path.Combine(repoRoot, "scenarios", "_ped", "poc0-crossing-plaza");
+
+        var scene = SceneGen.BuildLodPromotion(scenarioDir);
+        var payload = new ReplayData(new[] { scene });
+        if (!WriteHtml(payload, scene.Name, outPath))
+        {
+            return 2;
+        }
+
+        var maxPeds = 0;
+        var everPromoted = false;
+        foreach (var frame in scene.Frames)
+        {
+            var n = 0;
+            foreach (var d in frame.D)
+            {
+                if (d is null) continue;
+                n++;
+                if (d.Length > 3 && d[3] == SceneGen.KindPedHighPower) everPromoted = true;
+            }
+
+            if (n > maxPeds) maxPeds = n;
+        }
+
+        var size = new FileInfo(outPath).Length;
+        Console.WriteLine(
+            $"wrote {outPath}  ({size} bytes)  frames={scene.Frames.Length} maxConcurrentDiscs={maxPeds} " +
+            $"everPromoted={everPromoted}");
+        return 0;
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // Pedestrian showcase: "Crossing gate" (docs/PEDESTRIAN-POC-PLAN.md POC-2). Emitted standalone
+    // (like --evac-organic/--evac-city), not folded into --bundle -- a separate curation track for
+    // the pedestrian demo batch (see scripts/gen-demos.sh).
+    // ---------------------------------------------------------------------------------------
+    private static int RunPedCrossingGate(string[] args)
+    {
+        if (args.Length < 2)
+        {
+            Console.Error.WriteLine("error: --ped-crossing-gate requires an output path");
+            return 2;
+        }
+
+        var outPath = args[1];
+        var repoRoot = RepoRoot();
+        var scenarioDir = Path.Combine(repoRoot, "scenarios", "_ped", "poc0-crossing-plaza");
+
+        var scene = SceneGen.BuildCrossingGate(scenarioDir);
+        var payload = new ReplayData(new[] { scene });
+        if (!WriteHtml(payload, scene.Name, outPath))
+        {
+            return 2;
+        }
+
+        var vehicleSlots = scene.Frames.Length > 0 ? scene.Frames[0].V.Length : 0;
+        var maxPeds = 0;
+        foreach (var frame in scene.Frames)
+        {
+            var n = 0;
+            foreach (var d in frame.D) if (d is not null) n++;
+            if (n > maxPeds) maxPeds = n;
+        }
+
+        var size = new FileInfo(outPath).Length;
+        Console.WriteLine(
+            $"wrote {outPath}  ({size} bytes)  frames={scene.Frames.Length} vehicleSlots={vehicleSlots} " +
+            $"maxConcurrentPeds={maxPeds}");
+        return 0;
     }
 
     // ---------------------------------------------------------------------------------------

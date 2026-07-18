@@ -1,7 +1,15 @@
 using Sim.Core;
+using Sim.Core.Bridge;
 using Sim.Core.Mixed;
 using Sim.Core.Orca;
 using Sim.Ingest;
+using Sim.Pedestrians;
+using Sim.Pedestrians.Crossing;
+using Sim.Pedestrians.Lod;
+using Sim.Pedestrians.Navigation;
+using Sim.Pedestrians.Navigation.Bake;
+using Sim.Pedestrians.Obstacles;
+using Sim.Pedestrians.Parking;
 using static Sim.Viz.PayloadBuilder;
 
 namespace Sim.Viz;
@@ -17,6 +25,12 @@ internal static class SceneGen
     private const int KindStreamA = 0;   // #38bdf8
     private const int KindStreamB = 1;   // #fb7185
     private const int KindPedestrian = 2; // #c084fc
+    internal const int KindPedLowPower = 9;    // #94a3b8 -- PathArc (low-power) pedestrian
+    internal const int KindPedHighPower = 10;  // #f97316 -- promoted (full-ORCA) pedestrian
+    internal const int KindInterestSource = 11; // #facc15 -- sim-LOD interest source marker
+    private const int KindReroutingPedestrian = 3; // #f59e0b -- pedestrian on the reroute-demonstration route
+    internal const int KindObstacle = 12;      // #78716c -- static/dynamic box obstacle
+    private const int KindParkingCar = 13;     // #4f8ef7 -- the one maneuvering car in the parking demo
 
     // ---------------------------------------------------------------------------------------
     // Scene C -- "Car avoids a pedestrian": the cross-regime bridge. A laneless-RVO lane vehicle
@@ -88,6 +102,984 @@ internal static class SceneGen
             new double[] { 5.0, 1.8 },
             1.0,
             frames.ToArray());
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // Scene -- "Crossing gate" (docs/PEDESTRIAN-POC-PLAN.md POC-2): POC-0's real signalized west
+    // crosswalk. Pedestrians accumulate at the near-side portal while the crossing's actual
+    // <tlLogic>-derived signal is closed (CrossingGate + CrossingTlReader/CrossingSignalFactory,
+    // exactly as CrossingGateCrowdTests drives them -- ported behaviour, not reimplemented), then
+    // surge across once the walk phase opens. A car (Engine + Engine.CrowdSource, the same seam
+    // BuildCarAvoidsPedestrian/CarStopsForPedestrianTests use) drives through the junction on its
+    // own green and halts for a pedestrian standing in its lane: an emergent ORCA-mediated stop,
+    // not scripted braking. Network + real SUMO-native signal heads + a sustained pedestrian queue
+    // + one car, all driven through the committed Sim.Pedestrians controllers.
+    // ---------------------------------------------------------------------------------------
+    internal static ScenePayload BuildCrossingGate(string scenarioDir)
+    {
+        var netPath = Path.Combine(scenarioDir, "net.net.xml");
+        var network = BuildNetwork(NetworkParser.Parse(netPath));
+
+        var pedNetwork = PedNetworkParser.Load(netPath);
+        var westCrossing = pedNetwork.Crossings.Single(c => c.Id == ":c_c3_0");
+        var signal = CrossingSignalFactory.ForCrossing(netPath, westCrossing);
+
+        // Portal derivation from the crossing's own centreline endpoints (no hardcoded net
+        // coordinates): "near" = the higher-Y end (the plaza/queue side on POC-0's fixture), "far"
+        // = the roadway's opposite side -- see CrossingGateCrowdTests' remarks for this geometry.
+        var shape = westCrossing.Shape;
+        var end0 = shape[0];
+        var end1 = shape[^1];
+        var portalNear = end0.Y >= end1.Y ? end0 : end1;
+        var portalFar = end0.Y >= end1.Y ? end1 : end0;
+        var queueDir = portalNear - portalFar;        // CrossingGate normalizes this itself
+        var queueDirNorm = queueDir.Normalized();
+        var farDir = (portalFar - portalNear).Normalized();
+        var destBase = portalFar + (farDir * 8.0);
+        var perp = new Vec2(-farDir.Y, farDir.X);
+        Vec2 DestinationFor(int k) => destBase + (perp * (k * 0.7)); // spread goals -- avoid shared-goal contention
+
+        const double MaxSpeed = 1.4;
+        const double PedRadius = 0.3;
+        const double ArriveRadius = 0.4;
+        const double QueueSpacing = 2.0;
+        const int FrontSlotBuffer = 2; // mirrors CrossingGate's own private constant (see its remarks)
+        const int MaxQueuedPeds = 10;
+        const int SpawnEveryNSteps = 8;
+
+        var crowd = new OrcaCrowd { MaxNeighbours = 8 };
+        var gate = new CrossingGate(crowd, new WaypointFollower(), signal, ArriveRadius, queueDir, QueueSpacing);
+
+        // ----- the car: real Engine, real Krauss driving, obstacle-avoiding the shared crowd -----
+        var engine = new Engine();
+        engine.LoadNetwork(netPath);
+        var vtype = engine.DefineVType(new VTypeParams { VClass = "passenger", Sigma = 0.0 });
+        var carHandle = engine.SpawnVehicle(vtype, "nc", "cs", departPos: 5.0);
+        engine.CrowdSource = crowd;
+
+        var slotByHandle = new Dictionary<uint, int>();
+        var frames = new List<FramePayload>();
+        var discsKeyedPerFrame = new List<List<(string Key, double[] Disc)>>();
+        var pedIds = new List<(OrcaHandle Handle, string Key)>();
+
+        var registered = 0;
+        var jaywalkerAdded = false;
+        var jaywalkerReleased = false;
+        var jaywalkerAddedAtStep = -1;
+        var jaywalkerIdx = default(OrcaHandle);
+        var jaywalkerPos = default(Vec2);
+        const string JaywalkerKey = "jaywalker";
+
+        const double Dt = 1.0;
+        const int steps = 170;
+        for (var step = 0; step < steps; step++)
+        {
+            var now = step * Dt;
+
+            // Wave-spawn crossing pedestrians -- a sustained queue-then-surge over the whole clip,
+            // not a single scripted release. Each spawns some distance behind its own eventual
+            // queue slot (CrossingGate's own hold-point stagger), so it genuinely walks in.
+            if (step % SpawnEveryNSteps == 0 && registered < MaxQueuedPeds)
+            {
+                var k = registered;
+                var holdSlot = portalNear + (queueDirNorm * ((k + FrontSlotBuffer) * QueueSpacing));
+                var spawn = holdSlot + (queueDirNorm * 3.0);
+                var idx = crowd.Add(spawn, PedRadius, MaxSpeed, goal: spawn);
+                var path = new[] { portalNear, portalFar, DestinationFor(k) };
+                gate.AddRoute(idx, path, portalIndex: 0, MaxSpeed, now);
+                pedIds.Add((idx, $"ped{k}"));
+                registered++;
+            }
+
+            gate.Update(now);
+            engine.Step();
+            crowd.Step(Dt);
+
+            // Once the car has settled onto its real travel lane (not the transient sidewalk-lane
+            // first reading -- see CarStopsForPedestrianTests' remarks), place a stationary
+            // pedestrian directly in its path so the ORCA stop is visible.
+            if (!jaywalkerAdded && engine.TryGetVehicle(carHandle, out var settled)
+                && !settled.LaneId.EndsWith("_0", StringComparison.Ordinal))
+            {
+                jaywalkerPos = new Vec2(settled.X, 111.6);
+                jaywalkerIdx = crowd.Add(jaywalkerPos, PedRadius, maxSpeed: 0.0, goal: jaywalkerPos);
+                jaywalkerAdded = true;
+                jaywalkerAddedAtStep = step;
+            }
+
+            // A few seconds later the jaywalker finishes crossing and clears the lane, freeing the
+            // car to proceed -- the "car waits, then resumes" payoff.
+            if (jaywalkerAdded && !jaywalkerReleased && step - jaywalkerAddedAtStep >= 9)
+            {
+                crowd.SetGoal(jaywalkerIdx, jaywalkerPos + new Vec2(-6.0, 0.0));
+                jaywalkerReleased = true;
+            }
+
+            // Note: pedestrians are NOT removed from the crowd once their route completes --
+            // CrossingGate keeps its own internal per-route bookkeeping keyed by handle for the
+            // route's whole lifetime (it has no "unregister" API), so removing a still-registered
+            // handle from the crowd would make the next gate.Update() dereference a dead handle.
+            // Arrived pedestrians simply idle at their (spread-out) destination, same as
+            // CrossingGateCrowdTests.
+
+            var handles = engine.VehicleHandles;
+            var px = engine.PosX;
+            var py = engine.PosY;
+            var pa = engine.Angle;
+            for (var i = 0; i < handles.Length; i++)
+            {
+                if (!slotByHandle.ContainsKey(handles[i].Index))
+                {
+                    slotByHandle[handles[i].Index] = slotByHandle.Count;
+                }
+            }
+
+            var v = new double[slotByHandle.Count][];
+            for (var i = 0; i < handles.Length; i++)
+            {
+                var slot = slotByHandle[handles[i].Index];
+                v[slot] = new[] { R(px[i]), R(py[i]), R(pa[i]) };
+            }
+
+            var discs = new List<(string, double[])>();
+            foreach (var (handle, key) in pedIds)
+            {
+                var p = crowd.Position(handle);
+                discs.Add((key, new[] { R(p.X), R(p.Y), PedRadius, (double)KindPedestrian }));
+            }
+
+            if (jaywalkerAdded)
+            {
+                var jp = crowd.Position(jaywalkerIdx);
+                discs.Add((JaywalkerKey, new[] { R(jp.X), R(jp.Y), PedRadius, (double)KindPedestrian }));
+            }
+
+            frames.Add(new FramePayload(v, Array.Empty<double[]?>()));
+            discsKeyedPerFrame.Add(discs);
+        }
+
+        NormalizeVehicleSlots(frames, slotByHandle.Count);
+        AssignStableDiscSlots(frames, discsKeyedPerFrame);
+
+        double minX = double.PositiveInfinity, minY = double.PositiveInfinity;
+        double maxX = double.NegativeInfinity, maxY = double.NegativeInfinity;
+        void Track(double x, double y)
+        {
+            if (x < minX) minX = x;
+            if (y < minY) minY = y;
+            if (x > maxX) maxX = x;
+            if (y > maxY) maxY = y;
+        }
+
+        foreach (var lane in network.Lanes)
+        {
+            for (var p = 0; p < lane.Shape.Length; p += 2) Track(lane.Shape[p], lane.Shape[p + 1]);
+        }
+
+        foreach (var j in network.Junctions)
+        {
+            for (var p = 0; p < j.Shape.Length; p += 2) Track(j.Shape[p], j.Shape[p + 1]);
+        }
+
+        return new ScenePayload(
+            "Crossing gate",
+            "POC-0's signalized west crosswalk: pedestrians queue at the portal while the light is "
+            + "red, then surge across on the real <tlLogic> walk phase (CrossingGate + "
+            + "CrossingTlReader). A car crossing the junction on its own green halts for a "
+            + "pedestrian standing in its lane -- an emergent ORCA vehicle/pedestrian interaction "
+            + "(Engine.CrowdSource), not a scripted stop.",
+            new double[] { R(minX), R(minY), R(maxX), R(maxY) },
+            network,
+            new double[] { 5.0, 1.8 },
+            Dt,
+            frames.ToArray());
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // Scene -- "LOD promotion" (docs/PEDESTRIAN-DESIGN.md §5; docs/PEDESTRIAN-POC-PLAN.md POC-3):
+    // low-power PathArc pedestrians walk fixed sidewalk routes across POC-0's junction (O(1) motion,
+    // no ORCA) while a MOVING interest source sweeps through; any ped it comes near promotes to a
+    // high-power full-ORCA agent (a distinct colour) and demotes back once the source moves away and
+    // the dwell elapses -- driven end-to-end through the real PedLodManager + InterestField (never
+    // reimplemented here). Pedestrians cycle back and forth across their route for a sustained clip
+    // (PedLodManager itself does not loop a completed route -- this driver re-adds each ped with its
+    // path reversed once it arrives).
+    // ---------------------------------------------------------------------------------------
+    internal static ScenePayload BuildLodPromotion(string scenarioDir)
+    {
+        var netPath = Path.Combine(scenarioDir, "net.net.xml");
+        var walkableAddPath = Path.Combine(scenarioDir, "walkable.add.xml");
+        var network = BuildNetwork(NetworkParser.Parse(netPath));
+
+        var pedNetwork = PedNetworkParser.Load(netPath, walkableAddPath);
+        var polygons = WalkablePolygonBaker.Bake(pedNetwork);
+        var nav = new SumoNavMesh(polygons, new SumoWalkableSpace(polygons));
+
+        // Four candidate arm-crossing pairs (near/far sidewalk point of each of the junction's four
+        // symmetric arms), mirroring the proven WestNorthArm/EastNorthArm pair PedLodManagerTests /
+        // SumoBakeNavigationTests use for the north arm -- rotated to the other three arms by the
+        // junction's own 90-degree symmetry. Validated at runtime (nav.FindPath) rather than assumed,
+        // so a demo run never crashes on a geometry that turns out not to be perfectly symmetric.
+        const double cx = 120.0, cy = 120.0; // POC-0's junction centre (net.net.xml <location netOffset>)
+        var candidates = new (Vec2 A, Vec2 B)[]
+        {
+            (new Vec2(cx - 7.4, cy + 20.0), new Vec2(cx + 7.4, cy + 20.0)), // north arm
+            (new Vec2(cx + 20.0, cy - 7.4), new Vec2(cx + 20.0, cy + 7.4)), // east arm
+            (new Vec2(cx - 7.4, cy - 20.0), new Vec2(cx + 7.4, cy - 20.0)), // south arm
+            (new Vec2(cx - 20.0, cy - 7.4), new Vec2(cx - 20.0, cy + 7.4)), // west arm
+        };
+
+        var validPairs = new List<(Vec2[] Forward, Vec2[] Backward)>();
+        foreach (var (a, b) in candidates)
+        {
+            var path = nav.FindPath(a, b);
+            if (path is { Count: >= 2 })
+            {
+                var fwd = path.ToArray();
+                var bwd = fwd.Reverse().ToArray();
+                validPairs.Add((fwd, bwd));
+            }
+        }
+
+        if (validPairs.Count == 0)
+        {
+            throw new InvalidOperationException("BuildLodPromotion: no valid arm-crossing routes found on the net.");
+        }
+
+        const double MaxSpeed = 1.3;
+        const double PedRadius = 0.3;
+        const double ArriveRadius = 0.3;
+        const double DwellSeconds = 1.0;
+        const double PromoteRadius = 6.0;
+        const double DemoteRadius = 13.0;
+        const double Dt = 0.2;
+        const int Decimate = 2;
+        const int steps = 700; // 140s simulated, decimated to 350 recorded frames
+        const int MaxPeds = 14;
+        const int SpawnEveryNSteps = 20; // a fresh ped roughly every 4s
+
+        var publisher = new PedPublisher();
+        var manager = new PedLodManager(nav, publisher, ArriveRadius, DwellSeconds);
+        var field = new InterestField();
+        var sourcePos = new Vec2(cx - 25.0, cy);
+        var source = new InterestSource(sourcePos, PromoteRadius, DemoteRadius);
+        var sourceId = field.Register(source, InterestSourceKind.EntityAttached);
+        var noEntities = Array.Empty<WorldDisc>();
+
+        // Radius chosen from the routes' own measured span (each arm-crossing route's distance from
+        // the junction centre ranges ~10.7 m at its nearest waypoint to ~21.3 m at its arm-end
+        // waypoints) so the sweep circle passes close to the busiest (near-junction) part of every
+        // route as it comes around to that arm's angular sector.
+        const double SweepRadius = 16.0;
+        const double SweepPeriod = 70.0; // seconds per revolution
+
+        var pedInfo = new Dictionary<int, (Vec2[] Forward, Vec2[] Backward, bool GoingForward)>();
+        var activeIds = new List<int>();
+        var nextId = 1;
+        var pairCursor = 0;
+
+        void Spawn(double now)
+        {
+            var (fwd, bwd) = validPairs[pairCursor % validPairs.Count];
+            var goingForward = (pairCursor / validPairs.Count) % 2 == 0;
+            pairCursor++;
+
+            var id = nextId++;
+            var path = goingForward ? fwd : bwd;
+            manager.AddPed(id, path, MaxSpeed, PedRadius, now);
+            pedInfo[id] = (fwd, bwd, goingForward);
+            activeIds.Add(id);
+        }
+
+        var snapshots = new List<List<(string Key, double[] Disc)>>();
+
+        var now = 0.0;
+        for (var step = 0; step < steps; step++)
+        {
+            if (step % SpawnEveryNSteps == 0 && activeIds.Count < MaxPeds)
+            {
+                Spawn(now);
+            }
+
+            // Sweep the interest source in a slow circle around the junction so it passes near every
+            // arm's route in turn over the clip.
+            var angle = (now / SweepPeriod) * 2.0 * Math.PI;
+            sourcePos = new Vec2(cx + (SweepRadius * Math.Cos(angle)), cy + (SweepRadius * Math.Sin(angle)));
+            field.Move(sourceId, sourcePos);
+
+            manager.Step(now, Dt, field, noEntities);
+            now += Dt;
+
+            // Cycle each ped back and forth once it reaches the end of its current leg -- a sustained
+            // flow instead of everyone arriving and stopping.
+            foreach (var id in activeIds)
+            {
+                var (fwd, bwd, goingForward) = pedInfo[id];
+                var dest = goingForward ? fwd[^1] : bwd[^1];
+                if ((manager.PositionOf(id, now) - dest).Abs < 0.75)
+                {
+                    manager.RemovePed(id);
+                    var nextPath = goingForward ? bwd : fwd;
+                    manager.AddPed(id, nextPath, MaxSpeed, PedRadius, now);
+                    pedInfo[id] = (fwd, bwd, !goingForward);
+                }
+            }
+
+            if (step % Decimate != 0)
+            {
+                continue;
+            }
+
+            var discs = new List<(string, double[])>(activeIds.Count + 1);
+            foreach (var id in activeIds)
+            {
+                var pos = manager.PositionOf(id, now);
+                var kind = manager.ModelOf(id) == PedDrModel.FreeKinematic ? KindPedHighPower : KindPedLowPower;
+                discs.Add(($"ped{id}", new[] { R(pos.X), R(pos.Y), PedRadius, (double)kind }));
+            }
+
+            discs.Add(("source", new[] { R(sourcePos.X), R(sourcePos.Y), 1.5, (double)KindInterestSource }));
+            snapshots.Add(discs);
+        }
+
+        var frames = new List<FramePayload>(snapshots.Count);
+        var noVehicles = Array.Empty<double[]?>();
+        foreach (var _ in snapshots)
+        {
+            frames.Add(new FramePayload(noVehicles, Array.Empty<double[]?>()));
+        }
+
+        AssignStableDiscSlots(frames, snapshots);
+
+        double minX = double.PositiveInfinity, minY = double.PositiveInfinity;
+        double maxX = double.NegativeInfinity, maxY = double.NegativeInfinity;
+        void Track(double x, double y)
+        {
+            if (x < minX) minX = x;
+            if (y < minY) minY = y;
+            if (x > maxX) maxX = x;
+            if (y > maxY) maxY = y;
+        }
+
+        foreach (var lane in network.Lanes)
+        {
+            for (var p = 0; p < lane.Shape.Length; p += 2) Track(lane.Shape[p], lane.Shape[p + 1]);
+        }
+
+        foreach (var j in network.Junctions)
+        {
+            for (var p = 0; p < j.Shape.Length; p += 2) Track(j.Shape[p], j.Shape[p + 1]);
+        }
+
+        // Pad out to the sweep's own extent (the source travels further from the junction centre than
+        // the lane/junction geometry alone would frame).
+        const double pad = 6.0;
+        minX = Math.Min(minX, cx - SweepRadius - pad);
+        maxX = Math.Max(maxX, cx + SweepRadius + pad);
+        minY = Math.Min(minY, cy - SweepRadius - pad);
+        maxY = Math.Max(maxY, cy + SweepRadius + pad);
+
+        return new ScenePayload(
+            "LOD promotion",
+            "Low-power PathArc pedestrians (grey) walk fixed sidewalk routes across the junction at "
+            + "O(1) cost -- no ORCA, no neighbour queries. A moving interest source (yellow marker) "
+            + "sweeps through; any pedestrian it nears promotes to a full-ORCA, reactive high-power "
+            + "agent (orange) and demotes back once the source moves on and a dwell period elapses. "
+            + "Driven end-to-end through PedLodManager + InterestField.",
+            new double[] { R(minX), R(minY), R(maxX), R(maxY) },
+            network,
+            new double[] { 0, 0 },
+            Dt * Decimate,
+            frames.ToArray());
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // Scene -- "OD routing" (docs/PEDESTRIAN-NAVMESH-CONTRACT.md "OD demand"; docs/PEDESTRIAN-
+    // DESIGN.md §4): PedDemand spawns pedestrians on a Poisson process, each routed origin-
+    // >destination across the junction's real sidewalks/crossings/walkingareas (SumoNavMesh), and
+    // despawns them on arrival -- a sustained routed crowd on the real pedestrian network, not a
+    // scripted one-shot. No LOD/interest-source layer here (an empty InterestField): every
+    // pedestrian stays low-power PathArc, which is exactly PedDemand's own "low-power motion is the
+    // cheap default" behaviour.
+    // ---------------------------------------------------------------------------------------
+    internal static ScenePayload BuildOdRouting(string scenarioDir)
+    {
+        var netPath = Path.Combine(scenarioDir, "net.net.xml");
+        var walkableAddPath = Path.Combine(scenarioDir, "walkable.add.xml");
+        var network = BuildNetwork(NetworkParser.Parse(netPath));
+
+        var pedNetwork = PedNetworkParser.Load(netPath, walkableAddPath);
+        var polygons = WalkablePolygonBaker.Bake(pedNetwork);
+        var nav = new SumoNavMesh(polygons, new SumoWalkableSpace(polygons));
+
+        // The same four arms' near/far sidewalk points BuildLodPromotion validates, reused here as a
+        // flat OD point set -- any point may be drawn as either an origin or a destination, so demand
+        // naturally crisscrosses the junction across every arm.
+        const double cx = 120.0, cy = 120.0;
+        var odPoints = new[]
+        {
+            new Vec2(cx - 7.4, cy + 20.0), new Vec2(cx + 7.4, cy + 20.0),  // north arm
+            new Vec2(cx + 20.0, cy - 7.4), new Vec2(cx + 20.0, cy + 7.4),  // east arm
+            new Vec2(cx - 7.4, cy - 20.0), new Vec2(cx + 7.4, cy - 20.0),  // south arm
+            new Vec2(cx - 20.0, cy - 7.4), new Vec2(cx - 20.0, cy + 7.4),  // west arm
+        };
+
+        var config = new Sim.Pedestrians.Demand.PedDemandConfig
+        {
+            Origins = odPoints,
+            Destinations = odPoints,
+            SpawnRatePerSecond = 0.5,
+            PopulationCap = 14,
+            Seed = 20260718UL,
+            MaxSpeed = 1.3,
+            Radius = 0.3,
+            ArrivalRadius = 0.6,
+        };
+
+        var publisher = new PedPublisher();
+        var manager = new PedLodManager(nav, publisher, arriveRadius: 0.3, dwellSeconds: 1.0);
+        var demand = new Sim.Pedestrians.Demand.PedDemand(config, nav, manager, startTime: 0.0);
+        var field = new InterestField(); // no interest sources -- everyone stays low-power PathArc
+        var noEntities = Array.Empty<WorldDisc>();
+
+        const double Dt = 0.2;
+        const int Decimate = 2;
+        const int steps = 600; // 120s simulated, decimated to 300 recorded frames
+
+        var snapshots = new List<List<(string Key, double[] Disc)>>();
+
+        var now = 0.0;
+        for (var step = 0; step < steps; step++)
+        {
+            demand.Step(now, Dt, field, noEntities);
+            now += Dt;
+
+            if (step % Decimate != 0)
+            {
+                continue;
+            }
+
+            var discs = new List<(string, double[])>(demand.LiveIds.Count);
+            foreach (var id in demand.LiveIds)
+            {
+                var pos = manager.PositionOf(id, now);
+                discs.Add(($"ped{id}", new[] { R(pos.X), R(pos.Y), 0.3, (double)KindPedestrian }));
+            }
+
+            snapshots.Add(discs);
+        }
+
+        var frames = new List<FramePayload>(snapshots.Count);
+        var noVehicles = Array.Empty<double[]?>();
+        foreach (var _ in snapshots)
+        {
+            frames.Add(new FramePayload(noVehicles, Array.Empty<double[]?>()));
+        }
+
+        AssignStableDiscSlots(frames, snapshots);
+
+        double minX = double.PositiveInfinity, minY = double.PositiveInfinity;
+        double maxX = double.NegativeInfinity, maxY = double.NegativeInfinity;
+        void Track(double x, double y)
+        {
+            if (x < minX) minX = x;
+            if (y < minY) minY = y;
+            if (x > maxX) maxX = x;
+            if (y > maxY) maxY = y;
+        }
+
+        foreach (var lane in network.Lanes)
+        {
+            for (var p = 0; p < lane.Shape.Length; p += 2) Track(lane.Shape[p], lane.Shape[p + 1]);
+        }
+
+        foreach (var j in network.Junctions)
+        {
+            for (var p = 0; p < j.Shape.Length; p += 2) Track(j.Shape[p], j.Shape[p + 1]);
+        }
+
+        return new ScenePayload(
+            "OD routing",
+            "PedDemand spawns pedestrians on a Poisson process, each routed origin->destination across "
+            + "the junction's real sidewalks, crossings, and walkingareas via SumoNavMesh, and despawns "
+            + "them on arrival -- a sustained routed crowd on the real pedestrian network. Driven "
+            + "end-to-end through the committed PedDemand + PedLodManager.",
+            new double[] { R(minX), R(minY), R(maxX), R(maxY) },
+            network,
+            new double[] { 0, 0 },
+            Dt * Decimate,
+            frames.ToArray());
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // Scene -- "Dodge / reroute" (docs/PEDESTRIAN-POC-PLAN.md POC-5; docs/PEDESTRIAN-TASKS.md P2-2):
+    // two distinct obstacle-avoidance mechanisms sharing one crowd. (1) LOCAL dodge: a bidirectional
+    // pedestrian stream on a straight sidewalk swerves around a static box obstacle purely via
+    // OrcaCrowd's own reciprocal/obstacle avoidance (BoxObstacle.Corners + AddObstacle) -- no
+    // rerouting, no navmesh query, just steering around it. (2) STRATEGIC reroute: a second, amber
+    // pedestrian pair walks the junction's north crossing back and forth; partway through the clip a
+    // blocker box appears over that crossing (BlockerRegistry) and RerouteDriver detects it and
+    // recomputes a detour through the junction's walkingarea ring for exactly the affected ped(s) --
+    // then the blocker disappears again later. Both mechanisms are the committed, unmodified
+    // Sim.Pedestrians controllers (PedRouteController/BlockerRegistry/RerouteDriver), driven here
+    // exactly as DynamicBlockerRerouteTests/ObstacleDodgeTests drive them.
+    // ---------------------------------------------------------------------------------------
+    internal static ScenePayload BuildDodgeReroute(string scenarioDir)
+    {
+        var netPath = Path.Combine(scenarioDir, "net.net.xml");
+        var walkableAddPath = Path.Combine(scenarioDir, "walkable.add.xml");
+        var network = BuildNetwork(NetworkParser.Parse(netPath));
+
+        var pedNetwork = PedNetworkParser.Load(netPath, walkableAddPath);
+        var polygons = WalkablePolygonBaker.Bake(pedNetwork);
+        var space = new SumoWalkableSpace(polygons);
+        var nav = new SumoNavMesh(polygons, space);
+
+        const double MaxSpeed = 1.3;
+        const double PedRadius = 0.3;
+        const double ArriveRadius = 0.3;
+        const double Dt = 0.1;
+        const int Decimate = 3;
+        const int steps = 700; // 70s simulated, decimated to ~233 recorded frames
+        const int BlockerAppearsAtStep = 150; // t=15s
+        const int BlockerClearsAtStep = 450;  // t=45s
+
+        var crowd = new OrcaCrowd();
+        var controller = new PedRouteController(crowd, new WaypointFollower(), ArriveRadius);
+        var registry = new BlockerRegistry(polygons);
+        var driver = new RerouteDriver(crowd, nav, polygons, debounceSeconds: 0.5, commitDwellSeconds: 1.0);
+
+        // ----- (1) local dodge: a static box obstacle on a straight, junction-free sidewalk stretch --
+        // same "nc_0" sidewalk (x in [111.6,113.6]) DynamicBlockerRerouteTests' FarNorthA/FarNorthB use,
+        // well clear of the junction, so this half of the demo never touches the reroute machinery.
+        var dodgeSidewalk = pedNetwork.Sidewalks.FirstOrDefault(
+            s => s.Shape.Any(p => Math.Abs(p.X - 112.6) < 0.5 && p.Y is > 195 and < 220));
+        var dodgeHalfWidth = Math.Min(1.0, (dodgeSidewalk?.Width ?? 2.0) / 2.0);
+
+        var obstacleCenter = new Vec2(112.6, 207.0);
+        var obstacleHalfX = Math.Min(0.5, dodgeHalfWidth * 0.7);
+        var obstacleCorners = BoxObstacle.Corners(obstacleCenter, obstacleHalfX, 1.0, angleRadians: 0.0);
+        crowd.AddObstacle(obstacleCorners);
+
+        var dodgeOrigin = new Vec2(112.6, 195.0);
+        var dodgeDest = new Vec2(112.6, 220.0);
+        var dodgePeds = new List<(OrcaHandle Handle, Vec2 Origin, Vec2 Dest, bool GoingToDest)>();
+        for (var i = 0; i < 6; i++)
+        {
+            var goingToDest = i % 2 == 0;
+            var startY = 195.0 + (i * 4.0);
+            var start = new Vec2(112.6, startY);
+            var goal = goingToDest ? dodgeDest : dodgeOrigin;
+            var path = new[] { start, goal };
+            var handle = crowd.Add(start, PedRadius, MaxSpeed, goal: start);
+            controller.AddRoute(handle, path, MaxSpeed);
+            dodgePeds.Add((handle, dodgeOrigin, dodgeDest, goingToDest));
+        }
+
+        // ----- (2) strategic reroute: two peds cycling the north crossing back and forth -----
+        var westNorthArm = new Vec2(112.6, 140.0);
+        var eastNorthArm = new Vec2(127.4, 140.0);
+        var northCrossing = polygons.Single(p => p.Kind == BakedPolygonKind.Crossing && p.Id == ":c_c0_0");
+
+        var reroutePeds = new List<(OrcaHandle Handle, Vec2 Goal, bool GoingEast)>();
+        void SpawnReroutePed(Vec2 start, Vec2 goal, bool goingEast)
+        {
+            var path = nav.FindPath(start, goal) ?? new[] { start, goal };
+            var handle = crowd.Add(start, PedRadius, MaxSpeed, goal: path[0]);
+            controller.AddRoute(handle, path, MaxSpeed);
+            driver.RegisterPed(handle, goal, path);
+            reroutePeds.Add((handle, goal, goingEast));
+        }
+
+        SpawnReroutePed(westNorthArm, eastNorthArm, goingEast: true);
+        SpawnReroutePed(eastNorthArm, westNorthArm, goingEast: false);
+
+        // Box covering ~60% of the north crossing's own bounding-box width / 90% of its height (mirrors
+        // DynamicBlockerRerouteTests.BoxCoveringPolygon -- proven to occlude just that one crossing,
+        // not its neighbours across the corner).
+        Vec2[] BoxCoveringPolygon(BakedPolygon polygon)
+        {
+            var minX = polygon.Vertices.Min(v => v.X);
+            var maxX = polygon.Vertices.Max(v => v.X);
+            var minY = polygon.Vertices.Min(v => v.Y);
+            var maxY = polygon.Vertices.Max(v => v.Y);
+            var center = new Vec2((minX + maxX) / 2.0, (minY + maxY) / 2.0);
+            var halfX = (maxX - minX) / 2.0 * 0.6;
+            var halfY = (maxY - minY) / 2.0 * 0.9;
+            return BoxObstacle.Corners(center, halfX, halfY, angleRadians: 0.0);
+        }
+
+        var blockerVerts = BoxCoveringPolygon(northCrossing);
+        Vec2 BlockerCenter()
+        {
+            double sx = 0, sy = 0;
+            foreach (var v in blockerVerts) { sx += v.X; sy += v.Y; }
+            return new Vec2(sx / blockerVerts.Length, sy / blockerVerts.Length);
+        }
+
+        BlockerId? blockerId = null;
+        var lastEventCount = 0;
+        var snapshots = new List<List<(string Key, double[] Disc)>>();
+
+        var time = 0.0;
+        for (var step = 0; step < steps; step++)
+        {
+            controller.Update();
+            crowd.Step(Dt);
+            time += Dt;
+
+            if (step == BlockerAppearsAtStep)
+            {
+                blockerId = registry.Register(blockerVerts);
+            }
+            else if (step == BlockerClearsAtStep && blockerId is { IsValid: true })
+            {
+                registry.Unregister(blockerId.Value);
+                blockerId = null;
+            }
+
+            driver.Update(time, registry.BlockedPolygons());
+            if (driver.Events.Count > lastEventCount)
+            {
+                for (var e = lastEventCount; e < driver.Events.Count; e++)
+                {
+                    var evt = driver.Events[e];
+                    controller.AddRoute(evt.Ped, driver.PathOf(evt.Ped), MaxSpeed);
+                }
+
+                lastEventCount = driver.Events.Count;
+            }
+
+            // Respawn each dodge ped once it reaches its current end -- a sustained bidirectional flow.
+            for (var i = 0; i < dodgePeds.Count; i++)
+            {
+                var (handle, origin, dest, goingToDest) = dodgePeds[i];
+                if (controller.IsRouteComplete(handle))
+                {
+                    var newGoal = goingToDest ? origin : dest;
+                    controller.AddRoute(handle, new[] { crowd.Position(handle), newGoal }, MaxSpeed);
+                    dodgePeds[i] = (handle, origin, dest, !goingToDest);
+                }
+            }
+
+            // Respawn each reroute-demo ped once it arrives -- re-querying the path under whatever is
+            // CURRENTLY effectively blocked, so a spawn during the blocked window gets the detour and a
+            // spawn after it clears gets the direct path again.
+            for (var i = 0; i < reroutePeds.Count; i++)
+            {
+                var (handle, goal, goingEast) = reroutePeds[i];
+                if ((crowd.Position(handle) - goal).Abs <= ArriveRadius && controller.IsRouteComplete(handle))
+                {
+                    var newGoal = goingEast ? westNorthArm : eastNorthArm;
+                    var newPath = nav.FindPath(goal, newGoal, driver.EffectiveBlockedPolygons) ?? new[] { goal, newGoal };
+                    controller.AddRoute(handle, newPath, MaxSpeed);
+                    driver.RegisterPed(handle, newGoal, newPath);
+                    reroutePeds[i] = (handle, newGoal, !goingEast);
+                }
+            }
+
+            if (step % Decimate != 0)
+            {
+                continue;
+            }
+
+            var discs = new List<(string, double[])>();
+            foreach (var (handle, _, _, _) in dodgePeds)
+            {
+                var p = crowd.Position(handle);
+                discs.Add(($"dodge{handle.Index}", new[] { R(p.X), R(p.Y), PedRadius, (double)KindPedestrian }));
+            }
+
+            foreach (var (handle, _, _) in reroutePeds)
+            {
+                var p = crowd.Position(handle);
+                discs.Add(($"reroute{handle.Index}", new[] { R(p.X), R(p.Y), PedRadius, (double)KindReroutingPedestrian }));
+            }
+
+            discs.Add(("obstacle", new[]
+            {
+                R(obstacleCenter.X), R(obstacleCenter.Y), 1.0, (double)KindObstacle, 0.0, 0.0, 1.0, R(obstacleHalfX),
+            }));
+
+            if (blockerId is { IsValid: true })
+            {
+                var bc = BlockerCenter();
+                var halfX = (blockerVerts.Max(v => v.X) - blockerVerts.Min(v => v.X)) / 2.0;
+                var halfY = (blockerVerts.Max(v => v.Y) - blockerVerts.Min(v => v.Y)) / 2.0;
+                discs.Add(("blocker", new[] { R(bc.X), R(bc.Y), 1.0, (double)KindObstacle, 0.0, 0.0, R(halfY), R(halfX) }));
+            }
+
+            snapshots.Add(discs);
+        }
+
+        var frames = new List<FramePayload>(snapshots.Count);
+        var noVehicles = Array.Empty<double[]?>();
+        foreach (var _ in snapshots)
+        {
+            frames.Add(new FramePayload(noVehicles, Array.Empty<double[]?>()));
+        }
+
+        AssignStableDiscSlots(frames, snapshots);
+
+        Console.WriteLine($"dodge-reroute: {driver.Events.Count} reroute event(s) recorded over the clip");
+
+        double minX = double.PositiveInfinity, minY = double.PositiveInfinity;
+        double maxX = double.NegativeInfinity, maxY = double.NegativeInfinity;
+        void Track(double x, double y)
+        {
+            if (x < minX) minX = x;
+            if (y < minY) minY = y;
+            if (x > maxX) maxX = x;
+            if (y > maxY) maxY = y;
+        }
+
+        foreach (var lane in network.Lanes)
+        {
+            for (var p = 0; p < lane.Shape.Length; p += 2) Track(lane.Shape[p], lane.Shape[p + 1]);
+        }
+
+        foreach (var j in network.Junctions)
+        {
+            for (var p = 0; p < j.Shape.Length; p += 2) Track(j.Shape[p], j.Shape[p + 1]);
+        }
+
+        Track(dodgeOrigin.X, dodgeOrigin.Y);
+        Track(dodgeDest.X, dodgeDest.Y);
+
+        return new ScenePayload(
+            "Dodge / reroute",
+            "Two obstacle-avoidance mechanisms, one crowd: a bidirectional pedestrian stream (purple) "
+            + "swerves around a static box obstacle on a sidewalk purely via OrcaCrowd's own local "
+            + "avoidance -- no rerouting. Separately, a pedestrian pair (amber) crosses the junction's "
+            + "north crossing back and forth; a blocker box appears over it partway through (grey) and "
+            + "RerouteDriver detects it and recomputes a detour through the walkingarea ring for exactly "
+            + "the affected pedestrian, then the blocker clears and direct crossings resume. Driven "
+            + "end-to-end through PedRouteController + BlockerRegistry + RerouteDriver.",
+            new double[] { R(minX), R(minY), R(maxX), R(maxY) },
+            network,
+            new double[] { 0, 0 },
+            Dt * Decimate,
+            frames.ToArray());
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // Scene -- "Parking" (docs/PEDESTRIAN-POC-PLAN.md POC-6, success condition 3;
+    // docs/PEDESTRIAN-DESIGN.md §6 "Parking lots"): LotCoupling's car<->pedestrian mutual-avoidance
+    // bridge inside a parking lot -- a non-holonomic car maneuvers in and out of a parking slot among
+    // static parked-car boxes while pedestrians weave across the drive aisle (some paths deliberately
+    // pass straight through a parked column, so ORCA's local avoidance is what actually steers them
+    // around); a walker boards the car once it parks, and a fresh pedestrian alights once the car later
+    // returns to the lot exit. Pure crowds (no road network) -- the lot's own coordinates are taken
+    // from the POC-0 fixture's walkable.add.xml "parkinglot" polygon and entry/exit POIs, but
+    // LotCoupling itself has no navmesh dependency, so this is not rendered against the SUMO net.
+    // ---------------------------------------------------------------------------------------
+    internal static ScenePayload BuildParking()
+    {
+        const double MaxSpeed = 1.3;
+        const double PedRadius = 0.3;
+        const double ArriveRadius = 0.5;
+        const double CarMaxSpeed = 2.2;
+        const double Dt = 0.15;
+        const int Decimate = 2;
+        const int steps = 900; // 135s simulated, decimated to 450 recorded frames
+        const int HoldSteps = 30; // ~4.5s dwell at each stop before the car's next leg
+
+        var lot = new LotCoupling();
+
+        // Layout, from walkable.add.xml's "parkinglot" polygon (x in [-180,-130], y in [-80,-20]) and
+        // its entry/exit POIs at (-130,-30) / (-130,-70): an east-west drive aisle with a parked row on
+        // each side, nose-in (box length along Y, BoxObstacle.Corners' angleRadians=+-pi/2 rotates its
+        // local "length" +X axis to the world Y axis).
+        var entry = new Vec2(-130, -30);
+        var exit = new Vec2(-130, -70);
+        const double halfLen = 2.2, halfWid = 1.0;
+        var slotXs = new[] { -173.0, -163.0, -153.0, -143.0, -133.0 };
+        const double northRowY = -28.0, southRowY = -72.0;
+        const int emptySlotIndex = 2; // x = -153 -- the car's target slot, left unoccupied
+
+        for (var i = 0; i < slotXs.Length; i++)
+        {
+            if (i != emptySlotIndex)
+            {
+                lot.AddParkedCarBox(new Vec2(slotXs[i], northRowY), halfLen, halfWid, Math.PI / 2.0);
+            }
+
+            lot.AddParkedCarBox(new Vec2(slotXs[i], southRowY), halfLen, halfWid, Math.PI / 2.0);
+        }
+
+        var emptySlot = new Vec2(slotXs[emptySlotIndex], northRowY);
+
+        var carId = lot.AddCar(entry, emptySlot, CarMaxSpeed);
+        var carPhase = 0; // 0: entry->slot, 1: slot->exit, 2: exit->entry (loop)
+        var phaseArrivedAtStep = -1;
+
+        // ----- weaving pedestrians: some columns deliberately line up with a parked box, so the
+        // straight-line path genuinely enters it and ORCA's own avoidance must steer around it. -----
+        var weavers = new List<(OrcaHandle Handle, Vec2 A, Vec2 B, bool GoingToB)>();
+        var weaverXs = new[] { -173.0, -163.0, -153.0, -143.0, -133.0 };
+        for (var i = 0; i < weaverXs.Length; i++)
+        {
+            var x = weaverXs[i];
+            var a = new Vec2(x, -20.0);
+            var b = new Vec2(x, -80.0);
+            var goingToB = i % 2 == 0;
+            var start = goingToB ? a : b;
+            var handle = lot.AddPedestrian(start, PedRadius, MaxSpeed, goal: goingToB ? b : a);
+            weavers.Add((handle, a, b, goingToB));
+        }
+
+        // ----- boarding walker: approaches the empty slot's near edge, "boards" (despawns) once the
+        // car has parked there and the walker has reached it. -----
+        var boardApproach = new Vec2(emptySlot.X, northRowY + 4.2);
+        var boardWalker = lot.AddPedestrian(new Vec2(entry.X, entry.Y + 5.0), PedRadius, MaxSpeed, boardApproach);
+        var boarded = false;
+
+        OrcaHandle? alightWalker = null;
+        var alighted = false;
+
+        var snapshots = new List<List<(string Key, double[] Disc)>>();
+
+        for (var step = 0; step < steps; step++)
+        {
+            lot.Step(Dt);
+
+            // Car phase machine: advance once arrived + a short hold has elapsed.
+            if (lot.CarArrived(carId))
+            {
+                if (phaseArrivedAtStep < 0)
+                {
+                    phaseArrivedAtStep = step;
+                }
+
+                if (step - phaseArrivedAtStep >= HoldSteps)
+                {
+                    switch (carPhase)
+                    {
+                        case 0:
+                            lot.SetCarGoal(carId, exit);
+                            carPhase = 1;
+                            break;
+                        case 1:
+                            if (!alighted)
+                            {
+                                alightWalker = lot.AddPedestrian(
+                                    new Vec2(exit.X + 1.5, exit.Y), PedRadius, MaxSpeed, new Vec2(exit.X + 10.0, exit.Y - 3.0));
+                                alighted = true;
+                            }
+
+                            lot.SetCarGoal(carId, entry);
+                            carPhase = 2;
+                            break;
+                        default:
+                            lot.SetCarGoal(carId, emptySlot);
+                            carPhase = 0;
+                            break;
+                    }
+
+                    phaseArrivedAtStep = -1;
+                }
+            }
+            else
+            {
+                phaseArrivedAtStep = -1;
+            }
+
+            // Boarding: despawn the walker once it reaches the slot's near edge AND the car has parked.
+            if (!boarded && carPhase == 0 && lot.CarArrived(carId)
+                && (lot.PedPosition(boardWalker) - boardApproach).Abs < 0.6)
+            {
+                lot.Peds.Remove(boardWalker);
+                boarded = true;
+            }
+
+            // Weavers: retarget once each reaches its current end -- a sustained back-and-forth flow.
+            for (var i = 0; i < weavers.Count; i++)
+            {
+                var (handle, a, b, goingToB) = weavers[i];
+                var target = goingToB ? b : a;
+                if ((lot.PedPosition(handle) - target).Abs < ArriveRadius)
+                {
+                    var newTarget = goingToB ? a : b;
+                    lot.SetPedGoal(handle, newTarget);
+                    weavers[i] = (handle, a, b, !goingToB);
+                }
+            }
+
+            if (step % Decimate != 0)
+            {
+                continue;
+            }
+
+            var discs = new List<(string, double[])>();
+            foreach (var box in lot.ParkedCarFootprints)
+            {
+                var cx = (box[0].X + box[2].X) / 2.0;
+                var cy = (box[0].Y + box[2].Y) / 2.0;
+                discs.Add(($"box{cx:F1}_{cy:F1}", new[] { R(cx), R(cy), 1.0, (double)KindObstacle, 90.0, 0.0, halfLen, halfWid }));
+            }
+
+            {
+                var cp = lot.CarPosition(carId);
+                var cls = lot.CarClass(carId);
+                var headingDeg = lot.CarHeading(carId) * 180.0 / Math.PI;
+                discs.Add(("car", new[]
+                {
+                    R(cp.X), R(cp.Y), 1.0, (double)KindParkingCar, R(headingDeg), 0.0, cls.Length * 0.5, cls.Width * 0.5,
+                }));
+            }
+
+            if (!boarded)
+            {
+                var p = lot.PedPosition(boardWalker);
+                discs.Add(("boardWalker", new[] { R(p.X), R(p.Y), PedRadius, (double)KindPedestrian }));
+            }
+
+            if (alightWalker is { } aw)
+            {
+                var p = lot.PedPosition(aw);
+                discs.Add(("alightWalker", new[] { R(p.X), R(p.Y), PedRadius, (double)KindPedestrian }));
+            }
+
+            foreach (var (handle, _, _, _) in weavers)
+            {
+                var p = lot.PedPosition(handle);
+                discs.Add(($"weave{handle.Index}", new[] { R(p.X), R(p.Y), PedRadius, (double)KindPedestrian }));
+            }
+
+            snapshots.Add(discs);
+        }
+
+        var frames = new List<FramePayload>(snapshots.Count);
+        var noVehicles = Array.Empty<double[]?>();
+        foreach (var _ in snapshots)
+        {
+            frames.Add(new FramePayload(noVehicles, Array.Empty<double[]?>()));
+        }
+
+        AssignStableDiscSlots(frames, snapshots);
+
+        var labels = new string[14];
+        labels[2] = "pedestrian";
+        labels[12] = "parked car";
+        labels[13] = "maneuvering car";
+
+        return new ScenePayload(
+            "Parking",
+            "LotCoupling's car<->pedestrian mutual-avoidance bridge: a non-holonomic car (blue) "
+            + "maneuvers into an empty parking slot among static parked cars (grey) and later pulls back "
+            + "out to the lot exit, while pedestrians (purple) weave across the drive aisle -- some "
+            + "paths run straight through a parked column, so it is genuinely ORCA's own local avoidance "
+            + "steering them around, not a scripted detour. One walker boards the car once it parks; "
+            + "another alights once the car returns to the exit. Driven end-to-end through LotCoupling.",
+            // Generous margin beyond the lot's own [-180,-130]x[-80,-20] footprint: a non-holonomic
+            // car occasionally overshoots a sharp goal change before curving back (LotCoupling's own
+            // documented pursuit behaviour), so the view needs slack, not just the lot's bounding box.
+            new double[] { -195, -95, -110, -5 },
+            null,
+            new double[] { 0, 0 },
+            Dt * Decimate,
+            frames.ToArray(),
+            labels);
     }
 
     // ---------------------------------------------------------------------------------------
