@@ -250,6 +250,77 @@ paths**. Design ref: §7 (DR / multicast), §5 (regime rendering); precedent: `s
 
 ---
 
+## Stage P8 — Subarea integration (SumoData compatibility)
+
+Realizes the 7 compatibility requirements in `SUBAREA-FOR-PEDESTRIAN-SESSION.md` §3. The design consequences
+are in `PEDESTRIAN-LIVELINESS-DESIGN.md` §11; the full per-requirement mapping + serve-path touchpoint is in
+`COORDINATION-pedestrian-x-subarea.md`. Standing invariant: all of P8 is **additive and inert by default** —
+an empty camera visible set → fully permissive → every existing pedestrian scenario/golden unchanged
+(mirrors the engine's null-`RealismMask` default).
+
+### P8-1 — Verify the bake against a real cropped sub-area net
+- **Design ref:** coord §1 req 1. **Files:** test-only (a cropped box `net.xml` fixture under
+  `scenarios/_ped/`), `SumoNavMesh` (read-only verification, fix only if a crop breaks it). **Deps:** P2-1;
+  needs a real cropped box `net.xml` from the SumoData pipeline.
+- Run the SUMO-geometry bake on an actual cropped box (crossings/walkingAreas cut by the boundary produce
+  dangling "fringe" stubs) and confirm the walkable graph is sane (fringe edges identified, no spurious
+  adjacency across the cut, coordinate frame matches the vehicle net).
+- **Success conditions:** bake of a cropped net produces a connected walkable graph whose fringe edge set
+  equals the boundary-cut walkable edges; a golden-style assertion pins the fringe set for the fixture; no
+  change to any existing (uncropped) scenario.
+
+### P8-2 — Appearance-legitimacy layer (the no-cheating gate) — CORE
+- **Design ref:** coord §1 req 2+4, coord §2, liveliness §11. **Files:** new
+  `src/Sim.Pedestrians/Legitimacy/PedSpawnPolicy.cs` (+ a visible-walkable-edge set type), wiring in
+  `PedDemand` (spawn) and `PedLodManager` (despawn/end-of-route). **Deps:** P1-1 (camera interest source),
+  P2-3 (`PedDemand`), P8-1 (fringe set).
+- Add the axis the earlier design conflated with sim-LOD: `MaySpawnOrDespawn(ped, walkableEdge) = isFringe(e)
+  OR hostsLegitimateSink(e, ped) OR isOffCamera(e)`, where `isOffCamera` reads the **same** host camera
+  signal the vehicle side uses (analogue of `RealismMask.MayPop`) mapped to the visible **walkable**-edge
+  set; `hostsLegitimateSink` = a building-entrance / transit / parking board-alight POI the ped is using
+  (liveliness §6/§8). A denied on-camera despawn routes the ped to the nearest sink/fringe or holds it
+  low-power until off-camera; a denied on-camera spawn defers. Camera remains a sim-LOD interest source
+  (unchanged); it *additionally* drives this gate. Pure function of (seed, ped, edge, visible set); visible
+  set captured once per host tick.
+- **Success conditions:** with a visible-edge set active, a deterministic scenario produces **zero**
+  ped appear/despawn events on a visible walkable edge that is not a fringe/sink (assert over the event log);
+  with an empty visible set the run is **bit-identical** to the pre-P8-2 baseline (inert-default gate);
+  serial == parallel; 585 parity + ped tests green.
+
+### P8-3 — Auto-deduced pedestrian demand
+- **Design ref:** coord §1 req 3, liveliness §4+§8. **Files:** `PedDemand` (deduction pass), POI ingest for
+  the liveliness §8 schema. **Deps:** P8-1, P8-2, P2-3.
+- Deduce O→D + liveliness POIs from walkable-space + land-use/POI net-data (sidewalk density, building
+  entrances, transit/parking, plazas), mirroring the vehicle side's topology deduction (their
+  `deduce_weights.py` as a template). Spawns land at fringe/doors per the P8-2 gate. Hand-authored
+  `personFlows` remain the stopgap until this lands.
+- **Success conditions:** on the cropped fixture, deduced demand yields fringe/door-legitimate O→D with a
+  reproducible per-(seed, box) distribution; a probe run is deterministic across repeats; no on-camera pops
+  (via P8-2).
+
+### P8-4 — Pedestrian density knob + crossing-throughput guard
+- **Design ref:** coord §1 req 5, liveliness §11. **Files:** `PedDemand` (density target),
+  `Crossing/CrossingGate` (occupancy cap). **Deps:** P8-3.
+- Expose a pedestrian density knob (peds/area or peds/sidewalk-m) analogous to the vehicle density level and
+  document its safe range; cap crossing occupancy so crowds never deadlock a signalized crossing hard enough
+  to gridlock the (separately calibrated) cars.
+- **Success conditions:** the knob linearly targets measured density within a documented range; a
+  crossing-saturation scenario shows crossings drain (no permanent deadlock) and the coupled cars keep
+  flowing; documented safe range committed.
+
+### P8-5 — Scenario/manifest slot-in + shared-replay contract
+- **Design ref:** coord §1 req 6, coord §3. **Files:** ped demand emitter (references/attaches to
+  `scenario.sumocfg` + `manifest.json`), `Sim.Viz` (shared FCD-style ped stream — already renders discs,
+  P7-0). **Deps:** P8-3.
+- Emit pedestrian demand as **additional** route/person input referenced by (or alongside) the produced
+  `scenario.sumocfg`, record the ped-density knob + safe range in the manifest, and confirm one replay can
+  render cars and peds from the same trajectory stream.
+- **Success conditions:** a produced `scenario.sumocfg` + `manifest.json` round-trips with ped inputs
+  attached; a single Sim.Viz replay shows vehicles and pedestrians together from one stream; outputs stay
+  self-contained/offline.
+
+---
+
 ## Sequencing summary
 
 **P0 first (Add/Remove — the priority).** Then P1 (API/interest-source) and P2 (navigation) can proceed in
@@ -257,5 +328,7 @@ parallel; P3 (networking) depends on P0-3; **P7 (visualization) follows its data
 after P1, P7-2/P7-3 remote after P3-1/P3-3** (it is the payoff that makes the whole system watchable, so
 schedule P7-1 early for a visible in-process demo); P4 (Engine TLS seam) is scheduled with the lane-engine
 session whenever convenient; P5 (evac) waits on P1–P2; P6 (on-target scale) waits on P0 and closes the loop
-with the real hardware numbers. The design is fixed; any P-stage finding that contradicts it updates
-`PEDESTRIAN-DESIGN.md` before that stage closes.
+with the real hardware numbers. **P8 (subarea integration) waits on P2-3 + P1-1 and a real cropped box
+`net.xml` from the SumoData pipeline; P8-1 (crop verification) is cheap and can run the moment a crop is
+available, P8-2 (the appearance-legitimacy gate) is the load-bearing new piece.** The design is fixed; any
+P-stage finding that contradicts it updates `PEDESTRIAN-DESIGN.md` before that stage closes.

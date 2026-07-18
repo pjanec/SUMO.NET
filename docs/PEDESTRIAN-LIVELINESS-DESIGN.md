@@ -7,8 +7,8 @@ and talk, sit at restaurant tables, enter and leave buildings — and can do so 
 is a focused feature, so design + plan are folded into one doc per `CLAUDE.md`).
 
 This design is written to be **compatible with the SumoData subarea mechanism** (auto-deduced demand +
-calibrated density within a user-selected subarea of a large road network) — see §11; that section is
-provisional until the subarea design docs land, and will be tightened then.
+calibrated density within a user-selected subarea of a large road network) — see §11, now aligned to the
+SumoData brief `SUBAREA-FOR-PEDESTRIAN-SESSION.md` (full mapping in `COORDINATION-pedestrian-x-subarea.md`).
 
 ---
 
@@ -152,27 +152,49 @@ back to a shorter/relocated dwell or none.
   **re-plans** the remainder of its timeline from the current time/pose (a fresh schedule, like today's
   demotion re-route). The animation tag persists across the switch where sensible.
 
-## 11. Subarea compatibility (SumoData) — provisional, to align on the subarea docs
+## 11. Subarea compatibility (SumoData)
 
-The pedestrian liveliness + demand must fit the subarea mechanism (auto-deduced demand + calibrated density
-within a user-selected subarea, no visible cheating). Provisional alignment points:
+Aligned to the SumoData brief `SUBAREA-FOR-PEDESTRIAN-SESSION.md` (§3, 7 requirements) and its serve-path
+note `SUMOSHARP-SERVE-PATH-DROP-IN.md`. The per-requirement mapping, the gaps, and the plan pointers live
+in `COORDINATION-pedestrian-x-subarea.md`; this section states the design consequences for liveliness.
 
-- **Auto-deduced pedestrian demand** — mirror the vehicle-demand deduction: derive pedestrian O→D +
-  liveliness POIs from the subarea's road-net/OSM data (§8), so the same "select a box → deduce demand →
-  pick density" flow drives peds. The `PedDemand` scheduler is the injection point.
-- **Density level** — expose a pedestrian density knob (peds/area or peds/sidewalk-m) analogous to the
-  vehicle density level; the scheduler targets it.
-- **No visible cheating** — peds appear/disappear only at the subarea **fringe** or at **building
-  entrances** (§6), never mid-sidewalk in view. Building POIs make this natural *and* believable.
-- **Attention-aware LOD (X1 in `SUMOSHARP-HIGH-DENSITY-FEATURES.md`)** — the pedestrian sim-LOD aligns with
-  the realism mask: **high-realism / on-camera zone → full liveliness + promotion-eligible; low-realism /
-  off-camera → cheap `Walk`-only or culled.** Liveliness is spent where it's seen. This is a natural fit
-  and worth wiring to the same mask.
-- **Determinism under the calibrator** — the subarea tool runs many probes; the seeded schedule generator
-  must be reproducible per (seed, subarea, density) so probes are comparable.
+**The load-bearing distinction (from their brief).** *sim-LOD is not appearance-legitimacy.* Two
+orthogonal axes:
+- **sim-LOD** (`PedLodManager` + `InterestField`) — how much compute/wire detail a ped gets. A low-power
+  ped is still fully present and visible. This is what §10 wires liveliness into.
+- **appearance-legitimacy** (new) — whether a ped may legitimately *materialize / vanish* at a given place
+  right now. The no-cheating rule. **Orthogonal to LOD**, and the piece the earlier draft conflated.
 
-*(This section is intentionally provisional. Once the subarea design docs are provided, re-derive the
-POI-deduction and density-control specifics against that system and update here.)*
+Consequences for liveliness:
+
+- **Buildings/venues are the primary in-view legitimacy anchors.** A building **entrance** (§6, §8) is the
+  believable place a ped can appear from / disappear into *inside* the visible box — exactly the on-camera
+  appear/disappear the subarea mechanism wants, versus popping on an open sidewalk. So the §6 hidden-dwell
+  and despawn/respawn paths are not just liveliness flavour: they are the **no-cheating spawn/despawn
+  mechanism** for internal demand. This makes liveliness and no-cheating the *same* feature, not two.
+- **Fringe + off-camera are the other two legitimacy anchors.** Peds may also appear/disappear at the box
+  **fringe** (walkable edges cut by the crop) or **off-camera** (walkable edge not in the camera visible
+  set — the direct analogue of the vehicle side's `RealismMask.MayPop`). A denied on-camera despawn does
+  not vanish the ped; it routes to the nearest door/fringe or holds (low-power) until off-camera.
+- **One camera signal, two uses.** The host's single frustum yields one visible-edge set. The camera stays
+  a sim-LOD interest source (§10, unchanged) **and** additionally drives the appearance-legitimacy gate
+  (the visible **walkable**-edge set). Liveliness is still spent where it's seen (on-camera → full timeline
+  + promotion-eligible; off-camera → cheap `Walk`/culled), but "spend liveliness here" and "may vanish
+  here" are now decided by two separate predicates over the same signal.
+- **Auto-deduced demand feeds the timeline.** O→D + liveliness POIs are deduced from the subarea's
+  walkable-space + land-use/POI net-data (§8), mirroring their topology-based vehicle deduction (their
+  `deduce_weights.py` offered as a template). The schedule generator (§4) is the injection point; spawns
+  land at fringe/doors per the legitimacy gate.
+- **Density knob + crossing guard.** Expose a pedestrian density knob (peds/area or peds/sidewalk-m)
+  analogous to the vehicle density level, and cap crossing occupancy so crowds never deadlock a signalized
+  crossing hard enough to gridlock the (separately calibrated) cars.
+- **Determinism under the calibrator.** The subarea tool runs many probes; the seeded schedule generator +
+  legitimacy gate must be reproducible per (seed, subarea, density) so probes are comparable. The gate is a
+  pure function of (seed, ped, edge, visible set), and the visible set is captured once per host tick.
+
+These consequences are realized by **Stage P8 — Subarea integration** in `PEDESTRIAN-TASKS.md` (P8-2 is the
+appearance-legitimacy layer; P8-3 the auto-deduced demand; P8-4 the density knob). LIVE-POC-4 (§12) is the
+end-to-end demonstration once P8 and a real cropped box are in hand.
 
 ## 12. POC plan (de-risk the two non-obvious pieces, then make it watchable)
 
@@ -194,10 +216,12 @@ HTML demo (mobile-watchable, gallery-publishable) so liveliness can be *seen*.
   return → loop) bound to a `(building, table-cluster)` anchor. **Success:** the actor loops
   deterministically, respects table capacity, is IG-reconstructable, and reads believably in the demo.
   Sim.Viz demo: `liveliness-waiter`.
-- **LIVE-POC-4 (after subarea docs) — auto-deduced liveliness demand in a subarea + density knob + realism-mask
-  LOD.** Deduce POIs + ped demand from subarea net-data; scale to a density level; spend liveliness by the
-  attention mask; verify no-visible-cheating (appear/disappear only at fringe/doors). **Success:** measured
-  density hits target; zero on-camera pops; liveliness concentrated in the high-realism zone.
+- **LIVE-POC-4 (after Stage P8 + a real cropped box) — auto-deduced liveliness demand in a subarea +
+  density knob + shared-mask legitimacy.** Deduce POIs + ped demand from subarea net-data (P8-3); scale to a
+  density level (P8-4); spend liveliness by the camera interest source; gate appearance on the shared
+  visible-edge set (P8-2); verify no-visible-cheating (appear/disappear only at fringe/doors/off-camera).
+  **Success:** measured density hits target; **zero on-camera pops** (audited like the vehicle side's
+  `audit_nocheat.py`); liveliness concentrated in the high-realism zone.
 
 Only after these converge does liveliness graduate to production tasks (extend `PedDemand`, the wire
 `ActivityTimelineRecord`, the animation-tag contract, the POI ingest, capacity calendar).
@@ -210,10 +234,13 @@ Only after these converge does liveliness graduate to production tasks (extend `
 4. **Animation-tag vocabulary + blend semantics contract** (§3) — needs IG-side buy-in.
 5. **Promotion mid-activity** semantics (§10) — freeze/replan edge cases (e.g. promoted while inside a
    building).
-6. **Subarea alignment** (§11) — provisional until the subarea design docs are in hand.
+6. **Subarea alignment** (§11) — aligned to the SumoData brief; the open sub-question is the exact
+   walkable-edge visible-set handoff from the host (Stage P8-2) and sharing their `deduce_weights.py`
+   template (P8-3).
 
 ---
 
 **Document status:** design + POC plan, for review. The load-bearing claim — liveliness stays low-power
 because it is deterministic-schedule replay (the `PathArc` trick generalized) — is what LIVE-POC-1/2 prove
-before any production build. §11 aligns to the subarea mechanism and will be revised against its docs.
+before any production build. §11 is aligned to the SumoData brief; see `COORDINATION-pedestrian-x-subarea.md`
+for the full requirement mapping and Stage P8 for the implementation plan.

@@ -81,6 +81,22 @@ Legend: `[ ]` not started · `[~]` in progress · `[x]` done · `[!]` blocked/ne
 - [ ] **P7-3** City3D (Godot 3D) ped render — in-process (`SimSource`) + remote (`Reconstructor`/DDS);
       ground placement, heading, GPU LOD-cull
 
+## Stage P8 — Subarea integration (SumoData compatibility)
+
+Realizes `SUBAREA-FOR-PEDESTRIAN-SESSION.md` §3; mapping in `COORDINATION-pedestrian-x-subarea.md`, design
+consequences in `PEDESTRIAN-LIVELINESS-DESIGN.md` §11. All additive + inert by default (empty visible set →
+permissive → existing goldens unchanged). Waits on P2-3 + P1-1 + a real cropped box `net.xml`.
+
+- [ ] **P8-1** Verify the SUMO-geometry bake against a real cropped sub-area net (fringe = boundary-cut
+      walkable stubs; pin the fringe set) — *cheap; run when a crop is available*
+- [ ] **P8-2** Appearance-legitimacy layer (`PedSpawnPolicy`) — the no-cheating gate, **orthogonal to
+      sim-LOD**; spawn/despawn only at fringe/sink/off-camera, reading the same camera visible-edge set as
+      the vehicle `RealismMask`; inert-default bit-identical — *the load-bearing new piece*
+- [ ] **P8-3** Auto-deduced pedestrian demand (O→D + POIs from walkable-space + land-use; their
+      `deduce_weights.py` as template; spawns land at fringe/doors)
+- [ ] **P8-4** Pedestrian density knob + crossing-throughput guard (crowds never deadlock the calibrated cars)
+- [ ] **P8-5** Scenario/manifest slot-in + shared FCD replay (cars + peds in one Sim.Viz stream)
+
 ---
 
 ## Standing invariants (must stay true every task)
@@ -88,3 +104,5 @@ Legend: `[ ]` not started · `[~]` in progress · `[x]` done · `[!]` blocked/ne
 - [x] SUMO parity core untouched — hash `909605E965BFFE59`, `Sim.ParityTests` green *(holds through POC phase)*
 - [x] Perf/parallel changes bit-identical to serial (or gated fast-mode) *(POC-7a gate style)*
 - [ ] Coordinate all `Engine.cs`/routing touches (P4) with the parallel lane-engine session
+- [ ] Subarea: appearance-legitimacy (P8-2) inert by default — empty visible set leaves every ped golden
+      unchanged; and ping the SumoData session to re-calibrate when P4 (vehicle-yields-at-crossing) lands
