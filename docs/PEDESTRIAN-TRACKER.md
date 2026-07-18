@@ -35,6 +35,14 @@ once the POCs converge.
 - [ ] **LIVE-POC-4** — auto-deduced liveliness demand in a subarea + density knob + shared-mask legitimacy
       (after Stage P8 + a real cropped box; zero on-camera pops audited)
 
+Graduation into production (making the *routed ambient crowd* lively):
+- [x] **LIVE-PROD-1a** — `PedLodManager` low-power `ActivityTimeline` (lively) peds *(`AddPedLively`;
+      `ActivityTimeline.VelocityAt`; promote/demote treats low-power as PathArc OR ActivityTimeline;
+      null-timeline path bit-identical — existing 101 ped tests unchanged; 2 new tests: exact server==IG
+      sweep <1e-12 + promotion)*
+- [~] **LIVE-PROD-1b** — `PedDemand` schedule generator (seeded Pause/Dwell beats along routes) +
+      `--ped-lively-crowd` demo; liveliness-off bit-identical, no spawn-timing/O-D shift
+
 ---
 
 ## Design & POC phase — COMPLETE
