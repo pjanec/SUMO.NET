@@ -86,9 +86,16 @@ public sealed class VehicleMover : ICrowdFootprintSource
 
     // Add a car that has just mounted the shoulder; returns its stable mover index. Wedge dwell for
     // this index starts at zero and the mover is active.
+    //
+    // P0-2 (docs/PEDESTRIAN-TASKS.md): MixedTrafficCrowd.Add now returns a stable MixedTrafficHandle
+    // instead of a raw int (mirroring OrcaCrowd's P0-1 handle). VehicleMover never calls Remove on its
+    // inner crowd (only Deactivate, which does not vacate/recycle a slot), so the handle's Index is
+    // exactly as stable as the old raw int forever -- this is a MECHANICAL type-migration shim only,
+    // zero behavior change: the dwell/active lists stay index-aligned with the crowd exactly as before.
     public int AddCar(Vec2 pos, double headingRad, Vec2 goal)
     {
-        var i = _crowd.Add(VehicleClass.Car, pos, goal, headingRad, maxSpeedOverride: _cfg.OrcaPushMaxSpeed);
+        var handle = _crowd.Add(VehicleClass.Car, pos, goal, headingRad, maxSpeedOverride: _cfg.OrcaPushMaxSpeed);
+        var i = handle.Index;
         var initialDist = (goal - pos).Abs;
         // AddCar always appends (mirrors the crowd's own append-only Add), so the dwell/active lists
         // stay index-aligned with the crowd without any remapping.

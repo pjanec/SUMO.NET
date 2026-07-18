@@ -56,7 +56,13 @@ public sealed class ParkingController
         public required int CarId;
         public CarRegime Regime;
         public VehicleHandle? EngineHandle;
-        public int MoverIndex = -1;
+
+        // P0-2 (docs/PEDESTRIAN-TASKS.md): MECHANICAL migration from a raw int mover index to the
+        // stable MixedTrafficHandle MixedTrafficCrowd.Add now returns (mirrors OrcaCrowd's P0-1 handle).
+        // ParkingController never calls Remove on `_crowd` (only Deactivate, matching pre-P0-2 behavior
+        // exactly), so this is a pure representation change -- MixedTrafficHandle.Invalid replaces the
+        // old `-1` "no mover" sentinel, checked via `.IsValid` instead of `>= 0`.
+        public MixedTrafficHandle MoverIndex = MixedTrafficHandle.Invalid;
 
         // True while the current ParkingManeuver leg targets the EXIT goal (Depart), false while it
         // targets the SLOT goal (EnterLot) -- distinguishes which arrival branch Step() should take.
@@ -194,7 +200,7 @@ public sealed class ParkingController
                 st.ParkedPosition = pos;
                 st.ParkedHeading = _crowd.Heading(idx);
                 _crowd.Deactivate(idx);
-                st.MoverIndex = -1;
+                st.MoverIndex = MixedTrafficHandle.Invalid;
                 st.Regime = CarRegime.Parked;
                 Emit(carId, CarLifecycleEventKind.Parked, pos);
             }
@@ -202,7 +208,7 @@ public sealed class ParkingController
             {
                 // Reached the exit goal: leave the maneuvering crowd and re-insert onto a lane.
                 _crowd.Deactivate(idx);
-                st.MoverIndex = -1;
+                st.MoverIndex = MixedTrafficHandle.Invalid;
                 var handle = _engine.SpawnVehicle(
                     st.ExitVType, st.ExitRoute, st.ExitDepartPos, st.ExitDepartSpeed, st.ExitDepartLane);
                 st.EngineHandle = handle;
@@ -219,7 +225,7 @@ public sealed class ParkingController
     public bool TryGetManeuverPosition(int carId, out Vec2 position)
     {
         var st = _cars[carId];
-        if (st.Regime == CarRegime.ParkingManeuver && st.MoverIndex >= 0)
+        if (st.Regime == CarRegime.ParkingManeuver && st.MoverIndex.IsValid)
         {
             position = _crowd.Position(st.MoverIndex);
             return true;

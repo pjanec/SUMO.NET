@@ -334,6 +334,14 @@ public sealed class LotCoupling
         // ParkingController's Deactivate-on-arrival (see CarArriveRadius remarks: without this, a
         // non-holonomic vehicle that can never reverse and is never told "you're done" orbits a point
         // goal forever instead of settling).
+        //
+        // P0-2 (docs/PEDESTRIAN-TASKS.md): MixedTrafficCrowd.Add now returns a MixedTrafficHandle instead
+        // of a raw int (mirrors OrcaCrowd's P0-1 handle) -- `.Index` is taken immediately below purely to
+        // keep this array's existing `int`/`-1`-sentinel shape. This is a MECHANICAL type-migration shim
+        // only: `crowd` here is a FRESH MixedTrafficCrowd built and discarded within this single
+        // StepCars call (see the class remarks -- Remove is deliberately NOT used, so retiring this
+        // per-step rebuild is left to P0-3, not this task), so the handle never needs to outlive this
+        // method and a raw index is exactly as safe as before.
         var indices = new int[_cars.Count];
         for (var i = 0; i < _cars.Count; i++)
         {
@@ -344,7 +352,7 @@ public sealed class LotCoupling
                 c.Velocity = Vec2.Zero;
             }
 
-            indices[i] = c.Arrived ? -1 : crowd.Add(c.Class, c.Position, c.Goal, c.Heading, c.Velocity, c.MaxSpeed);
+            indices[i] = c.Arrived ? -1 : crowd.Add(c.Class, c.Position, c.Goal, c.Heading, c.Velocity, c.MaxSpeed).Index;
         }
 
         crowd.Step(dt);

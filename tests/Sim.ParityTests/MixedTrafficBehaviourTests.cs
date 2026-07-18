@@ -270,8 +270,8 @@ public class MixedTrafficBehaviourTests
         // left resting off-axis to pollute the mean; we sample cross-track only for IN-TRANSIT
         // vehicles that are actually in the conflict zone near the crossing.
         var c = new MixedTrafficCrowd(16) { SymmetryBreak = 0.02, RemoveOnArrival = true };
-        var buses = new List<int>();
-        var motos = new List<int>();
+        var buses = new List<MixedTrafficHandle>();
+        var motos = new List<MixedTrafficHandle>();
         for (var i = 0; i < 4; i++)
         {
             buses.Add(c.Add(VehicleClass.Bus, new Vec2(-50 - i * 14.0, 0), new Vec2(60, 0), headingRad: 0.0));

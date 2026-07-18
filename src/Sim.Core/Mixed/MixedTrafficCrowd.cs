@@ -1,3 +1,4 @@
+using Sim.Core.Bridge;
 using Sim.Core.Orca;
 
 namespace Sim.Core.Mixed;
@@ -40,13 +41,53 @@ public sealed class MixedTrafficCrowd
     private bool[] _active;
     private int _count;
 
+    // P0-2 (docs/PEDESTRIAN-TASKS.md, docs/PEDESTRIAN-DESIGN.md §3(d)): real Add/Remove via a free-list
+    // of recycled slots + a per-slot generation counter, mirroring P0-1's OrcaCrowd exactly (own copies
+    // -- a distinct id space, see MixedTrafficHandle's remarks).
+    //
+    // `_slotAlive` is DISTINCT from `_active` above: `_active` is the RemoveOnArrival/Deactivate "parked"
+    // state (the slot still holds a vehicle, just not moving/constraining -- Remove is never involved);
+    // `_slotAlive` is whether the slot holds a vehicle AT ALL. A slot that is `!_slotAlive` is also
+    // always `!_active` (Remove clears both), so every existing "skip when !_active" scan already skips
+    // a removed slot for free -- the explicit `!_slotAlive` checks added alongside them below are
+    // belt-and-suspenders correctness for the NEW removal path, not a behavior change: with `_slotAlive`
+    // all-true (Remove never called) they are always false and never taken, so the no-remove path stays
+    // byte-identical to pre-P0-2.
+    //
+    // `_generation` starts at 1 for every never-used slot (0 is reserved for MixedTrafficHandle.Invalid)
+    // and is bumped again each time its slot is vacated, so any MixedTrafficHandle captured before a
+    // Remove is stale afterwards even if the slot is immediately recycled by a later Add. `_freeSlots` is
+    // the LIFO of vacated slot indices Add pops from before ever growing/appending; recycling does not
+    // disturb any OTHER vehicle's slot or handle, and does not touch iteration order (always ascending
+    // slot index 0.._count-1).
+    private uint[] _generation;
+    private bool[] _slotAlive;
+    private readonly Stack<int> _freeSlots = new();
+
     private Vec2[] _newVelocity;
 
     // Static walls: world centre + a world-oriented, origin-centred footprint. Fed to the solver as
     // zero-velocity, responsibility-1.0 shaped neighbours.
     private readonly List<(Vec2 Centre, ConvexShape Shape)> _walls = new();
 
-    // Scratch for a plan's neighbour set (vehicles in range + walls in range).
+    // Cross-regime bridge (P0-2, Part B): external world-space discs from the OTHER regime (e.g. moving
+    // pedestrians) that every vehicle also avoids, ONE-SIDED (responsibility 1.0: the car yields fully;
+    // the other regime avoids the car through its own solve/step) -- mirrors OrcaCrowd's
+    // SetExternalObstacles cross-regime bridge exactly, adapted to this crowd's SHAPED solver: each disc
+    // is represented as a small regular-polygon ShapedAgent centred on the disc (RegularPolygon
+    // approximates a circle -- the same disc-approximation ConvexShape.Inflate already uses for its
+    // margin), carrying the disc's real velocity, so avoidance is VELOCITY-AWARE rather than the
+    // POC-6b LotCoupling per-step `AddBlock` approximation (a momentary, zero-velocity static box).
+    // Empty by default, so a crowd that never calls SetExternalObstacles is byte-identical to pre-P0-2.
+    private WorldDisc[] _externalDiscs = Array.Empty<WorldDisc>();
+    private ConvexShape[] _externalDiscShape = Array.Empty<ConvexShape>();
+    private int _externalDiscCount;
+
+    // Segment count of the regular polygon approximating each external disc in the shaped solve --
+    // matches ConvexShape.Inflate's own disc-approximating octagon for consistency.
+    private const int ExternalDiscSegments = 8;
+
+    // Scratch for a plan's neighbour set (vehicles in range + walls in range + external discs in range).
     private ShapedVoSolver.ShapedAgent[] _nbScratch = new ShapedVoSolver.ShapedAgent[16];
     private double[] _nbDistSq = new double[16];
     private OrcaLine[] _lineScratch = new OrcaLine[16];
@@ -134,34 +175,89 @@ public sealed class MixedTrafficCrowd
         _shapeProto = new ConvexShape[capacity];
         _solveProto = new ConvexShape[capacity];
         _active = new bool[capacity];
+        _generation = new uint[capacity];
+        _slotAlive = new bool[capacity];
+        for (var i = 0; i < capacity; i++)
+        {
+            _generation[i] = 1;   // never-used slot starts at 1; 0 is reserved for MixedTrafficHandle.Invalid
+        }
+
         _newVelocity = new Vec2[capacity];
         _newHeading = new double[capacity];
     }
 
+    // High-water mark of slots ever allocated -- NOT the live vehicle count once Remove has been used (a
+    // vacated, not-yet-recycled slot is still < _count but is neither active nor alive). Byte-identical
+    // to "number of vehicles added" for any crowd that never calls Remove (the pre-P0-2 meaning).
     public int Count => _count;
     public int WallCount => _walls.Count;
     public (Vec2 Centre, ConvexShape Shape) Wall(int i) => _walls[i];
 
     public Vec2 Position(int i) => _position[i];
-    public Vec2 Velocity(int i) => _velocity[i];
-    public Vec2 Goal(int i) => _goal[i];
-    public double Heading(int i) => _heading[i];
-    public VehicleClass Class(int i) => _class[i];
-    public bool IsActive(int i) => _active[i];
-    public void SetGoal(int i, Vec2 goal) => _goal[i] = goal;
+    public Vec2 Position(MixedTrafficHandle h) => _position[ResolveOrThrow(h)];
 
-    // Add a vehicle; returns its stable index. Initial heading defaults to face the goal.
-    // maxSpeedOverride lets a scene run a congested crawl below the class free-flow speed.
-    public int Add(
+    public Vec2 Velocity(int i) => _velocity[i];
+    public Vec2 Velocity(MixedTrafficHandle h) => _velocity[ResolveOrThrow(h)];
+
+    public Vec2 Goal(int i) => _goal[i];
+    public Vec2 Goal(MixedTrafficHandle h) => _goal[ResolveOrThrow(h)];
+
+    public double Heading(int i) => _heading[i];
+    public double Heading(MixedTrafficHandle h) => _heading[ResolveOrThrow(h)];
+
+    public VehicleClass Class(int i) => _class[i];
+    public VehicleClass Class(MixedTrafficHandle h) => _class[ResolveOrThrow(h)];
+
+    public bool IsActive(int i) => _active[i];
+    public bool IsActive(MixedTrafficHandle h) => _active[ResolveOrThrow(h)];
+
+    public void SetGoal(int i, Vec2 goal) => _goal[i] = goal;
+    public void SetGoal(MixedTrafficHandle h, Vec2 goal) => _goal[ResolveOrThrow(h)] = goal;
+
+    // True iff `h` still addresses a live (added, not yet removed) slot -- the non-throwing counterpart
+    // to the accessors above, mirroring OrcaCrowd.IsAlive / ObstacleStore.IsAlive.
+    public bool IsAlive(MixedTrafficHandle h) =>
+        h.Index >= 0 && h.Index < _count && _slotAlive[h.Index] && _generation[h.Index] == h.Generation;
+
+    // Resolves a handle to its live slot index, or throws if `h` is stale (already Removed, possibly
+    // recycled to a DIFFERENT vehicle since) or was never valid. Mirrors OrcaCrowd.ResolveOrThrow exactly
+    // -- a caller holding a stale handle is a bug, unlike Remove (see below), which is an inert no-op on
+    // a stale handle.
+    private int ResolveOrThrow(MixedTrafficHandle h)
+    {
+        if (!IsAlive(h))
+        {
+            throw new InvalidOperationException(
+                $"MixedTrafficHandle {h} is stale or invalid (crowd currently has {_count} slot(s) allocated).");
+        }
+
+        return h.Index;
+    }
+
+    // Add a vehicle; returns a stable MixedTrafficHandle (index + generation), mirroring
+    // OrcaCrowd.Add exactly. Pops a vacated slot off the free list left by a prior Remove (reusing its
+    // index, generation already bumped there) before ever growing/appending a brand new one -- O(1)
+    // either way. Initial heading defaults to face the goal. maxSpeedOverride lets a scene run a
+    // congested crawl below the class free-flow speed.
+    public MixedTrafficHandle Add(
         VehicleClass cls, Vec2 position, Vec2 goal,
         double? headingRad = null, Vec2 velocity = default, double? maxSpeedOverride = null)
     {
-        if (_count == _position.Length)
+        int i;
+        if (_freeSlots.Count > 0)
         {
-            Grow(_position.Length * 2);
+            i = _freeSlots.Pop();
+        }
+        else
+        {
+            if (_count == _position.Length)
+            {
+                Grow(_position.Length * 2);
+            }
+
+            i = _count++;
         }
 
-        var i = _count++;
         _position[i] = position;
         _velocity[i] = velocity;
         _goal[i] = goal;
@@ -174,7 +270,30 @@ public sealed class MixedTrafficCrowd
         _solveProto[i] = _shapeProto[i].Inflate(SafetyMargin);
         _active[i] = true;
         _newVelocity[i] = Vec2.Zero;
-        return i;
+        _slotAlive[i] = true;
+        return new MixedTrafficHandle(i, _generation[i]);
+    }
+
+    // Removes a vehicle in O(1): the slot stops being planned/executed (Step), stops constraining other
+    // vehicles' neighbour gathers, and stops being exposed to any query -- from the NEXT Step onward (a
+    // Remove mid-step is not a supported call pattern; call it from the same single-threaded input phase
+    // as Add, never concurrently with Step). Its slot is pushed on the free list for a later Add to
+    // recycle; every OTHER vehicle's slot/handle is completely undisturbed (no shifting, no shuffling).
+    // Inert no-op if `h` is already stale/invalid, mirroring OrcaCrowd.Remove / ObstacleStore.Remove's
+    // "inert-when-absent" contract.
+    public void Remove(MixedTrafficHandle h)
+    {
+        if (!IsAlive(h))
+        {
+            return;
+        }
+
+        var i = h.Index;
+        _slotAlive[i] = false;
+        _active[i] = false;      // belt-and-suspenders: a dead slot is never "active" either
+        _velocity[i] = Vec2.Zero;
+        _generation[i]++;         // invalidates every handle to this slot, including this one
+        _freeSlots.Push(i);
     }
 
     // Target length of a single wall obstacle box. A long wall is TILED into segments of about this
@@ -221,6 +340,31 @@ public sealed class MixedTrafficCrowd
         AddWall(tl, bl, thickness);
     }
 
+    // Cross-regime bridge (P0-2, Part B): replace the external world-disc list every vehicle avoids this
+    // step (e.g. moving pedestrians, projected to discs by the coupling) -- mirrors
+    // OrcaCrowd.SetExternalObstacles exactly. Copied into an internal buffer so the caller's span need
+    // not outlive the call; cleared by passing an empty span. Each disc's ConvexShape (a small regular
+    // polygon approximating its circle, see ExternalDiscSegments) is rebuilt here -- once per
+    // SetExternalObstacles call, not once per agent per Plan -- so the per-step cost stays O(discs), not
+    // O(agents * discs). Empty by default (this method never called) -> byte-identical to pre-P0-2.
+    public void SetExternalObstacles(ReadOnlySpan<WorldDisc> discs)
+    {
+        if (_externalDiscs.Length < discs.Length)
+        {
+            var newLen = Math.Max(discs.Length, 8);
+            _externalDiscs = new WorldDisc[newLen];
+            _externalDiscShape = new ConvexShape[newLen];
+        }
+
+        for (var d = 0; d < discs.Length; d++)
+        {
+            _externalDiscs[d] = discs[d];
+            _externalDiscShape[d] = ConvexShape.RegularPolygon(ExternalDiscSegments, discs[d].Radius);
+        }
+
+        _externalDiscCount = discs.Length;
+    }
+
     public void Step(double dt)
     {
         if (RemoveOnArrival)
@@ -247,9 +391,9 @@ public sealed class MixedTrafficCrowd
 
         for (var i = 0; i < _count; i++)
         {
-            if (!_active[i])
+            if (!_active[i] || !_slotAlive[i])
             {
-                continue;
+                continue;   // parked vehicle (stays put) or a removed/vacated slot (P0-2: contributes nothing)
             }
 
             var desired = Plan(i, dt);
@@ -265,7 +409,7 @@ public sealed class MixedTrafficCrowd
 
         for (var i = 0; i < _count; i++)
         {
-            if (!_active[i])
+            if (!_active[i] || !_slotAlive[i])
             {
                 continue;
             }
@@ -327,11 +471,20 @@ public sealed class MixedTrafficCrowd
         _velocity[i] = Vec2.Zero;
     }
 
+    public void Deactivate(MixedTrafficHandle h) => Deactivate(ResolveOrThrow(h));
+
+    // A removed/vacated slot (P0-2) is skipped -- its stale leftover position/goal must never hold this
+    // false forever (mirrors OrcaCrowd.AllArrived).
     public bool AllArrived(double epsilon)
     {
         var epsSq = epsilon * epsilon;
         for (var i = 0; i < _count; i++)
         {
+            if (!_slotAlive[i])
+            {
+                continue;
+            }
+
             if (_active[i] && (_goal[i] - _position[i]).AbsSq > epsSq)
             {
                 return false;
@@ -369,7 +522,7 @@ public sealed class MixedTrafficCrowd
             }
         }
 
-        var cap = _count + _walls.Count;
+        var cap = _count + _walls.Count + _externalDiscCount;
         if (_nbScratch.Length < cap)
         {
             Array.Resize(ref _nbScratch, cap);
@@ -423,6 +576,35 @@ public sealed class MixedTrafficCrowd
             }
 
             _nbScratch[k] = new ShapedVoSolver.ShapedAgent(centre, Vec2.Zero, shape, responsibility: 1.0);
+            _nbDistSq[k] = dsq;
+            k++;
+        }
+
+        // Cross-regime bridge (P0-2, Part B): external moving discs (e.g. pedestrians from the OTHER
+        // regime) avoided ONE-SIDED (responsibility 1.0) -- the vehicle yields fully, the other regime
+        // avoids the vehicle via its own solve. Same reach-based range test as walls (the disc's own
+        // radius can put its edge in range even when its centre is not), so a maneuvering car reacts to
+        // a moving disc velocity-awarely instead of the POC-6b per-step AddBlock approximation.
+        for (var d = 0; d < _externalDiscCount; d++)
+        {
+            var disc = _externalDiscs[d];
+            var dpos = new Vec2(disc.X, disc.Y);
+            var dsq = (dpos - pos).AbsSq;
+            var reach = NeighbourDist + disc.Radius;
+            if (dsq > reach * reach)
+            {
+                continue;
+            }
+
+            if (k == _nbScratch.Length)
+            {
+                Array.Resize(ref _nbScratch, k * 2);
+                Array.Resize(ref _nbDistSq, k * 2);
+                Array.Resize(ref _lineScratch, k * 2);
+            }
+
+            _nbScratch[k] = new ShapedVoSolver.ShapedAgent(
+                dpos, new Vec2(disc.Vx, disc.Vy), _externalDiscShape[d], responsibility: 1.0);
             _nbDistSq[k] = dsq;
             k++;
         }
@@ -598,7 +780,10 @@ public sealed class MixedTrafficCrowd
         for (var idx = 0; idx < m; idx++)
         {
             var j = useAll ? idx : candidates[idx];
-            if (j == i || !_active[j])
+            // `!_active[j]` alone already excludes a removed slot (Remove clears `_active` too); the
+            // `!_slotAlive[j]` is explicit belt-and-suspenders for the P0-2 removal path and is a no-op
+            // when Remove is never called.
+            if (j == i || !_active[j] || !_slotAlive[j])
             {
                 continue;
             }
@@ -630,7 +815,7 @@ public sealed class MixedTrafficCrowd
         _bucketCount = 0;
         for (var i = 0; i < _count; i++)
         {
-            if (!_active[i])
+            if (!_active[i] || !_slotAlive[i])
             {
                 continue;
             }
@@ -746,6 +931,7 @@ public sealed class MixedTrafficCrowd
 
     private void Grow(int newCapacity)
     {
+        var oldCapacity = _position.Length;
         Array.Resize(ref _position, newCapacity);
         Array.Resize(ref _velocity, newCapacity);
         Array.Resize(ref _goal, newCapacity);
@@ -756,6 +942,13 @@ public sealed class MixedTrafficCrowd
         Array.Resize(ref _shapeProto, newCapacity);
         Array.Resize(ref _solveProto, newCapacity);
         Array.Resize(ref _active, newCapacity);
+        Array.Resize(ref _generation, newCapacity);
+        Array.Resize(ref _slotAlive, newCapacity);
+        for (var i = oldCapacity; i < newCapacity; i++)
+        {
+            _generation[i] = 1;   // never-used slot starts at 1; 0 is reserved for MixedTrafficHandle.Invalid
+        }
+
         Array.Resize(ref _newVelocity, newCapacity);
         Array.Resize(ref _newHeading, newCapacity);
     }
