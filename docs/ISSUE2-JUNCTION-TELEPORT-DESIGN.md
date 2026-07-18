@@ -75,6 +75,34 @@ queue → jam teleport. Fixing 4a (letting the minor vehicles find gaps) should 
 clear most of the 31 jam teleports without a separate fix. (Residual creep / 2→1 lane-drop throughput to
 be re-measured only if jam does not fall after 4a.)
 
+## 4-CORRECTION (session: attempted the port) — the yield waiters are ON the junction, not the approach
+
+The §4a "blanket *approach* crossing-yield" locus was **wrong**. Logging the actual teleport events (not
+FCD presence-gaps, which miss the fast re-insert) shows every yield teleport is a vehicle **stopped on an
+internal junction lane**, e.g. `veh=129 lane=:1573_9_0 pos=14.4 wait=121 kind=Yield`. `:1573_9` is a
+**minor LEFT turn** (`-1773→1779 dir="l" state="m"`, 21.7 m internal lane). The vehicle enters the
+junction, advances to the conflict point (~pos 14), and is held there by `JunctionYieldConstraint`
+(`jyield=0.00`, all other constraints +inf) — it car-follows a foe **on the crossing internal lane**
+(`AdaptToJunctionLeader`) and waits 121 s for a gap in a continuous crossing stream, then teleports. These
+are `egoOnInternal == true` vehicles.
+
+Consequences for the attempted fix:
+- The arrival-time **approach** crossing gap-acceptance (`CrossingFoeBlocks`) is gated on `!egoOnInternal`,
+  so it never touches these vehicles — implemented and **byte-identical (613 green)** but **0 effect on the
+  repro** (still 75). Correct code, wrong locus.
+- Adding **impatience** to that approach arm **regressed the saturated-grid diagnostic**
+  (`WillPassSaturationDiagTests`: 0 → 15 stuck) with still 0 effect on the repro — impatience on the
+  *approach* decision makes vehicles enter dense junctions too aggressively → mutual block. Reverted.
+
+**Corrected root cause:** the count gap is the **on-junction minor-turner yield** — a minor left/through
+turner committed onto the junction, held at its conflict point by the crossing foe stream
+(`AdaptToJunctionLeader`), never getting a gap. SUMO clears these via (a) impatience applied to the
+*on-junction* foe decision (a long-waiting committed turner assumes the crossing foe brakes and completes)
+and/or (b) the committed-vehicle-has-priority treatment (approaching foes yield to a vehicle already on the
+junction). The fix must target `AdaptToJunctionLeader` / the on-junction branch, **not** the approach arm —
+and, unlike the approach arm, impatience there may *help* saturation (it lets committed turners clear the
+box rather than freeze). This is the next lever to try, with `WillPassSaturationDiagTests` as a co-gate.
+
 ## 4bis. The count-gap fix plan (faithful, not a cap/relabel)
 Port SUMO's arrival-time RoW into the crossing-yield arm, mirroring the existing merge arm:
 1. Compute ego's arrival/leaving window at the crossing conflict (the `getMinimalArrivalTime` machinery
