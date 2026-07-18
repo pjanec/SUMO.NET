@@ -179,8 +179,17 @@ zones along sidewalks with forced promotion; the legacy car-centric radial evac 
       Xvfb screenshot shows slate/cyan regimes distinct, rings hugging the discs, cyan promotions clustered
       at the amber interest source. (DDS transport for peds not built yet — in-process byte loopback is the
       full server→wire→IG→render proof; DDS-ped binding is a follow-up, same staging as vehicles.)
-- [ ] **P7-3** City3D (Godot 3D) ped render — in-process (`SimSource`) + remote (`Reconstructor`/DDS);
-      ground placement, heading, GPU LOD-cull
+- [x] **P7-3** City3D (Godot 3D) ped render — CityLib gains `PedSimSource` (ped server-sim + byte-loopback
+      wire, mirrors `SimSource`), `PedReconstructor` (wraps `PedRemoteReconstructor` → `ReconstructedPed` in
+      Godot space via the one `CoordinateTransform`), `PedTransform`/`PedInstance` (ground-seated slim
+      avatar, mirrors `CarTransform`) — all Godot-free; `Viewer/Main.cs` gains a `--peds` path (early-return
+      gated, existing vehicle path untouched) with one ped `MultiMeshInstance3D` coloured by regime.
+      In-process byte-loopback path (the full server→wire→IG→render proof); **DDS-ped transport deferred** —
+      `Sim.Replication.Dds` has no ped topics (design "#### Pedestrians (P7-3)"). Verified first-hand:
+      `CityLib.Tests` 48 pass (41+7 new, incl. an end-to-end real-wire test with a `sawAnyPed` anti-vacuous
+      guard); in-sln gate 596/139/2/1 green (nothing in-sln touched); `screenshot.sh out.png --peds
+      --shot-delay=10` (Xvfb+llvmpipe, Godot 4.7.1) renders slim slate/cyan avatars on the plaza with
+      `peds=14 highPower=4` — both regimes distinct. *(user explicitly wanted Godot done here)*
 
 ## Stage P8 — Subarea integration (SumoData compatibility)
 
