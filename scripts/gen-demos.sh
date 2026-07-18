@@ -285,6 +285,9 @@ try ped-liveliness "Liveliness (activity timeline replay)" \
 try ped-social "Meet & talk (pre-scheduled two-ped interaction)" \
   "Pairs of walkers on converging approaches are paired up front by SocialPlanner: both step aside to opposite sides of the flow, face each other, and talk for a shared time window, then resume their own onward route -- authored together at schedule time with no runtime negotiation, so it stays exactly as low-power and IG-reproducible as a solo walker (LIVE-POC-2, ActivityTimeline Interact)." \
   "Pedestrians" demo_ped social ped-social
+try ped-waiter "Waiter (micro-scenario actor)" \
+  "A waiter emerges from a restaurant's service door, walks to a table in a seed-varied rotation, dwells to serve it, walks back, and dwells inside (no disc) before the next round -- a single templated, looping ActivityTimeline, so the scripted actor stays exactly as low-power and server==IG-reconstructable as a solo walker (LIVE-POC-3, WaiterScenario)." \
+  "Pedestrians" demo_ped waiter ped-waiter
 
 # Integration & driver behavior
 try ballistic-integration "Ballistic integration" \

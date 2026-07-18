@@ -26,7 +26,12 @@ once the POCs converge.
       earlier ped's approach re-timed so neither waits; `--ped-social` scene; 6 tests inc. exact
       server==IG sweep (744 samples/ped), identical-window coordination, exact √2/2 stepped-aside
       identity; 589 parity + 97 ped green)*
-- [ ] **LIVE-POC-3** — waiter micro-scenario (templated scripted actor serving open-air tables)
+- [x] **LIVE-POC-3** — waiter micro-scenario (templated scripted actor serving open-air tables)
+      *(`WaiterScenario.Build` = a pure looping `ActivityTimeline` anchored to (door, table-cluster):
+      emerge → Walk→Dwell(serve)→Walk→hidden Dwell(inside), tables in a closed-form seed-rotation that
+      serves each exactly once per cycle; `--ped-waiter` scene (building + seated patrons + waiter,
+      hidden between rounds); 4 tests inc. exact server==IG sweep, serves-every-table, inside=hidden;
+      589 parity + 101 ped green)*
 - [ ] **LIVE-POC-4** — auto-deduced liveliness demand in a subarea + density knob + shared-mask legitimacy
       (after Stage P8 + a real cropped box; zero on-camera pops audited)
 

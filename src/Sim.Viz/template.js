@@ -68,13 +68,14 @@
     14: "#eab308", // paused/idle liveliness pedestrian (ActivityTimeline Pause / idle clamp)
     15: "#22d3ee", // dwelling/seated liveliness pedestrian (ActivityTimeline Dwell, visible)
     16: "#f472b6", // pre-scheduled two-ped interaction (ActivityTimeline Interact, "talk")
+    17: "#fbbf24", // LIVE-POC-3 waiter micro-scenario actor
   };
   var DISC_LABELS = {
     0: "stream / agent A", 1: "stream / agent B", 2: "pedestrian", 3: "pedestrian (rerouting)",
     9: "pedestrian (low-power / PathArc)", 10: "pedestrian (promoted / full ORCA)",
     11: "interest source", 12: "obstacle", 13: "maneuvering car",
     14: "pedestrian (paused / idle)", 15: "pedestrian (dwelling / seated)",
-    16: "pedestrian (talking)",
+    16: "pedestrian (talking)", 17: "pedestrian (waiter)",
   };
 
   // Speed heatmap: cold (slow) -> hot (fast), 0..cap m/s.

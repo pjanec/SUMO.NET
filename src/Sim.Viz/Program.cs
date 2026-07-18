@@ -42,6 +42,7 @@ internal static class Program
             Console.Error.WriteLine("       Sim.Viz --ped-parking <outPath>");
             Console.Error.WriteLine("       Sim.Viz --ped-liveliness <outPath>");
             Console.Error.WriteLine("       Sim.Viz --ped-social <outPath>");
+            Console.Error.WriteLine("       Sim.Viz --ped-waiter <outPath>");
             return args.Length == 0 ? 2 : 0;
         }
 
@@ -58,6 +59,7 @@ internal static class Program
             "--ped-parking" => RunPedParking(args),
             "--ped-liveliness" => RunPedLiveliness(args),
             "--ped-social" => RunPedSocial(args),
+            "--ped-waiter" => RunPedWaiter(args),
             _ => RunSingle(args),
         };
     }
@@ -142,6 +144,64 @@ internal static class Program
         Console.WriteLine(
             $"wrote {outPath}  ({size} bytes)  frames={scene.Frames.Length} maxConcurrentDiscs={maxDiscs} " +
             $"everTalked={everTalked} firstTalkTime={firstTalkTime:F2}");
+        return 0;
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // Pedestrian showcase: "Waiter" (LIVE-POC-3, docs/PEDESTRIAN-LIVELINESS-DESIGN.md §7, §12).
+    // ---------------------------------------------------------------------------------------
+    private static int RunPedWaiter(string[] args)
+    {
+        if (args.Length < 2)
+        {
+            Console.Error.WriteLine("error: --ped-waiter requires an output path");
+            return 2;
+        }
+
+        var outPath = args[1];
+        var scene = SceneGen.BuildWaiter();
+        var payload = new ReplayData(new[] { scene });
+        if (!WriteHtml(payload, scene.Name, outPath))
+        {
+            return 2;
+        }
+
+        var maxDiscs = 0;
+        var minDiscs = int.MaxValue;
+        foreach (var frame in scene.Frames)
+        {
+            var n = 0;
+            foreach (var d in frame.D) if (d is not null) n++;
+            if (n > maxDiscs) maxDiscs = n;
+            if (n < minDiscs) minDiscs = n;
+        }
+
+        // Independent evidence (not the render path): rebuild the SAME waiter ActivityTimeline
+        // (SceneGen.BuildWaiterTimeline is the single source of truth both the scene and this report
+        // reconstruct from) and scan it directly for a hidden (inside) instant and a visible-serving
+        // instant, reporting the first of each found.
+        var waiterTimeline = SceneGen.BuildWaiterTimeline();
+        var hiddenTime = -1.0;
+        var servingTime = -1.0;
+        const double reportDt = 0.05;
+        for (var now = 0.0; now <= waiterTimeline.EndTime && (hiddenTime < 0.0 || servingTime < 0.0); now += reportDt)
+        {
+            var sample = waiterTimeline.PoseAt(now);
+            if (hiddenTime < 0.0 && !sample.Visible)
+            {
+                hiddenTime = now;
+            }
+
+            if (servingTime < 0.0 && sample.Visible && sample.AnimTag == Sim.Pedestrians.Lod.WaiterScenario.ServeAnimTag)
+            {
+                servingTime = now;
+            }
+        }
+
+        var size = new FileInfo(outPath).Length;
+        Console.WriteLine(
+            $"wrote {outPath}  ({size} bytes)  frames={scene.Frames.Length} maxConcurrentDiscs={maxDiscs} " +
+            $"minConcurrentDiscs={minDiscs} firstHiddenTime={hiddenTime:F2} firstServingTime={servingTime:F2}");
         return 0;
     }
 

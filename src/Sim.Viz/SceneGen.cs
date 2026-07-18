@@ -34,6 +34,7 @@ internal static class SceneGen
     internal const int KindPedPaused = 14;     // #eab308 -- ActivityTimeline Pause / idle-clamp pedestrian
     internal const int KindPedDwellSit = 15;   // #22d3ee -- ActivityTimeline Dwell(visible) pedestrian
     internal const int KindPedTalk = 16;       // #f472b6 -- ActivityTimeline Interact ("talk") pedestrian
+    internal const int KindPedWaiter = 17;     // #fbbf24 -- LIVE-POC-3 waiter micro-scenario actor
 
     // ---------------------------------------------------------------------------------------
     // Scene C -- "Car avoids a pedestrian": the cross-regime bridge. A laneless-RVO lane vehicle
@@ -691,6 +692,152 @@ internal static class SceneGen
             + "negotiation between the two peds: replay is still just ActivityTimeline.PoseAt(now), so "
             + "server == IG and the pair stays exactly as low-power as a solo walker. Pink = talking.",
             new double[] { -22, -20, 22, 20 },
+            null,
+            new double[] { 0, 0 },
+            dt,
+            frames.ToArray());
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // Scene -- "Waiter" (LIVE-POC-3, docs/PEDESTRIAN-LIVELINESS-DESIGN.md §7, §12): a templated,
+    // scripted, low-power actor bound to a (building, table-cluster) anchor. A restaurant building
+    // (drawn as a static box, KindObstacle reused for the footprint) has a service door on its near
+    // edge; an open-air cluster of tables sits in front of it, each with 1-2 seated patrons -- their
+    // OWN long-lived visible Dwell ActivityTimelines (KindPedDwellSit, exactly LIVE-POC-1's "seated"
+    // rendering). The waiter itself is a SINGLE WaiterScenario.Build(...) timeline: it emerges from the
+    // door, walks to a table, Dwell(serve), walks back, Dwell(inside, hidden) -- and loops, visiting
+    // tables in the scenario's seed-varied rotation. Nothing here runs a behavior loop: every frame just
+    // calls ActivityTimeline.PoseAt(now) per actor (patrons AND waiter), exactly like BuildLiveliness/
+    // BuildSocial -- so the waiter is exactly as low-power and server==IG-reconstructable as a solo
+    // walker. The waiter's disc (KindPedWaiter) is omitted entirely while its sampled Visible is false
+    // (the hidden inside-dwell, §6) -- "gone inside, no cheating", the same rule BuildLiveliness's
+    // building draws on.
+    // ---------------------------------------------------------------------------------------
+    // Restaurant building footprint (a static box, drawn via the shared KindObstacle box encoding) and
+    // the table cluster in front of it -- shared, closed-form layout constants so Program.cs's report
+    // can rebuild the EXACT same waiter ActivityTimeline (via BuildWaiterTimeline below) for its
+    // hidden/serving evidence without duplicating a second copy of these numbers.
+    private static readonly Vec2 WaiterBuildingCenter = new(0.0, -7.0);
+    private const double WaiterBuildingHalfLen = 6.0; // half-extent along X
+    private const double WaiterBuildingHalfWid = 3.0; // half-extent along Y
+    private static readonly Vec2 WaiterDoorPos = new(0.0, WaiterBuildingCenter.Y + WaiterBuildingHalfWid); // (0, -4)
+
+    private static readonly Vec2[] WaiterTables =
+    {
+        new(-4.5, 1.0),
+        new(-1.5, 2.5),
+        new(1.5, 2.5),
+        new(4.5, 1.0),
+    };
+
+    private const double WaiterSpeed = 1.6;
+    private const double WaiterServeSeconds = 3.0;
+    private const double WaiterInsideSeconds = 2.0;
+    private const int WaiterLoops = 6;
+    private const ulong WaiterSeed = 20260718UL;
+
+    // The waiter's own micro-scenario timeline -- ONE WaiterScenario.Build call, the single source of
+    // truth both BuildWaiter (rendering) and Program.cs's --ped-waiter report (hidden/serving evidence)
+    // reconstruct from, so the two can never drift apart.
+    internal static ActivityTimeline BuildWaiterTimeline()
+    {
+        var cfg = new WaiterScenarioConfig(
+            WaiterDoorPos, WaiterTables, StartTime: 0.0, WaiterSpeed, WaiterServeSeconds, WaiterInsideSeconds,
+            WaiterLoops, WaiterSeed);
+        return WaiterScenario.Build(cfg);
+    }
+
+    internal static ScenePayload BuildWaiter()
+    {
+        const double dt = 0.15;
+        const double pedRadius = 0.3;
+
+        var buildingCenter = WaiterBuildingCenter;
+        const double buildingHalfLen = WaiterBuildingHalfLen;
+        const double buildingHalfWid = WaiterBuildingHalfWid;
+        var tables = WaiterTables;
+
+        // 1-2 seated patrons per table (alternating), each a static (whole-clip) visible Dwell --
+        // its own ActivityTimeline, unrelated to the waiter's, rendered exactly like BuildLiveliness's
+        // "sit" dwells. Patron seats are offset a little off the table's own centre (the waiter's exact
+        // serve pose) so the two kinds of disc don't fully coincide.
+        var waiterTimeline = BuildWaiterTimeline();
+
+        var clipDuration = waiterTimeline.EndTime + 3.0;
+
+        var patronTimelines = new List<ActivityTimeline>();
+        var seatOffsets = new[] { new Vec2(-0.7, 0.4), new Vec2(0.7, -0.4) };
+        for (var t = 0; t < tables.Length; t++)
+        {
+            var seatCount = t % 2 == 0 ? 2 : 1;
+            for (var s = 0; s < seatCount; s++)
+            {
+                var seatPos = tables[t] + seatOffsets[s];
+                var toTable = tables[t] - seatPos;
+                var heading = toTable.Abs > 1e-9 ? toTable.Normalized() : Vec2.Zero;
+                var segments = new ActivitySegment[]
+                {
+                    new DwellSegment(seatPos, heading, clipDuration + 10.0, "sit", Visible: true),
+                };
+                patronTimelines.Add(new ActivityTimeline(0.0, segments));
+            }
+        }
+
+        var steps = (int)(clipDuration / dt) + 1;
+        var snapshots = new List<List<(string Key, double[] Disc)>>(steps);
+
+        for (var step = 0; step < steps; step++)
+        {
+            var now = step * dt;
+            var discs = new List<(string, double[])>(patronTimelines.Count + 2);
+
+            // The building footprint -- static every frame, drawn as a box via the shared obstacle
+            // disc encoding [x, y, radius, kind, angleDeg, shape, halfLen, halfWid].
+            discs.Add(("building", new[]
+            {
+                R(buildingCenter.X), R(buildingCenter.Y), 1.0, (double)KindObstacle, 0.0, 0.0,
+                buildingHalfLen, buildingHalfWid,
+            }));
+
+            for (var p = 0; p < patronTimelines.Count; p++)
+            {
+                var sample = patronTimelines[p].PoseAt(now);
+                if (sample.Visible)
+                {
+                    discs.Add(($"patron{p}", new[] { R(sample.Pos.X), R(sample.Pos.Y), pedRadius, (double)KindPedDwellSit }));
+                }
+            }
+
+            var waiterSample = waiterTimeline.PoseAt(now);
+            if (waiterSample.Visible)
+            {
+                discs.Add(("waiter", new[] { R(waiterSample.Pos.X), R(waiterSample.Pos.Y), pedRadius, (double)KindPedWaiter }));
+            }
+
+            snapshots.Add(discs);
+        }
+
+        var frames = new List<FramePayload>(snapshots.Count);
+        var noVehicles = Array.Empty<double[]?>();
+        foreach (var _ in snapshots)
+        {
+            frames.Add(new FramePayload(noVehicles, Array.Empty<double[]?>()));
+        }
+
+        AssignStableDiscSlots(frames, snapshots);
+
+        // Tight framing (tens of metres) around the building + table cluster -- a phone-watchable
+        // close-up of the one micro-scenario, the same "not the whole net" discipline BuildObstacleDodge/
+        // BuildCrossingReroute use.
+        return new ScenePayload(
+            "Waiter",
+            "LIVE-POC-3: a templated, scripted micro-scenario actor. A waiter emerges from the "
+            + "restaurant's service door, walks to a table in the seed-varied rotation, Dwells (serves) "
+            + "there, walks back, and Dwells (goes inside, no disc) before the next round -- all from ONE "
+            + "WaiterScenario.Build(...) ActivityTimeline, so it stays exactly as low-power and "
+            + "server==IG-reconstructable as a solo walker. Seated patrons (cyan) are their own static "
+            + "Dwell timelines. Amber = the waiter (visible only outside the building).",
+            new double[] { -9.0, -12.0, 9.0, 7.0 },
             null,
             new double[] { 0, 0 },
             dt,
