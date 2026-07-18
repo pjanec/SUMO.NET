@@ -103,7 +103,18 @@ public sealed class PedLodManager
         _arriveRadius = arriveRadius;
         _dwellSeconds = dwellSeconds;
         _steering = steering ?? new WaypointFollower();
-        _highCrowd = new OrcaCrowd();
+
+        // P0-4 (docs/PEDESTRIAN-POC7C-FINDINGS.md follow-up hypothesis; docs/PEDESTRIAN-DESIGN.md §9):
+        // the persistent high-power crowd was constructed bare (UseSpatialHash defaults to false), so
+        // every Plan() neighbour gather brute-force-scanned the WHOLE crowd -- O(n^2) for the ~10k
+        // high-power agents this manager is built to hold at scale. UseSpatialHash is a proven
+        // bit-identical pre-filter (OrcaSpatialHashTests): it changes candidate discovery from a full
+        // scan to a 3x3-cell gather, sorted to the SAME order the brute-force scan would visit, so the
+        // neighbour set (and hence every trajectory) is unchanged -- only the wall-clock cost drops.
+        // This manager never calls AddObstacle on `_highCrowd` (no static walls in the LOD population),
+        // so UseObstacleSpatialIndex is left off (inert either way, but there is nothing for it to
+        // accelerate here).
+        _highCrowd = new OrcaCrowd { UseSpatialHash = true };
         _highController = new PedRouteController(_highCrowd, _steering, _arriveRadius);
     }
 
@@ -136,6 +147,13 @@ public sealed class PedLodManager
     public PedDrModel ModelOf(int id) => _peds[id].Model;
 
     public int HighPowerCount => _highPowerLiveCount;
+
+    // Diagnostic-only (P0-4 investigation, docs/PEDESTRIAN-POC7C-FINDINGS.md follow-up hypothesis):
+    // the persistent `_highCrowd`'s slot high-water mark (OrcaCrowd.Count -- the number of slots EVER
+    // allocated, not the live count), for benchmarks/tests to compare against HighPowerCount and
+    // quantify how far the high-water mark has drifted above the live count after a churn spike. Never
+    // consulted by Step() itself; purely observability.
+    public int HighCrowdSlotHighWater => _highCrowd.Count;
 
     // The ped's current world position: for Low-power this is the pure PathArcMotion function
     // evaluated AT `now` (so it can be queried for any `now`, not just at a Step boundary); for
