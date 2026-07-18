@@ -7,6 +7,24 @@ Legend: `[ ]` not started · `[~]` in progress · `[x]` done · `[!]` blocked/ne
 
 ---
 
+## Liveliness (believability) — design done, POCs in progress
+
+Design of record: `PEDESTRIAN-LIVELINESS-DESIGN.md` (deterministic activity-timeline replay generalizing
+the PathArc trick; stays low-power; POI net-data). POC plan in its §12; graduates to production tasks
+once the POCs converge.
+
+- [x] `PEDESTRIAN-LIVELINESS-DESIGN.md` — design + POC plan (Walk/Pause/Dwell/Interact timeline, animation
+      tags, POI schema, social planner, buildings-as-sinks, micro-scenarios, subarea §11)
+- [~] **LIVE-POC-1** — Walk+Pause+Dwell activity timeline, server==IG deterministic (`ActivityTimeline`
+      generalizing `PathArcMotion`; `--ped-liveliness` Sim.Viz scene; sweep test asserting exact
+      server==IG over the whole timeline; `visible:false` window exposes no disc)
+- [ ] **LIVE-POC-2** — pre-scheduled two-ped Interact (meet, step aside, "talk", resume) — server==IG
+- [ ] **LIVE-POC-3** — waiter micro-scenario (templated scripted actor serving open-air tables)
+- [ ] **LIVE-POC-4** — auto-deduced liveliness demand in a subarea + density knob + shared-mask legitimacy
+      (after Stage P8 + a real cropped box; zero on-camera pops audited)
+
+---
+
 ## Design & POC phase — COMPLETE
 
 - [x] `PEDESTRIAN-OVERVIEW.md` (WHAT), `PEDESTRIAN-DESIGN.md` (HOW), `PEDESTRIAN-POC-PLAN.md` (experiments)
