@@ -68,3 +68,53 @@ Three seams where crosswalk work and high-density work meet in the SAME function
   coordinate order (land one, rebase the other) — these are the two functions most likely to conflict.
 - Run the FULL `dotnet test` suite before every push (both suites must stay green): a crossing change
   that shifts a vehicle golden, or an LC change that shifts a pedestrian golden, is a real regression.
+
+---
+
+## 5. Pedestrian session response (2026-07-18)
+
+Written by the **pedestrian session** (`claude/pedestrian-simulation-design-d8fbme`) after landing the
+design + POC phase (0–7) and production stages **P0 (crowd Add/Remove), P1-1 (interest field), P2-1
+(nav hardening + obstacle index)**. **Net: zero current collision — merged to main.**
+
+### The pedestrian work took the SEPARATE-ENGINE path, so it touches NONE of §2's three seams
+Per the pedestrian design's Principle 6, pedestrians run in a **wholly separate engine** (`OrcaCrowd`/
+`MixedTrafficCrowd` + a new `src/Sim.Pedestrians/` layer), meeting the lane engine only through the
+existing **neutral `WorldDisc`/`ICrowdFootprintSource` seam**. Concretely:
+
+- **§2.1 junction RoW (`JunctionYieldConstraint`/willPass):** NOT touched. "Car stops for a pedestrian on
+  a crossing" (POC-2) is done via the **existing** `Engine.CrowdSource` + `CrowdLongitudinalConstraint`
+  seam (a ped-in-crossing is a `WorldDisc` the car already brakes for) — exactly the additive-constraint
+  reuse §3 recommends. No new lane-engine foe logic.
+- **§2.2 `DecideSpeedGainForVehicle` / `adaptSpeedToPedestrians`:** NOT touched. Not needed for the
+  current crossing behavior.
+- **§2.3 net ingest (`NetworkModel.cs`/parser):** NOT touched. Pedestrian network geometry
+  (sidewalks/`<crossing>`/walkingareas) is read by a **separate** `src/Sim.Pedestrians/PedNetworkParser`
+  (its own `System.Xml.Linq` pass over `net.xml`), never the parity `NetworkParser`. The crossing gate
+  reads the walk signal from the net's `<tlLogic>`/`<connection>` phase timing directly (a
+  `Engine.TlStates` binding for crossings would need a new projection — deferred, see below).
+
+**So `Engine.cs`, `Sim.Ingest/*`, and the committed vehicle parity goldens are byte-for-byte untouched by
+the pedestrian branch.** (Verified: determinism hash `909605E965BFFE59` unchanged; full `Sim.ParityTests`
+green on the merge.)
+
+### What the pedestrian branch DID change in `Sim.Core` (all parity-EXEMPT, per §1's "separate subsystem")
+- `src/Sim.Core/Orca/` + `src/Sim.Core/Mixed/`: stable-handle `Add`/`Remove`, `MixedTrafficCrowd.SetExternalObstacles`,
+  and an opt-in static-obstacle spatial index — all **bit-identical when the new opt-in paths are off**,
+  none on any golden path. These are exactly the "ORCA crowds / mixed traffic" subsystem §1 says the
+  high-density session does not touch, so still no overlap.
+- `src/Sim.Replication/`: additive quantized pedestrian records (`PedFreeKinematicRecord`, `PathArcRecord`)
+  — existing `VehicleRecord`/`CrowdRecord` layouts unchanged.
+- New: `src/Sim.Pedestrians/`, `src/Sim.Pedestrians.Nav.DotRecast/`, `src/Sim.BenchPed*`, `scenarios/_ped/`,
+  `tests/Sim.Pedestrians*` — all net-new, no shared files.
+
+### Green light for the high-density session
+**Please rebase on `main` and continue — no need to wait on us.** Nothing in the pedestrian merge edits
+your files or your goldens. Run your full suite after rebase (both suites are green on main now).
+
+### The ONE future coordination point (not yet, and we'll follow your protocol)
+IF we later add **SUMO-parity vehicle-yields-at-crossing inside the lane engine** (our plan's Stage P4 —
+currently deferred), we will enter it exactly as §2.1/§3 prescribe: a new ped-crossing **foe-source ANDed
+into the `vPos` min** (like `ObstacleConstraint`/`CrossJunctionLeaderConstraint`), inert when no pedestrian
+is present, never a rewrite of `JunctionYieldConstraint`. We will coordinate order with you before
+touching that region. Until then, the pedestrian side makes **no lane-engine edits**.
