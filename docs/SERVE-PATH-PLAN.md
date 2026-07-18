@@ -238,6 +238,37 @@ byte-identical; only `scenarios/69-*` new.**
 (blocked), it clamps at the edge end on-lane rather than in the lot. The strategic LC handles the normal
 case; the true validation is the SumoData re-run of the definitive acceptance test.
 
+## Post-acceptance: Issue 2 (junction jam-teleports) — FIXED (it was the parking path all along)
+
+The sumo-core session diagnosed (`docs/ISSUE2-JUNCTION-KEEPCLEAR-DESIGN.md`) that Issue 2 is **not** a
+junction right-of-way defect: stripping the `<stop parkingArea>` from the sink cars drops jam-teleports
+21→0. The root cause is the **same parking path as Issue 1** — GAP-3's `IsParked` off-lane exclusion was
+**incomplete**: it removed a parked car only from the plan-phase neighbor query
+(`LaneNeighborQuery`), but the `ActiveVehicles()`-based cross-junction/merge/foe/occupancy scans in
+`Engine.cs` still treated it as an on-lane blocker, so through-traffic wedged the junction → deadlock →
+jam-teleport. So the core session stood down and this work folded here.
+
+**Fix (Opus-reviewed hard):** a parked (`IsParked`) vehicle is now skipped in every scan that can hold
+back a *moving* vehicle by lane position (SUMO's `MSVehicleTransfer` off-lane semantics), while it stays
+in the FCD and the `running` count. The load-bearing sites: `RearmostOnLaneAmongActive` (cross-junction
+insertion leader), `FindRearmostOnLane` (`SameTargetMergeConstraint`'s merge-target leader — the actual
+live-traffic wedge), `BuildFoeApproachIndex` (phantom-foe registration), the insertion-leader/`getFreeLane`
+occupancy tallies, and the teleport-reinsertion gap scan — all **gated on `IsParked`** (byte-identical
+without a parked car). FCD/export/`running` untouched. keepClear and `TryStrategicLaneChange` untouched.
+
+Acceptance: `scenarios/70-parked-passable` (a priority cross with a roadside parkingArea on the major
+exit lane, through-traffic that must pass + a genuine `time-to-teleport=60` so a block *would* teleport),
+golden from **SUMO 1.20.0** with `teleports jam="0"`. `RungHDgap3ParkedPassableTests` asserts FCD parity,
+through-speed >1 m/s at the parked car's position, residency, and jam-count == golden (0). **Verified
+first-hand: full suite 608 parity (+4) / 3 skipped; junction 08/11/26/27/34/38/39/40 + parking
+48/66/67/68/69 + determinism byte-identical; only `scenarios/70-*` new. Independently re-ran the synthetic
+grid through `sumosharp`: jam-teleports 21 → 0 (vanilla 0), mean rel-speed now 0.73 (was 0.41).**
+
+*Still open — Issue 1 residency tail:* completed-tripinfo on the grid is now *more* visible (1334→1351)
+because the deadlock no longer masks it — the sinks that overshoot the parking lane (they never
+strategically lane-change onto it) still wrongly complete. That is the **cross-edge strategic-LC** pass
+(next), separate from this off-lane fix.
+
 ## All three gaps landed — definitive acceptance status
 
 GAP-1→GAP-3 are complete and golden-verified against vanilla SUMO 1.20.0. The `sumosharp` binary now

@@ -2944,10 +2944,12 @@ public sealed partial class Engine : IEngine
                 }
             }
 
+            // GAP-3 follow-up: a parked vehicle is off the lane in SUMO (MSVehicleTransfer), so it
+            // must not count toward getBruttoOccupancy's departLane="best" tie-break either.
             var occupancy = 0.0;
             foreach (var other in ActiveVehicles())
             {
-                if (other.LaneHandle == laneHandle)
+                if (!other.IsParked && other.LaneHandle == laneHandle)
                 {
                     occupancy += other.VType.Length + other.VType.MinGap;
                 }
@@ -3150,10 +3152,12 @@ public sealed partial class Engine : IEngine
         // inserted, not-arrived vehicle with Pos >= insertPos on this lane -- includes any
         // vehicle inserted earlier THIS SAME step, since this re-scans _vehicles (the engine's
         // authoritative list) on every call rather than a stale snapshot.
+        // GAP-3 follow-up: skip IsParked -- a parked vehicle is off the lane (MSVehicleTransfer),
+        // so it must not act as the insertion leader either (gated, byte-identical elsewhere).
         VehicleRuntime? leader = null;
         foreach (var other in ActiveVehicles())
         {
-            if (other.LaneHandle != laneHandle)
+            if (other.IsParked || other.LaneHandle != laneHandle)
             {
                 continue;
             }
@@ -3323,9 +3327,12 @@ public sealed partial class Engine : IEngine
                 continue;
             }
 
+            // GAP-3 follow-up: a parked vehicle is off-lane, so it cannot occupy the bidi track
+            // either (gated on IsParked; no committed rail scenario ever sets it, so this is a
+            // no-op safety net, not an observed golden change).
             foreach (var other in ActiveVehicles())
             {
-                if (other.LaneId == bidiLaneId)
+                if (!other.IsParked && other.LaneId == bidiLaneId)
                 {
                     return true;
                 }
@@ -3458,9 +3465,11 @@ public sealed partial class Engine : IEngine
         var red = false;
         foreach (var conflictLaneHandle in conflictLaneHandles)
         {
+            // GAP-3 follow-up: a parked vehicle is off-lane, so it cannot hold a rail signal red
+            // either (gated on IsParked; no committed rail scenario ever sets it).
             foreach (var other in ActiveVehicles())
             {
-                if (ReferenceEquals(other, v))
+                if (other.IsParked || ReferenceEquals(other, v))
                 {
                     continue;
                 }
@@ -3658,9 +3667,11 @@ public sealed partial class Engine : IEngine
             var occupied = false;
             foreach (var viaLaneHandle in _railCrossingViaLaneHandles[crossing])
             {
+                // GAP-3 follow-up: a parked vehicle is off-lane, so it cannot hold a rail crossing
+                // closed either (gated on IsParked; no committed rail scenario ever sets it).
                 foreach (var other in ActiveVehicles())
                 {
-                    if (VehicleBodyOccupies(other, viaLaneHandle))
+                    if (!other.IsParked && VehicleBodyOccupies(other, viaLaneHandle))
                     {
                         occupied = true;
                         break;
@@ -3787,11 +3798,22 @@ public sealed partial class Engine : IEngine
     // Cross-junction insertion helper: the rearmost (smallest-Pos) active vehicle on a lane handle,
     // scanned directly from the engine's vehicle list (the neighbor query is not yet refilled when
     // InsertDepartingVehicles runs at the top of the step). Mirrors LaneNeighborQuery.GetRearmost.
+    // GAP-3 follow-up (ISSUE2-JUNCTION-KEEPCLEAR-DESIGN.md): this ActiveVehicles() scan does NOT go
+    // through LaneNeighborQuery, so it does not inherit that query's IsParked exclusion -- skip parked
+    // vehicles here too, or a park-and-stay car on a downstream/exit lane is wrongly returned as the
+    // cross-junction leader (TryFindCrossJunctionLeader's insertion-time ActiveRearmost source), making
+    // an approaching/inserting vehicle brake for a car that, in SUMO, is off the lane entirely. Gated on
+    // IsParked (default false), so byte-identical for every scenario without a parked vehicle.
     private VehicleRuntime? RearmostOnLaneAmongActive(int laneHandle)
     {
         VehicleRuntime? rearmost = null;
         foreach (var other in ActiveVehicles())
         {
+            if (other.IsParked)
+            {
+                continue;
+            }
+
             if (other.LaneHandle == laneHandle
                 && (rearmost is null || other.Kinematics.Pos < rearmost.Kinematics.Pos))
             {
@@ -6768,12 +6790,17 @@ public sealed partial class Engine : IEngine
 
     // C4-iv phase-2 helper: the rearmost vehicle (smallest Pos = ego's immediate downstream leader)
     // CURRENTLY on the given lane, excluding ego. Frozen start-of-step snapshot.
+    // GAP-3 follow-up: this is a raw ActiveVehicles() scan (not the parked-excluding neighbor
+    // query), used as the merge-target-lane LEADER for a vehicle merging onto a shared exit lane a
+    // foe has already crossed onto -- the exact E1D1_0-style exit-lane case the off-lane fix targets.
+    // Skip IsParked so a park-and-stay car on the shared target lane cannot wrongly act as this
+    // leader (gated, byte-identical elsewhere).
     private VehicleRuntime? FindRearmostOnLane(VehicleRuntime ego, ActiveVehicleQuery allVehicles, string laneId)
     {
         VehicleRuntime? rearmost = null;
         foreach (var other in allVehicles)
         {
-            if (ReferenceEquals(other, ego) || other.LaneId != laneId)
+            if (other.IsParked || ReferenceEquals(other, ego) || other.LaneId != laneId)
             {
                 continue;
             }
@@ -7019,6 +7046,18 @@ public sealed partial class Engine : IEngine
         Array.Clear(_foeApproachSecond, 0, _foeApproachSecond.Length);
         foreach (var v in ActiveVehicles())
         {
+            // GAP-3 follow-up (ISSUE2-JUNCTION-KEEPCLEAR-DESIGN.md): a parked (park-and-stay) vehicle
+            // is off the lane in SUMO -- it must not register as a "foe approaching" some internal
+            // lane still ahead in its (never-to-be-driven, while parked) remaining route. Left
+            // unguarded, a park-and-stay car with unresolved downstream route lanes would show up as
+            // a permanent phantom foe that a real vehicle yields to forever -- exactly the deadlock
+            // pattern the off-lane exclusion exists to prevent. Gated on IsParked (default false), so
+            // byte-identical for every scenario without a parked vehicle.
+            if (v.IsParked)
+            {
+                continue;
+            }
+
             for (var i = 0; i < v.LaneSeqLen; i++)
             {
                 var h = _laneSeqPool[v.LaneSeqStart + i];
@@ -10195,6 +10234,8 @@ public sealed partial class Engine : IEngine
     // P1F-2: MSEdge::getFreeLane analog (reduced) -- the least-occupied lane of `edge` (fewest
     // active vehicles), ties broken by lowest lane index. For the committed single-lane jam this
     // is always lane 0. Returns null only for an edge with no lanes (never in scope).
+    // GAP-3 follow-up: a parked vehicle is off the lane in SUMO, so it must not count toward this
+    // getFreeLane occupancy tally either (gated on IsParked, byte-identical elsewhere).
     private Lane? SelectFreeLane(Edge edge)
     {
         Lane? best = null;
@@ -10205,7 +10246,7 @@ public sealed partial class Engine : IEngine
             var count = 0;
             foreach (var other in ActiveVehicles())
             {
-                if (other.LaneHandle == lane.Handle)
+                if (!other.IsParked && other.LaneHandle == lane.Handle)
                 {
                     count++;
                 }
@@ -10241,10 +10282,12 @@ public sealed partial class Engine : IEngine
 
         // Rearmost active vehicle already on the target lane (MSLane::freeInsertion's leader-gap
         // check, reduced to the last-vehicle branch -- sufficient for the P1-F queue-drain case).
+        // GAP-3 follow-up: skip IsParked -- a parked vehicle is off-lane, so it cannot supply the
+        // teleport re-insertion gap either (gated, byte-identical elsewhere).
         VehicleRuntime? rearmost = null;
         foreach (var other in ActiveVehicles())
         {
-            if (other.LaneHandle != lane.Handle)
+            if (other.IsParked || other.LaneHandle != lane.Handle)
             {
                 continue;
             }
