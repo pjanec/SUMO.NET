@@ -70,7 +70,12 @@ public sealed record Connection(
     int ToLane,
     string? Via,
     string? Tl,
-    int? LinkIndex);
+    int? LinkIndex,
+    // Issue-2 teleport classification: the netconvert <connection state="..."> char. Uppercase
+    // (M/G/...) == a priority link (MSLink::havePriority, myState >= 'A' && <= 'Z'); lowercase
+    // (m/g/s/w/r/y) == a minor/yield link. Null when the attribute is absent (pre-existing goldens
+    // that never read this field are unaffected). Consumed only by the jam/yield teleport split.
+    string? State = null);
 
 // Rung 10: one <phase> of a <tlLogic>, ported from sumo/src/microsim/traffic_lights/
 // MSSimpleTrafficLightLogic.cpp's MSPhaseDefinition -- `duration` and `state` drive a 'static'

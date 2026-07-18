@@ -930,11 +930,22 @@ public sealed partial class Engine : IEngine
     public int TeleportCount { get; private set; }
 
     // P1F-2 (HIGH-DENSITY-P1F-DESIGN.md §1E, §4): the JAM sub-count of TeleportCount
-    // (MSVehicleControl::registerTeleportJam). For P1-F scope only the jam classification is
-    // produced (single-lane queue behind a blocked leader); yield/wrongLane need junction/link-
-    // priority reasoning and are deferred (reported 0, §4). Every jam-teleport increments BOTH
-    // TeleportCount (total) and this, so here total == jam. 0 for every pre-P1F scenario.
+    // (MSVehicleControl::registerTeleportJam). Issue-2: the yield/wrongLane sub-counts below are now
+    // also produced, so total == jam + yield + wrongLane (matching SUMO's split at MSLane.cpp:2288-2294).
+    // Every teleport increments TeleportCount (total) plus exactly one of the three buckets. 0 for every
+    // pre-P1F scenario (teleport off).
     public int TeleportCountJam { get; private set; }
+
+    // Issue-2 (docs/ISSUE2-JUNCTION-TELEPORT-DESIGN.md): the YIELD sub-count
+    // (MSVehicleControl::registerTeleportYield) -- a stuck front vehicle whose next junction link is a
+    // MINOR link (!havePriority) is waiting for a right-of-way foe, NOT jammed behind its own leader.
+    // SUMO classifies these as yield (MSLane.cpp:2273,2290). 0 when teleport is off / no minor-link waits.
+    public int TeleportCountYield { get; private set; }
+
+    // Issue-2: the WRONG-LANE sub-count (MSVehicleControl::registerTeleportWrongLane) -- a stuck front
+    // vehicle on a lane from which its route cannot continue (!appropriate). MSLane.cpp:2261,2288. 0 in
+    // every in-scope scenario (the committed goldens + the synthetic-junction repro all report 0).
+    public int TeleportCountWrongLane { get; private set; }
 
     // P2-H (HIGH-DENSITY-P2H-DESIGN.md): count of pending vehicles DELETED because they waited past
     // <max-depart-delay> without an insertion gap (SUMO's MSInsertionControl deleteVehicle(veh, true)).
@@ -1501,6 +1512,8 @@ public sealed partial class Engine : IEngine
         _jamCandidates.Clear();
         TeleportCount = 0;
         TeleportCountJam = 0;
+        TeleportCountYield = 0;
+        TeleportCountWrongLane = 0;
         _discardedDepartures = 0; // P2-H: reset the max-depart-delay eviction tally per scenario
         _dejamDespawnCount = 0;   // X1: reset the off-camera de-jam despawn tally per scenario
         _laneSource = null; // §6.3: rebuild the render lane-source lazily for the new network
@@ -10253,13 +10266,69 @@ public sealed partial class Engine : IEngine
     // P1F-2 (HIGH-DENSITY-P1F-DESIGN.md §1C item 1, §2 item 4): MSVehicleTransfer::add. Count the
     // jam-teleport, then either REMOVE the vehicle (time-to-teleport.remove, or no succEdge(1)) or
     // lift it into the transfer queue having jumped it onto succEdge(1).
+    // Issue-2 teleport classification (MSLane.cpp:2261,2272-2274).
+    private enum TeleportKind { Jam, Yield, WrongLane }
+
+    // Classify a jam-teleport exactly as SUMO: wrongLane = !appropriate(v); else if ego's NEXT junction
+    // link is MINOR (!havePriority) it is a YIELD wait (waiting for a right-of-way foe); else JAM
+    // (blocked by a leader on its own lane). wrongLane is not produced yet (a documented simplification:
+    // every in-scope scenario -- the committed goldens + the synthetic-junction repro -- reports 0
+    // wrongLane, matching SUMO); the WrongLane bucket exists for schema completeness.
+    private TeleportKind ClassifyTeleportKind(VehicleRuntime v)
+    {
+        // Ego's next junction link = the first internal (':') lane at/after LaneSeqIndex on its route
+        // sequence -- SUMO's succLinkSec(v, 1, ..., getBestLanesContinuation()). The same forward scan
+        // KeepClearConstraint uses.
+        for (var i = v.LaneSeqIndex; i < v.LaneSeqLen; i++)
+        {
+            var seqLaneId = _network!.LanesByHandle[_laneSeqPool[v.LaneSeqStart + i]].Id;
+            if (_network.LinkByInternalLane.TryGetValue(seqLaneId, out var jl))
+            {
+                // MSLink::havePriority(): myState in 'A'..'Z' (uppercase == priority). Lowercase
+                // (m/g/s/w/...) == minor -> the vehicle is yielding to a foe, not jammed.
+                var state = LinkStateChar(jl.Link);
+                return (state >= 'A' && state <= 'Z') ? TeleportKind.Jam : TeleportKind.Yield;
+            }
+        }
+
+        // No junction link ahead (route end, or a lane that cannot continue): SUMO's link == myLinks.end()
+        // makes minorLink false -> jam.
+        return TeleportKind.Jam;
+    }
+
+    // Issue-2: the CURRENT right-of-way state char of a junction link -- the live TL phase char for a
+    // TL-controlled link, else the static netconvert <connection state="..."> char (default 'M' major
+    // when the attribute is absent, e.g. pre-existing nets parsed before the state field was added).
+    private char LinkStateChar(JunctionLink link)
+    {
+        var conn = link.Connection;
+        if (conn.Tl is { } tl && conn.LinkIndex is { } li)
+        {
+            return TlLinkStateChar(tl, li, CurrentTime);
+        }
+
+        return conn.State is { Length: > 0 } s ? s[0] : 'M';
+    }
+
     private void TeleportVehicle(VehicleRuntime v)
     {
-        // registerTeleportJam: counted once here at the decision, regardless of whether a later
-        // virtual-proceed hop eventually removes the vehicle (MSVehicleControl.cpp:561-564). For
-        // P1-F only the jam bucket is produced (§4), so total == jam.
+        // Counted once here at the decision, regardless of whether a later virtual-proceed hop
+        // eventually removes the vehicle (MSVehicleControl.cpp:561-564). Issue-2: classify the teleport
+        // into wrongLane / yield / jam exactly as SUMO does (MSLane.cpp:2261,2272-2294) instead of
+        // charging every one to jam.
         TeleportCount++;
-        TeleportCountJam++;
+        switch (ClassifyTeleportKind(v))
+        {
+            case TeleportKind.WrongLane:
+                TeleportCountWrongLane++;
+                break;
+            case TeleportKind.Yield:
+                TeleportCountYield++;
+                break;
+            default:
+                TeleportCountJam++;
+                break;
+        }
 
         var route = _routesById[EffectiveRouteId(v)];
         var edges = route.Edges;

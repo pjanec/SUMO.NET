@@ -217,7 +217,10 @@ public static class SumoShim
 
         if (statisticOut is not null)
         {
-            StatisticWriter.Write(statisticOut, engine.TeleportCount, teleportsJam: engine.TeleportCountJam);
+            StatisticWriter.Write(statisticOut, engine.TeleportCount,
+                teleportsJam: engine.TeleportCountJam,
+                teleportsYield: engine.TeleportCountYield,
+                teleportsWrongLane: engine.TeleportCountWrongLane);
         }
 
         if (fcdOut is not null)
