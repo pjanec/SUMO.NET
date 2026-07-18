@@ -79,5 +79,41 @@ faithful pieces it unblocks (P2G-3 cross-junction speedGain, the P2-G follower-v
    half FIRST and re-run the reverted P2G-3 change under it to measure whether it clears the 0→51 gate and
    what it costs — cheapest signal on feasibility + perf.
 
+## 3.5 SPIKE RESULT (session 3) — the architecture is VALIDATED
+
+The informFollower speed-advice spike (§3.1-2) is built behind `Engine.CoordinatedLaneChange` and measured:
+
+| | saturated `-L2` grid (gate ≤5 stuck) | scenario 46 first-divergence |
+|---|---|---|
+| P2G-3 faithful LC, NO coordination | **51 stuck** (why P2G-3 couldn't land) | lane fixed at t=91 |
+| **+ cooperative informFollower (gate ON)** | **0 stuck** ✅ | lane fixed (t=91→ residual at t=92) |
+| gate OFF (default) | unchanged | byte-identical |
+
+**Headline: the cooperative speed-advice coordination CLEARS the 0→51 saturated-grid wall — the faithful
+aggressive lane-changing now flows the dense grid at 0 stuck, like SUMO.** This is the proof the
+coordinated-LC architecture is right: coordination is what lets the faithful lane-changing flow. Landed
+as a gated foundation:
+- **Speed-advice channel:** `VehicleRuntime.CoopSpeedAdvice` (+∞ = none) + a `CommandBuffer.SpeedAdvice`
+  op applied as a commutative MIN (parallel-order-independent), consumed as a `vPos` cap in
+  `ComputeMoveIntent` and cleared on the real pass. `informFollower` writes it from the blocked-speed-gain
+  path (`DecideSpeedGainForVehicle`). P2G-3 (continuation distance + cross-junction leader) re-applied,
+  all gated on `CoordinatedLaneChange`.
+- **Gate OFF = byte-identical** (full parity suite green, 585 prior unchanged); 3 functional tests
+  (`RungHDp2g2CoordinatedLaneChangeTests`) pin: coordinated grid flows (≤5 stuck), coordinated scn46 f.1
+  takes the fast lane `e_det1_1`, default keeps it slow.
+
+### Remaining to make the gate-ON path BIT-EXACT (next iterations — not blocking the foundation)
+1. **Scenario 46 downstream residual:** the lane choice at t=91 is fixed, but a downstream divergence
+   remains (a large late max-pos-err + a residual lane mismatch) — chase the cascade (likely a subsequent
+   lane decision / the neigh-side cross-junction leader / the exact SUMO `informFollower` helpDecel
+   formula vs the spike's follow-speed approximation).
+2. **Full SUMO `informFollower`/`informLeader`** (the `helpDecel`/`HELP_OVERTAKE` formula,
+   `MSLCM_LC2013.cpp:645-740`) replacing the spike's follow-speed advice.
+3. **Cooperative CHANGE decision** (`amBlockingFollowerPlusNB`, `:1639-1659`) — a vehicle moving over to
+   help, not yet built.
+4. **Keep-right follower veto + informFollower** (the P2-G follower half) under the same gate.
+5. **A bit-exact anchor + golden** under the flag, and a **perf measurement** of the gate-ON LC phase.
+
 ## 4. Tracked as
-`docs/HIGH-DENSITY-PLAN.md` P2G-2 (config-gated). Depends on nothing new; unblocks P2G-3.
+`docs/HIGH-DENSITY-PLAN.md` P2G-2 (config-gated). Foundation + spike LANDED (gate off byte-identical);
+bit-exact gate-ON path is the remaining iteration list above.

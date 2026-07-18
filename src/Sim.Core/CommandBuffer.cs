@@ -34,6 +34,7 @@ internal sealed class CommandBuffer : ICommandBuffer
         StartLaneChangeManeuver,
         ReplaceRoute,
         Destroy,
+        SpeedAdvice,
     }
 
     private struct Command
@@ -45,9 +46,11 @@ internal sealed class CommandBuffer : ICommandBuffer
         // StartLaneChangeManeuver: IntArg0 = targetLaneHandle, StringArg0 = targetLaneId, IntArg1 = totalSteps.
         // ReplaceRoute: IntArg0 = laneSeqStart, IntArg1 = laneSeqLen.
         // Destroy: unused.
+        // SpeedAdvice: DoubleArg0 = the advised speed (applied as a MIN into Vehicle.CoopSpeedAdvice).
         public int IntArg0;
         public int IntArg1;
         public string? StringArg0;
+        public double DoubleArg0;
     }
 
     private readonly List<Command> _commands = new();
@@ -106,6 +109,19 @@ internal sealed class CommandBuffer : ICommandBuffer
         }
     }
 
+    // P2G-2 (cooperative LC / informFollower): advise `follower` to slow to `speed` so a blocked
+    // lane-changer can cut in. Applied as a MIN into follower.CoopSpeedAdvice at Flush -- MIN is
+    // commutative, so the non-deterministic parallel RECORD order does not affect the result even when
+    // several changers advise the SAME follower (unlike the distinct-vehicle commands above, whose
+    // order-independence comes from targeting distinct vehicles). Consumed as a vPos cap next step.
+    public void SpeedAdvice(VehicleRuntime follower, double speed)
+    {
+        lock (_recordLock)
+        {
+            _commands.Add(new Command { Kind = Kind.SpeedAdvice, Vehicle = follower, DoubleArg0 = speed });
+        }
+    }
+
     // Applies every recorded command, in record order, then clears the buffer for reuse.
     public void Flush()
     {
@@ -138,6 +154,14 @@ internal sealed class CommandBuffer : ICommandBuffer
 
                 case Kind.Destroy:
                     cmd.Vehicle.Arrived = true;
+                    break;
+
+                case Kind.SpeedAdvice:
+                    // MIN so multiple changers' advice to the same follower composes order-independently.
+                    if (cmd.DoubleArg0 < cmd.Vehicle.CoopSpeedAdvice)
+                    {
+                        cmd.Vehicle.CoopSpeedAdvice = cmd.DoubleArg0;
+                    }
                     break;
             }
         }

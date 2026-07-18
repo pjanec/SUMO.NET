@@ -255,15 +255,16 @@ when I first need to regenerate a golden. OK to do that as part of landing the f
     keep-right (pinned-lane control: engine keep-rights v1 SUMO keeps in lane; 82 m divergence). ✅
   - [x] P2G-1 keep-right target-lane LEADER safety veto + scenarios/49-multilane-keepright BIT-EXACT
     anchor (82.28 m -> 2.37 m on the control); 558 green, byte-identical, saturation still 0 stuck ✅
-  - [ ] P2G-2 (PLANNED, CONFIG-GATED) coordinated dense LC model (cooperative LC / informFollower +
-    speed-advice channel) -- design + full analysis in `docs/HIGH-DENSITY-P2G2-COOPERATIVE-LC-DESIGN.md`.
-    Owner decision (2026-07-17): implement behind a runtime config gate (default OFF = today's flowing
-    byte-identical behaviour; ON = faithful coordinated LC, unblocks P2G-3 + the P2-G follower half).
-    Analysis: required for PARITY not flow (engine already flows dense at 0 stuck); GAIN = SUMO-faithful
-    multi-lane overtaking/merging (fidelity for the on-camera hero area) + merge/on-ramp capacity, NOT a
-    general density lever; LOSE = moderate LC-phase perf (hence the gate) + deep-core complexity/risk.
-    Suggested first spike: build informFollower speed-advice, re-run the reverted P2G-3 change under it,
-    measure whether it clears the saturated-grid 0->51 gate + the perf cost.
+  - [~] P2G-2 (CONFIG-GATED, foundation + spike LANDED) coordinated dense LC model. Design + analysis in
+    `docs/HIGH-DENSITY-P2G2-COOPERATIVE-LC-DESIGN.md`. Runtime gate `Engine.CoordinatedLaneChange`
+    (default OFF = byte-identical). **SPIKE VALIDATED THE ARCHITECTURE:** cooperative informFollower
+    speed-advice clears the saturated-grid wall the faithful lane-changing caused (0->51 stuck -> back to
+    0 with coordination ON); gate OFF byte-identical (585 prior goldens unchanged); 3 functional tests
+    (`RungHDp2g2CoordinatedLaneChangeTests`). Analysis: required for PARITY not flow; GAIN = SUMO-faithful
+    overtaking/merging fidelity + merge capacity; LOSE = LC-phase perf (the gate) + deep-core risk.
+    Remaining to make gate-ON BIT-EXACT (next iterations, non-blocking): scenario-46 downstream cascade;
+    full SUMO informFollower/informLeader formula; cooperative CHANGE (amBlockingFollowerPlusNB);
+    keep-right follower half; a flag-gated bit-exact anchor + golden; perf measurement.
   - [~] P2G-3 scenario-46 speedGain residual -- DIAGNOSED (docs/HIGH-DENSITY-P2G3-DESIGN.md). Root
     cause is NOT the neighDist gate (proven: continuation distance implemented + instrumented, gate
     passes at 82.5 but the speedGain still never fires) and NOT cooperative LC (SUMO log: reason

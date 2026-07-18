@@ -958,6 +958,14 @@ public sealed partial class Engine : IEngine
     private int _dejamDespawnCount;
     public int DejamDespawnCount => _dejamDespawnCount;
 
+    // P2G-2 (docs/HIGH-DENSITY-P2G2-COOPERATIVE-LC-DESIGN.md): master switch for the coordinated dense
+    // lane-change model -- cooperative speed-advice (informFollower: a blocked changer tells its target
+    // follower to make room) + the currently-gated faithful LC pieces it unblocks (P2G-3 cross-junction
+    // speed-gain). Default OFF -> no CoopSpeedAdvice is ever written and the P2G-3 path is skipped, so
+    // every committed golden AND the saturated-grid diagnostic are byte-identical. Runtime host property
+    // (a non-parity behavioural/perf mode, like the X1 controls), never a sumocfg key.
+    public bool CoordinatedLaneChange { get; set; }
+
     // SUMOSHARP-API.md §4.4: resolve a lane's string id to the int lane handle ONCE at setup, so the
     // per-step obstacle path never touches a string. Requires a loaded scenario.
     public int GetLane(string laneId) =>
@@ -4430,6 +4438,19 @@ public sealed partial class Engine : IEngine
         // laterally overlapping -- the "stop for a pedestrian you can't swerve clear of" net. +Infinity
         // (inert) unless a coupling has attached a CrowdSource, so byte-identical for every golden.
         vPos = Math.Min(vPos, CrowdLongitudinalConstraint(v, time, laneVehicleMaxSpeed));
+
+        // P2G-2 (cooperative LC): consume any speed-advice a blocked lane-changer wrote LAST step's LC
+        // phase (informFollower "make room"). +Infinity == none, so byte-identical when CoordinatedLaneChange
+        // is off (nothing is ever written). Cleared on the REAL pass only (the willPass pre-pass reads it
+        // as a constraint but must not consume it, or the real PlanMovements call would miss it).
+        if (!double.IsPositiveInfinity(v.CoopSpeedAdvice))
+        {
+            vPos = Math.Min(vPos, v.CoopSpeedAdvice);
+            if (!prePass)
+            {
+                v.CoopSpeedAdvice = double.PositiveInfinity;
+            }
+        }
 
         // MSCFModel.cpp:191 finalizeSpeed: `vStop = MIN2(vPos, veh->processNextStop(vPos))`.
         // ProcessNextStop reads only the front stop's START-OF-STEP snapshot (Reached/
@@ -8643,11 +8664,38 @@ public sealed partial class Engine : IEngine
             // the vehicle's (post-move) position on it. Large enough here (~2000/~1865) that it
             // never binds the no-leader stop-speed fallback or the `>20` gate below -- a full
             // multi-edge best-lanes port is out of scope until a scenario actually needs it.
-            var currentDist = lane.Length - v.Kinematics.Pos;
-            var neighDist = leftLane.Length - v.Kinematics.Pos;
+            // P2G-3 (docs/HIGH-DENSITY-P2G3-DESIGN.md §5.2), gated on CoordinatedLaneChange: use the
+            // best-lanes CONTINUATION distance (so a clear continuing lane reads vMax, not the short
+            // remaining-length stop-speed floor). Default OFF keeps the single-lane distance -> the
+            // whole speed-gain path is byte-identical.
+            double currentDist, neighDist;
+            if (CoordinatedLaneChange)
+            {
+                var sgBestLanes = BestLanesCached(EffectiveRouteId(v), _routesById[EffectiveRouteId(v)].Edges, lane.EdgeId);
+                currentDist = ContinuationLength(sgBestLanes, lane.Index, lane.Length) - v.Kinematics.Pos;
+                neighDist = ContinuationLength(sgBestLanes, leftLane.Index, leftLane.Length) - v.Kinematics.Pos;
+            }
+            else
+            {
+                currentDist = lane.Length - v.Kinematics.Pos;
+                neighDist = leftLane.Length - v.Kinematics.Pos;
+            }
 
             var leader = postMoveNeighbors.GetLeader(v);
             var thisLaneVSafe = Math.Min(vMax, AnticipateFollowSpeed(v, leader, currentDist, dt));
+
+            // P2G-3 (§5.2 part 1), gated: reduce thisLaneVSafe for a leader on ego's CONTINUATION across
+            // the junction (which the same-edge GetLeader misses), creating SUMO's relativeGain asymmetry
+            // (slow leader ahead on this lane, clear neighbour). Uses the scan's accumulated cross-
+            // junction gap directly with MaximumSafeFollowSpeed (NOT AnticipateFollowSpeed's same-lane
+            // gap). Inert by default.
+            if (CoordinatedLaneChange && leader is null
+                && TryFindContinuationLeader(v, postMoveNeighbors, dt, out var contLeader, out var contGap))
+            {
+                var contVSafe = KraussModel.MaximumSafeFollowSpeed(
+                    contGap, v.Kinematics.Speed, contLeader.Kinematics.Speed, contLeader.VType.Decel, v.VType, dt, onInsertion: true);
+                thisLaneVSafe = Math.Min(thisLaneVSafe, contVSafe);
+            }
 
             var neighLead = postMoveNeighbors.GetNeighborLeader(v, leftLane.Handle);
             var neighLaneVSafe = Math.Min(neighVMax, AnticipateFollowSpeed(v, neighLead, neighDist, dt));
@@ -8715,6 +8763,25 @@ public sealed partial class Engine : IEngine
                     targetLaneId = leftLane.Id;
                     targetLaneHandle = leftLane.Handle;
                     speedGainProbability = 0.0; // :1063/1080 resetState() on committed change.
+                }
+                else if (CoordinatedLaneChange
+                    && neighFollow is not null
+                    && !IsTargetLaneSafe(v, null, neighFollow, dt))
+                {
+                    // P2G-2 informFollower (MSLCM_LC2013::informFollower): the change is WANTED but
+                    // blocked by the target-lane FOLLOWER. Advise the follower to slow to a safe follow
+                    // speed BEHIND ego (as if ego has cut in), opening the gap so the change succeeds a
+                    // step or two later -- SUMO's coordination that keeps aggressive lane-changing from
+                    // thrashing into gridlock. Recorded via the command buffer (applied as a MIN into the
+                    // follower's CoopSpeedAdvice, consumed next step). Gated on CoordinatedLaneChange, so
+                    // inert by default. Only advise when ego is actually ahead of the follower (gap>0).
+                    var gap = (v.Kinematics.Pos - v.VType.Length) - neighFollow.VType.MinGap - neighFollow.Kinematics.Pos;
+                    if (gap > 0.0)
+                    {
+                        var adviceSpeed = KraussModel.MaximumSafeFollowSpeed(
+                            gap, neighFollow.Kinematics.Speed, v.Kinematics.Speed, v.VType.Decel, neighFollow.VType, dt, onInsertion: false);
+                        _commandBuffer.SpeedAdvice(neighFollow, Math.Max(0.0, adviceSpeed));
+                    }
                 }
             }
 
@@ -8954,6 +9021,55 @@ public sealed partial class Engine : IEngine
             (routeId, edgeId),
             static (key, state) => state.Network.ComputeBestLanes(state.RouteEdges, key.EdgeId),
             (Network: _network!, RouteEdges: routeEdges));
+
+    // P2G-3 (docs/HIGH-DENSITY-P2G3-DESIGN.md §5.2): best-lanes CONTINUATION length for a lane index
+    // (SUMO's LaneQ.length) -- the on-route distance drivable without a lane change, accumulated across
+    // downstream edges. Falls back to the lane's own length if no continuation entry matches.
+    private static double ContinuationLength(IReadOnlyList<LaneContinuation> bestLanes, int laneIndex, double fallbackLaneLength)
+    {
+        for (var i = 0; i < bestLanes.Count; i++)
+        {
+            if (bestLanes[i].LaneIndex == laneIndex)
+            {
+                return bestLanes[i].Length;
+            }
+        }
+
+        return fallbackLaneLength;
+    }
+
+    // P2G-3 (§5.2 part 1): nearest leader on EGO's best-lanes CONTINUATION across the junction (the
+    // leader that crossed onto the junction internal / next edge, which the same-edge GetLeader misses),
+    // with the correctly-accumulated cross-junction gap. Mirrors CrossJunctionLeaderConstraint's
+    // downstream scan (a read-only copy so the byte-identical car-following path is untouched). Only ever
+    // called under CoordinatedLaneChange (see the speed-gain call site).
+    private bool TryFindContinuationLeader(VehicleRuntime ego, LaneNeighborQuery neighbors, double dt, out VehicleRuntime leader, out double gap)
+    {
+        leader = null!;
+        gap = double.PositiveInfinity;
+
+        var downstreamCount = ego.LaneSeqLen - ego.LaneSeqIndex - 1;
+        if (downstreamCount <= 0)
+        {
+            return false;
+        }
+
+        var downstreamStart = ego.LaneSeqStart + ego.LaneSeqIndex + 1;
+#if NET8_0_OR_GREATER
+        ReadOnlySpan<int> downstream = CollectionsMarshal.AsSpan(_laneSeqPool).Slice(downstreamStart, downstreamCount);
+#else
+        Span<int> downstreamBuf = downstreamCount <= 64 ? stackalloc int[downstreamCount] : new int[downstreamCount];
+        for (int i = 0; i < downstreamCount; i++)
+        {
+            downstreamBuf[i] = _laneSeqPool[downstreamStart + i];
+        }
+        ReadOnlySpan<int> downstream = downstreamBuf;
+#endif
+
+        return TryFindCrossJunctionLeader(
+            ego.Kinematics.Speed, ego.VType, ego, ego.LaneHandle, ego.Kinematics.Pos,
+            downstream, new NeighborRearmost(neighbors, ego), dt, out leader, out gap);
+    }
 
     private bool KeepRightStrategicStay(VehicleRuntime v, Lane fromLane, int rightLaneIndex)
     {
