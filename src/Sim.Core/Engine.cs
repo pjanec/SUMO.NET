@@ -8610,6 +8610,30 @@ public sealed partial class Engine : IEngine
                     // (verified against the regenerated scenario 66 golden.tripinfo.xml). Still
                     // thread-safe under the region-parallel path: DestroyWithArrival takes the same
                     // `_recordLock` Destroy does.
+                    //
+                    // Issue 1 residency guard (docs/SUMOSHARP-SERVE-PATH-DROP-IN.md §7,
+                    // defense-in-depth alongside the TryStrategicLaneChange fix above): a
+                    // park-and-stay vehicle -- one whose front stop is an UNREACHED parkingArea
+                    // stop (StopRuntime.IsParking) -- must never be treated as "arrived" merely
+                    // because it ran off the position-based end of its final route edge; it has
+                    // not parked yet, so removing it here would silently vanish a car that is
+                    // supposed to stay resident for the whole horizon (the product ruling in §7:
+                    // "cars must remain resident... for the full horizon"). With the strategic-LC
+                    // fix above the car brakes and parks well before reaching this point in the
+                    // normal case, so this rarely fires; it exists to guarantee a wrong-lane car
+                    // is clamped and kept alive (exactly like the drop-lane guard a few lines
+                    // below) rather than silently destroyed. GATED on GetStops(v)'s front stop
+                    // being BOTH unreached AND IsParking -- every existing scenario either has no
+                    // stop on its final edge, or already has it Reached/non-parking by the time
+                    // arrival is checked, so this is byte-identical elsewhere.
+                    var frontStopAtArrival = GetStops(v) is { Count: > 0 } arrivalStops ? arrivalStops.Peek() : null;
+                    if (frontStopAtArrival is { Reached: false, IsParking: true })
+                    {
+                        v.Kinematics.Pos = currentLane.Length;
+                        v.Kinematics.Speed = 0.0;
+                        break;
+                    }
+
                     _commandBufferImpl.DestroyWithArrival(v, time + dt);
                     break;
                 }
@@ -9526,46 +9550,101 @@ public sealed partial class Engine : IEngine
             return false;
         }
 
-        var targetLaneHandle = _laneSeqPool[v.LaneSeqStart + v.LaneSeqIndex];
-        if (targetLaneHandle == v.LaneHandle)
+        // Issue 1 (docs/SUMOSHARP-SERVE-PATH-DROP-IN.md §7, park-and-stay residency): a vehicle's
+        // FRONT pending (unreached) stop, when it sits on THIS edge with a DIFFERENT lane index
+        // than v's current lane, must steer the strategic lane-change toward the STOP's lane.
+        // Ported from MSVehicle::updateBestLanes, which folds a same-edge stop into the LaneQ by
+        // truncating every OTHER lane's `length` to the stop position while the stop's own lane
+        // keeps the full edge length (MSVehicle.cpp:5920-5933) -- which is exactly what steers
+        // bestLaneOffset toward it -- combined with MSLCM_LC2013::wantsChangeStrategic's
+        // `driveToNextStop = nextStopDist()` term that makes usableDist bind on distance-to-stop
+        // rather than distance-to-edge-end (MSLCM_LC2013.cpp:1161-1182, 1288). Ported directly at
+        // this call site (not inside ComputeBestLanes/BackwardPassEdge, which several unrelated
+        // callers -- ApplyKeepRightDecision, insertion -- share) so the change stays scoped to
+        // exactly this one case: a stop lane that differs from the route-continuation pool target.
+        //
+        // GATING (byte-identical elsewhere): stopLaneOverride stays -1 unless GetStops(v) has an
+        // unreached front stop whose lane is on THIS edge with a lane index != v's current lane
+        // index. Every existing stop scenario (03-approach-and-stop, 13-stopped-leader,
+        // 44-summary-output, 48-parking-depart) already has the vehicle on the stop's own lane
+        // (stopLane.Index == lane.Index there), so the override is inert for every one of them --
+        // execution falls straight through to the pre-existing pool/best-lane path, unchanged.
+        var stopLaneOverride = -1;
+        var stopDistOverride = 0.0;
+        var stops = GetStops(v);
+        if (stops is { Count: > 0 })
         {
-            // Already converged onto the route path -- the common/inert case for every
-            // existing scenario.
-            return false;
-        }
-
-        var targetLane = _network!.LanesByHandle[targetLaneHandle];
-        if (targetLane.EdgeId != lane.EdgeId)
-        {
-            // Defensive only: ExecuteMoves' convergence guard (design point 4) never advances
-            // LaneSeqIndex past an edge boundary while actual != target, so a well-formed pool
-            // can never reach this state.
-            return false;
-        }
-
-        var routeId = EffectiveRouteId(v);   // see _effectiveRouteIdByEntity's header comment
-        var route = _routesById[routeId];
-        var bestLanes = BestLanesCached(routeId, route.Edges, lane.EdgeId);
-
-        LaneContinuation? curr = null;
-        foreach (var continuation in bestLanes)
-        {
-            if (continuation.LaneIndex == lane.Index)
+            var frontStop = stops.Peek();
+            if (!frontStop.Reached
+                && _network!.LanesById.TryGetValue(frontStop.LaneId, out var stopLane)
+                && stopLane.EdgeId == lane.EdgeId
+                && stopLane.Index != lane.Index)
             {
-                curr = continuation;
-                break;
+                stopLaneOverride = stopLane.Index;
+                // MSLCM_LC2013.cpp:1167 driveToNextStop = myVehicle.nextStopDist() -- the
+                // remaining lane-relative distance to the stop's braking position.
+                stopDistOverride = frontStop.EndPos - v.Kinematics.Pos;
             }
         }
 
-        if (curr is null || curr.BestLaneOffset == 0)
+        int bestLaneOffset;
+        double usableDist;
+
+        if (stopLaneOverride >= 0)
         {
-            // Defensive only: the pool-mismatch gate above already implies a nonzero offset --
-            // that is exactly what NetworkModel.ResolveLaneSequence used to pick the pool's
-            // target lane index in the first place.
-            return false;
+            bestLaneOffset = stopLaneOverride - lane.Index;
+            usableDist = stopDistOverride;
+        }
+        else
+        {
+            var targetLaneHandle = _laneSeqPool[v.LaneSeqStart + v.LaneSeqIndex];
+            if (targetLaneHandle == v.LaneHandle)
+            {
+                // Already converged onto the route path -- the common/inert case for every
+                // existing scenario.
+                return false;
+            }
+
+            var targetLane = _network!.LanesByHandle[targetLaneHandle];
+            if (targetLane.EdgeId != lane.EdgeId)
+            {
+                // Defensive only: ExecuteMoves' convergence guard (design point 4) never advances
+                // LaneSeqIndex past an edge boundary while actual != target, so a well-formed pool
+                // can never reach this state.
+                return false;
+            }
+
+            var routeId = EffectiveRouteId(v);   // see _effectiveRouteIdByEntity's header comment
+            var route = _routesById[routeId];
+            var bestLanes = BestLanesCached(routeId, route.Edges, lane.EdgeId);
+
+            LaneContinuation? curr = null;
+            foreach (var continuation in bestLanes)
+            {
+                if (continuation.LaneIndex == lane.Index)
+                {
+                    curr = continuation;
+                    break;
+                }
+            }
+
+            if (curr is null || curr.BestLaneOffset == 0)
+            {
+                // Defensive only: the pool-mismatch gate above already implies a nonzero offset --
+                // that is exactly what NetworkModel.ResolveLaneSequence used to pick the pool's
+                // target lane index in the first place.
+                return false;
+            }
+
+            bestLaneOffset = curr.BestLaneOffset;
+
+            // usableDist = MAX2(currentDist - posOnLane - best.occupation*JAM_FACTOR,
+            // driveToNextStop): best.occupation is always 0 (empty-road scope, see this method's
+            // header comment) and, with stopLaneOverride < 0 (no same-edge unreached stop to bind
+            // driveToNextStop against), the first MAX2 argument is the only one available.
+            usableDist = curr.Length - v.Kinematics.Pos;
         }
 
-        var bestLaneOffset = curr.BestLaneOffset;
         // Direction is fully determined by the offset's sign -- see this method's own header
         // comment for why evaluating only this one (correctly-signed) direction is equivalent
         // to SUMO's two-sided caller for the STRATEGIC/URGENT trigger.
@@ -9590,14 +9669,6 @@ public sealed partial class Engine : IEngine
         var lengthWithGap = v.VType.Length + v.VType.MinGap;
         var laDist = (v.LookAheadSpeed * lookForward * strategicParam * (right ? 1.0 : lookaheadLeft)) + (2.0 * lengthWithGap);
 
-        // usableDist = MAX2(currentDist - posOnLane - best.occupation*JAM_FACTOR,
-        // driveToNextStop): best.occupation is always 0 (empty-road scope, see this method's
-        // header comment) and there is no stop on this edge in any committed C2-ii scenario, so
-        // driveToNextStop is non-binding against the first MAX2 argument.
-        var currentDist = curr.Length;
-        var posOnLane = v.Kinematics.Pos;
-        var usableDist = currentDist - posOnLane;
-
         // MSLCM_LC2013.h:189 currentDistDisallows.
         if (usableDist / Math.Abs(bestLaneOffset) >= laDist)
         {
@@ -9607,13 +9678,15 @@ public sealed partial class Engine : IEngine
         var neighborHandle = right ? lane.RightNeighbor : lane.LeftNeighbor;
         if (neighborHandle < 0)
         {
-            // No lane to change into on the required side -- defensive only, not reachable by
-            // any committed scenario (ComputeBestLanes never points a route offset off the
-            // edge's own lane range).
+            // No lane to change into on the required side -- defensive only, not reachable by any
+            // committed scenario (ComputeBestLanes never points a route offset off the edge's own
+            // lane range) nor by a well-formed stopLaneOverride (a parkingArea's lane is always a
+            // real lane on this same edge, so the direct neighbor toward it always exists on a
+            // 2-lane edge; a >=3-lane edge crosses one lane per call/step, same as SUMO).
             return false;
         }
 
-        var neighborLane = _network.LanesByHandle[neighborHandle];
+        var neighborLane = _network!.LanesByHandle[neighborHandle];
 
         // Safety veto, mirroring A2-iii's IsTargetLaneSafe / B5-ii's obstacle veto -- on the
         // clear road this scenario exercises, both are trivially non-binding (no neighbor

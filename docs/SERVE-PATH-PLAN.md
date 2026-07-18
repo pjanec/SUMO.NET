@@ -204,6 +204,40 @@ SUMO 1.20.0**, wired into `dotnet test`:
   (+5) / 3 skipped, 72 pedestrian, 2 nav, 1 host; determinism (D1/D8) green; scenario 48 unchanged;
   `git status scenarios/` shows only new `67-*`/`68-*`.**
 
+## Post-acceptance: Issue 1 (park-and-stay residency) — FIXED
+
+The definitive acceptance run (spec §7) passed the no-cheating audit but found two aggregate-parity
+divergences. Per the owner's split, **Issue 1 (serve-path) is fixed here; Issue 2 (junction
+deadlock/jam-teleport, sumo-core) is delegated** to the core session (`docs/CORE-SESSION-ISSUE2-PROMPT.md`).
+
+**Issue 1 — a park-and-stay sink (`<stop parkingArea duration=100000>`) on a 2-lane edge (parkingArea
+on lane 0) wrongly "arrived"** because the car reached the parking edge on lane 1, never
+strategically changed to lane 0 (so `StopLineConstraint` — which brakes only when `stop.LaneId ==
+v.LaneId` — never engaged), drove off the final edge end, and was removed. **Fix (Opus-reviewed hard):**
+- **Strategic LC toward the stop's lane** in `TryStrategicLaneChange` (Engine.cs) — when the front
+  unreached stop is on the current edge with a different lane index, the strategic target is overridden
+  to the stop's lane and bound by distance-to-stop (`stop.EndPos − pos`), porting SUMO's
+  `updateBestLanes` stop-lane fold + `MSLCM_LC2013::driveToNextStop`. **Gated**: inert unless there is
+  an unreached same-edge stop on a *different* lane, so every existing stop scenario (03/13/44/48, car
+  already on the stop lane) and non-stop LC scenario falls through the byte-identical original path.
+- **Residency guard** at the final-edge arrival site — a vehicle with an unreached `IsParking` stop is
+  clamped at the lane end instead of arrived (defense-in-depth; rarely fires once the LC works).
+- Once parked, GAP-3's `IsParked` keeps a `duration=100000` car resident off-lane, in FCD every step,
+  never in tripinfo — exactly the sink semantics.
+
+Acceptance: `scenarios/69-parkandstay-lc` (2-lane edge, parkingArea on lane 0, a car departing on lane
+1 that must LC to lane 0 and stay resident), golden from **SUMO 1.20.0** (empty tripinfo — never
+arrives). `RungHDgap3ParkAndStayResidencyTests` asserts it reaches lane 0 at the golden slot, is absent
+from `CompletedTrips`, and is present in the trajectory every step to sim-end. Pre-fix (git-stash
+verified) the car wrongly arrived at t=11 on lane e0_1; post-fix it LCs at t=2, parks at pos 47.499,
+stays resident — matching vanilla. **Full suite re-run first-hand: 604 parity (+4) / 3 skipped, 72
+pedestrian, 2 nav, 1 host; determinism (D1/D8) green; keep-right/overtake/strategic-turn + 03/13/44/48
+byte-identical; only `scenarios/69-*` new.**
+
+*Caveat (honest):* the residency guard is defense-in-depth — if a car genuinely cannot reach lane 0
+(blocked), it clamps at the edge end on-lane rather than in the lot. The strategic LC handles the normal
+case; the true validation is the SumoData re-run of the definitive acceptance test.
+
 ## All three gaps landed — definitive acceptance status
 
 GAP-1→GAP-3 are complete and golden-verified against vanilla SUMO 1.20.0. The `sumosharp` binary now
