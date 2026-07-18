@@ -31,6 +31,14 @@ namespace Sim.Pedestrians.Lod;
 // that one ped's handle and route. Every OTHER high-power ped's handle, position, velocity, route,
 // AND waypoint cursor are completely untouched by someone else's promotion/demotion -- there is
 // nothing left to rebuild.
+//
+// P1-1 (docs/PEDESTRIAN-TASKS.md; docs/PEDESTRIAN-DESIGN.md §5): the POC-3 version of Step took a
+// bare `IReadOnlyList<InterestSource>` and full-double-scanned it (every ped against every source,
+// O(peds * sources)) with no stable identity for a caller juggling several independently-moving
+// sources. Step now takes an `InterestField` (see InterestField.cs): a managed, multi-source field
+// with stable per-source ids (Register/Move/Remove) and a bounded, grid-indexed per-ped query
+// (RebuildIndex once per step, Query once per ped) -- same promotion/demotion semantics and hysteresis
+// as POC-3, but the per-step scan no longer multiplies with the source count.
 public sealed class PedLodManager
 {
     private sealed class PedEntry
@@ -153,9 +161,15 @@ public sealed class PedLodManager
     public void Step(
         double now,
         double dt,
-        IReadOnlyList<InterestSource> interestSources,
+        InterestField interestField,
         IReadOnlyList<WorldDisc> externalEntities)
     {
+        // Freeze the interest field's spatial index for this whole step (P1-1, docs §5: "Promotion is
+        // a pure function of frozen state (source positions are start-of-step)") -- every ped queried
+        // below sees the exact same source snapshot, regardless of evaluation order. See
+        // InterestField.RebuildIndex remarks for why this is O(sources), not O(peds).
+        interestField.RebuildIndex();
+
         var ids = new List<int>(_peds.Keys);
         ids.Sort(); // ascending ped-id order -- deterministic evaluation and application
 
@@ -175,14 +189,14 @@ public sealed class PedLodManager
 
             if (e.Model == PedDrModel.PathArc)
             {
-                if (stateAge >= _dwellSeconds && AnySourceWithinPromote(interestSources, pos))
+                if (stateAge >= _dwellSeconds && interestField.Query(pos).AnyWithinPromote)
                 {
                     toPromote.Add(id);
                 }
             }
             else if (e.Model == PedDrModel.FreeKinematic)
             {
-                if (AllSourcesOutsideDemote(interestSources, pos))
+                if (interestField.Query(pos).AllOutsideDemote)
                 {
                     if (double.IsNaN(e.OutsideSince))
                     {
@@ -275,31 +289,4 @@ public sealed class PedLodManager
         }
     }
 
-    private static bool AnySourceWithinPromote(IReadOnlyList<InterestSource> sources, Vec2 pos)
-    {
-        for (var i = 0; i < sources.Count; i++)
-        {
-            var s = sources[i];
-            if ((pos - s.Position).Abs <= s.PromoteRadius)
-            {
-                return true;
-            }
-        }
-
-        return false;
-    }
-
-    private static bool AllSourcesOutsideDemote(IReadOnlyList<InterestSource> sources, Vec2 pos)
-    {
-        for (var i = 0; i < sources.Count; i++)
-        {
-            var s = sources[i];
-            if ((pos - s.Position).Abs <= s.DemoteRadius)
-            {
-                return false;
-            }
-        }
-
-        return true;
-    }
 }

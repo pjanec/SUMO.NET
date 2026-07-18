@@ -62,13 +62,14 @@ public class PedLodManagerTests
         var totalTime = (straightLineDist / MaxSpeed) * 3.0; // slack, mirrors POC-1a's convention
         var steps = (int)(totalTime / Dt);
 
-        var farAway = new InterestSource(new Vec2(-10_000, -10_000), promoteRadius: 1.0, demoteRadius: 2.0);
+        var field = new InterestField();
+        field.Register(new InterestSource(new Vec2(-10_000, -10_000), promoteRadius: 1.0, demoteRadius: 2.0));
         var noEntities = Array.Empty<WorldDisc>();
 
         var now = 0.0;
         for (var i = 0; i < steps; i++)
         {
-            manager.Step(now, Dt, new[] { farAway }, noEntities);
+            manager.Step(now, Dt, field, noEntities);
             now += Dt;
         }
 
@@ -119,6 +120,8 @@ public class PedLodManagerTests
         // use case 1. Chasing keeps the entity within the (hysteretic) demote radius for the whole run,
         // so this test exercises promotion AND sustained reactive avoidance, not just a one-shot flip.
         var entity = new InterestSource(WestNorthArm, PromoteRadius, DemoteRadius);
+        var field = new InterestField();
+        var entityId = field.Register(entity, InterestSourceKind.EntityAttached);
 
         var ig = new HeadlessIg();
         var sumOfRadii = Radius + entityRadius;
@@ -130,7 +133,7 @@ public class PedLodManagerTests
         for (var i = 0; i < 200; i++)
         {
             var beforeCount = publisher.Events.Count;
-            manager.Step(now, Dt, new[] { entity }, new[] { new WorldDisc(entity.Position.X, entity.Position.Y, 0, 0, entityRadius) });
+            manager.Step(now, Dt, field, new[] { new WorldDisc(entity.Position.X, entity.Position.Y, 0, 0, entityRadius) });
             now += Dt;
             for (var e = beforeCount; e < publisher.Events.Count; e++)
             {
@@ -148,7 +151,7 @@ public class PedLodManagerTests
             // Chase: keep the entity ~1 m from the ped's current position (well inside PromoteRadius,
             // and always inside DemoteRadius too) so it stays a live avoidance stimulus for the ped's
             // whole promoted run instead of being outrun and passively lapsing out of range.
-            entity.Position = manager.PositionOf(1, now) + new Vec2(1.0, 0.0);
+            field.Move(entityId, manager.PositionOf(1, now) + new Vec2(1.0, 0.0));
         }
 
         Assert.True(everPromoted, "ped never promoted despite the stimulus sitting on top of it");
@@ -176,6 +179,8 @@ public class PedLodManagerTests
         manager.AddPed(id: 1, path!, MaxSpeed, Radius, now: 0.0);
 
         var entity = new InterestSource(WestNorthArm, PromoteRadius, DemoteRadius);
+        var field = new InterestField();
+        var entityId = field.Register(entity, InterestSourceKind.EntityAttached);
         var noEntities = Array.Empty<WorldDisc>();
 
         var now = 0.0;
@@ -183,20 +188,20 @@ public class PedLodManagerTests
         // Promote: stimulus sits on the ped until it goes high-power.
         while (manager.ModelOf(1) != PedDrModel.FreeKinematic && now < 30.0)
         {
-            manager.Step(now, Dt, new[] { entity }, noEntities);
+            manager.Step(now, Dt, field, noEntities);
             now += Dt;
         }
 
         Assert.Equal(PedDrModel.FreeKinematic, manager.ModelOf(1));
 
         // Remove the stimulus far away permanently; step through the dwell.
-        entity.Position = new Vec2(-10_000, -10_000);
+        field.Move(entityId, new Vec2(-10_000, -10_000));
         var pathArcRecordsBeforeDemotion = publisher.PathArcRecordsSent.GetValueOrDefault(1);
 
         var demotedAt = -1.0;
         for (var i = 0; i < 300 && manager.ModelOf(1) == PedDrModel.FreeKinematic; i++)
         {
-            manager.Step(now, Dt, new[] { entity }, noEntities);
+            manager.Step(now, Dt, field, noEntities);
             now += Dt;
             if (manager.ModelOf(1) == PedDrModel.PathArc)
             {
@@ -226,21 +231,24 @@ public class PedLodManagerTests
         manager.AddPed(id: 1, path!, MaxSpeed, Radius, now: 0.0);
 
         var source = new InterestSource(WestNorthArm, PromoteRadius, DemoteRadius);
+        var field = new InterestField();
+        var sourceId = field.Register(source);
         var noEntities = Array.Empty<WorldDisc>();
 
         var now = 0.0;
         for (var i = 0; i < 400; i++)
         {
             var pedPos = manager.PositionOf(1, now);
-            source.Position = manager.ModelOf(1) == PedDrModel.PathArc
+            var nextPos = manager.ModelOf(1) == PedDrModel.PathArc
                 // still low: sit well inside the promote radius to force (and keep) the first promotion.
                 ? pedPos + new Vec2(PromoteRadius * 0.2, 0.0)
                 // once high: bounce the stimulus just inside / just outside the DEMOTE radius every
                 // single step -- the classic flapping stimulus -- chasing the ped so it never simply
                 // "walks away" from a stationary source.
                 : pedPos + new Vec2(i % 2 == 0 ? DemoteRadius - 0.1 : DemoteRadius + 0.1, 0.0);
+            field.Move(sourceId, nextPos);
 
-            manager.Step(now, Dt, new[] { source }, noEntities);
+            manager.Step(now, Dt, field, noEntities);
             now += Dt;
         }
 
@@ -263,13 +271,14 @@ public class PedLodManagerTests
         var manager = new PedLodManager(nav, publisher, ArriveRadius, DwellSeconds);
         manager.AddPed(id: 1, path!, MaxSpeed, Radius, now: 0.0);
 
-        var farAway = new InterestSource(new Vec2(-10_000, -10_000), promoteRadius: 1.0, demoteRadius: 2.0);
+        var field = new InterestField();
+        field.Register(new InterestSource(new Vec2(-10_000, -10_000), promoteRadius: 1.0, demoteRadius: 2.0));
         var noEntities = Array.Empty<WorldDisc>();
 
         var now = 0.0;
         for (var i = 0; i < 150; i++) // 15 s at Dt=0.1 -> several heartbeat intervals
         {
-            manager.Step(now, Dt, new[] { farAway }, noEntities);
+            manager.Step(now, Dt, field, noEntities);
             now += Dt;
         }
 
@@ -319,6 +328,8 @@ public class PedLodManagerTests
         manager.AddPed(id: 1, path!, MaxSpeed, Radius, now: 0.0);
 
         var entity = new InterestSource(WestNorthArm, PromoteRadius, DemoteRadius);
+        var field = new InterestField();
+        var entityId = field.Register(entity, InterestSourceKind.EntityAttached);
         const double entityRadius = 0.3;
 
         var trajectory = new List<Vec2>();
@@ -329,14 +340,14 @@ public class PedLodManagerTests
             // exercises promotion, avoidance, AND demotion.
             if (i == 120)
             {
-                entity.Position = new Vec2(-10_000, -10_000);
+                field.Move(entityId, new Vec2(-10_000, -10_000));
             }
 
             var discs = manager.ModelOf(1) == PedDrModel.FreeKinematic && i < 120
                 ? new[] { new WorldDisc(entity.Position.X, entity.Position.Y, 0, 0, entityRadius) }
                 : Array.Empty<WorldDisc>();
 
-            manager.Step(now, Dt, new[] { entity }, discs);
+            manager.Step(now, Dt, field, discs);
             now += Dt;
             trajectory.Add(manager.PositionOf(1, now));
         }

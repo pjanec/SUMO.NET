@@ -195,9 +195,11 @@ internal static class Program
             manager.AddPed(p.Id, p.Path, p.MaxSpeed, p.Radius, now);
         }
 
+        var field = new InterestField();
         var sources = pop.SourceAnchors
             .Select(a => new InterestSource(a, pop.PromoteRadius, pop.DemoteRadius))
             .ToList();
+        var sourceIds = sources.Select(s => field.Register(s)).ToList();
         var noEntities = Array.Empty<WorldDisc>();
 
         // Warmup: untimed, lets the promotion dwell settle so Scenario A's timed window starts already
@@ -206,10 +208,10 @@ internal static class Program
         {
             if (churn)
             {
-                UpdateSweepingSources(sources, pop, now);
+                UpdateSweepingSources(field, sourceIds, pop, now);
             }
 
-            manager.Step(now, dt, sources, noEntities);
+            manager.Step(now, dt, field, noEntities);
             now += dt;
         }
 
@@ -220,11 +222,11 @@ internal static class Program
         {
             if (churn)
             {
-                UpdateSweepingSources(sources, pop, now);
+                UpdateSweepingSources(field, sourceIds, pop, now);
             }
 
             var before = publisher.Events.Count;
-            manager.Step(now, dt, sources, noEntities);
+            manager.Step(now, dt, field, noEntities);
             now += dt;
             var after = publisher.Events.Count;
             for (var e = before; e < after; e++)
@@ -249,17 +251,17 @@ internal static class Program
     // different peds' promote/demote radii -- "sweep through the low-power crowd, continuously
     // promoting/demoting" per the task. Deterministic (pure function of `now`, no System.Random), each
     // source phase-staggered by its index so they do not all move in lockstep.
-    private static void UpdateSweepingSources(List<InterestSource> sources, PopulationSpec pop, double now)
+    private static void UpdateSweepingSources(InterestField field, List<InterestSourceId> sourceIds, PopulationSpec pop, double now)
     {
         const double period = 6.0; // seconds per full back-and-forth sweep
         var amplitude = pop.SweepAmplitude;
 
-        for (var i = 0; i < sources.Count; i++)
+        for (var i = 0; i < sourceIds.Count; i++)
         {
-            var phase = (2.0 * Math.PI * i) / Math.Max(1, sources.Count);
+            var phase = (2.0 * Math.PI * i) / Math.Max(1, sourceIds.Count);
             var offset = amplitude * Math.Sin((2.0 * Math.PI * now / period) + phase);
             var home = pop.SourceAnchors[i];
-            sources[i].Position = new Vec2(home.X + offset, home.Y);
+            field.Move(sourceIds[i], new Vec2(home.X + offset, home.Y));
         }
     }
 
