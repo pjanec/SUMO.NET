@@ -143,6 +143,28 @@ SUMO 1.20.0**, wired into `dotnet test`:
 
 ---
 
+## 3a. Progress log
+
+- **GAP-1 — DONE** (owner-steered choices applied). New `src/Sim.Sumo` project builds the drop-in
+  binary **`sumosharp`** (distinct name — never shadows vanilla `netconvert`/`randomTrips`/`duarouter`
+  on PATH; SumoData points `SUMO_BINARY` at it). Core is a testable `SumoShim.Run(args, out, err)`;
+  `Program.cs` is a one-line delegate. Flags: `-c/--configuration`, `-b/--begin`, `-e/--end` (a *time*
+  → `round((end-begin)/step-length)` steps), `--fcd-output`, `--summary-output`, `--statistic-output`,
+  `--tripinfo-output` (accepted; writer is GAP-2), `--no-step-log` (accepted+ignored); unknown flags
+  tolerated (warn, not abort); `--flag=value` and `--flag value` both parse. Published self-contained
+  single-file exe via `scripts/publish-sumosharp.sh` — **cold start + full 120-step multi-file run in
+  0.19 s**, addressing the calibration per-invocation-cost requirement. Parity gate:
+  `tests/Sim.ParityTests/RungHDgap1SumoCliTests.cs` (4 tests) drives the shim in-process over
+  `41-multifile-cfg` and asserts the CLI-produced FCD matches the golden within tolerance, plus flag
+  contract + `--end` run-length + error handling. **Full suite green: 593 parity (+4) / 3 skipped, 72
+  pedestrian, 2 nav, 1 host; every prior golden byte-identical, determinism tests unchanged.**
+  - *Note:* the owner-referenced served fixture (real `scenario.sumocfg` + `audit_nocheat.py` +
+    README, Geneva box `-109298,-138987,-107798,-137487`) is **not yet present** in the repo/branch —
+    needed for GAP-2's realistic scenario and the definitive end-to-end audit. GAP-1 used
+    `41-multifile-cfg` (already committed) as its acceptance scenario, so it is unblocked.
+- **GAP-2 — next.**
+- **GAP-3 — after GAP-2.**
+
 ## 4. Recommendation
 
 Proceed with **GAP-1 first** — it is the safe, enabling, near-zero-parity-risk step, and it lets us
