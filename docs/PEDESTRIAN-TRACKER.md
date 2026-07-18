@@ -137,7 +137,13 @@ zones along sidewalks with forced promotion; the legacy car-centric radial evac 
 
 - [ ] **P6-1** On-target (16+‑core) benchmark run; replace 4-core estimates in findings
 - [ ] **P6-2** Region decomposition (only if P6-1 shows flat parallel plateaus)
-- [ ] **P6-3** Full property-test suite (reqs 1–7, each named; parity untouched)
+- [x] **P6-3** Requirement-indexed property-test suite (reqs 1–7, each named; parity untouched) *(11 tests,
+      each over ≥5 seeded configs with anti-vacuous guards: Req1 perf (parallel==serial bit-exact over
+      78k comparisons + low-power 0 per-step samples), Req2 believability (ORCA no-overlap, worst margin
+      0.1 mm), Req3 interactivity (car halts for ped + ped avoids moving blocker), Req4 evac (24/24 escape,
+      routed 1.74×), Req5 disjoint crowds (accumulate on red, drain on green), Req6 parking (min-sep +
+      board/alight events), Req7 networking (server==IG 2.7e-7 m + 100k mix ≤17 Mbit/s < 500); parity hash
+      `909605E965BFFE59` unmoved; 596 parity + 139 ped green)*
 
 ## Stage P7 — Pedestrian visualization (existing 3D viewers, in-process + remote-DR)
 
