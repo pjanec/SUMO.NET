@@ -1,6 +1,6 @@
 # PEDESTRIAN-P8-3-DEMAND-DESIGN.md — auto-deduced sub-area ped demand (HOW)
 
-**Status: design → implementing.** The demand-generation half of Stage P8-3. Consumes the POI bundle
+**Status: P8-3a + P8-3b DONE; P8-3c (density knob) later.** The demand-generation half of Stage P8-3. Consumes the POI bundle
 (`PedPoiReader`, `docs/PEDESTRIAN-P8-3-POI-REQUEST.md`) and the walkable fringe (`SubareaManifest`) to
 produce weighted O→D pedestrian demand over the crop. WHAT/contract: `COORDINATION-pedestrian-x-subarea.md`
 §3; appearance-legitimacy: `PEDESTRIAN-P8-2-APPEARANCE-LEGITIMACY-DESIGN.md`.
@@ -46,12 +46,17 @@ salt keeps the weighted draw independent of the existing timing/O-D/liveliness s
 
 ## 5. Tasks & success conditions
 
-- [ ] **P8-3a — `SubareaDemand`** (weighted endpoints + deterministic weighted draw + fringe-from-network).
+- [x] **P8-3a — `SubareaDemand`** (weighted endpoints + deterministic weighted draw + fringe-from-network).
   *Success:* draw distribution matches the endpoint weights (a large deterministic sample is within tolerance
   of the weight proportions); every drawn endpoint is a fringe or POI edge; identical draws for identical seed.
-- [ ] **P8-3b — wire into `PedDemand`** behind the optional `WeightedEndpoints`. *Success:* null → existing
+  **Done** (`SubareaDemand.cs`, `SubareaDemandTests.cs`, 3 tests): 1:3 weights → ~0.75, all-zero uniform
+  fallback, box build → 207 endpoints (159 POI + 48 fringe) all legitimate on the walkable surface, deterministic.
+- [x] **P8-3b — wire into `PedDemand`** behind the optional `WeightedEndpoints`. *Success:* null → existing
   ped-demand tests byte-identical (bit-identical off); set → spawns/dests are all on fringe/POI edges
   (legitimacy by construction), population respects the cap, deterministic; a test drives the box's POIs+fringe.
+  **Done** (`PedDemand` `WeightedEndpoints` on dedicated `SubareaODSalt`, `SubareaWeightedDemandTests.cs`,
+  3 tests): inert-default draws only the uniform O/D (existing 158 ped tests stayed green), weighted run over
+  the box = 14 spawns / cap 12 held / `unreachableSkips=0` / every O/D a fringe-or-POI endpoint, deterministic.
 - [ ] **P8-3c (later)** — density knob (P8-4 anchor on `manifest.density.knee`) scaling `SpawnRatePerSecond`;
   crossing-throughput guard. *(Follows once the weighted demand lands.)*
 
