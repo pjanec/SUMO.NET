@@ -127,16 +127,35 @@ match or improve them. This must be *verified*, not assumed: the full `dotnet te
     critically, by a `CrossJunctionLeaderConstraint` to **veh 152 sitting on the junction's OWN internal
     lane `:2336_2_0`** with a **negative gap (−6.53)** — an intra-junction "block-the-box" gridlock:
     152 occupies the junction and cannot exit, so 78 cannot enter behind it, so the queue never drains.
-  - This is the classic on-junction gridlock the tracked residual describes
-    (`ISSUE2-JUNCTION-TELEPORT-DESIGN.md` §4-CORRECTION, `NEED-junctionyield-impatience-saturation.md`):
-    faithfully fixing it needs the un-ported SUMO mechanisms (impatience / arrival-time gap acceptance,
-    and/or a correct block-the-box + cross-junction-leader-gap treatment). Prior attempts on these arms
-    regressed `WillPassSaturationDiagTests`, and the negative cross-junction-leader gap suggests a
-    separate false-leader sub-bug to isolate first. **Deliberately NOT attempted here** — it is not a
-    small trigger-timing change and must not be rushed against the parity gate.
+  - **Deeper trace (this session) reclassifies it as a THROUGHPUT cascade, not a localized block.**
+    The negative cross-junction-leader gap is NOT a false leader — veh 152 genuinely straddles the
+    junction entry, so the hard stop is correct block-the-box behaviour. And veh 152 is not permanently
+    stuck: it DOES cross junction 2336 on its green (t≈316), then queues DOWNSTREAM on `-389_0` behind
+    the next junction's backlog. No single vehicle is the culprit — queues chain across a block of
+    junctions and the region stays saturated.
+  - **SUMO-oracle confirmation (the decisive datum).** Same net + demand, vanilla SUMO 1.20.0 vs
+    SumoSharp, edge `-2437` into TL junction 2336:
+    - vanilla: queue forms transiently (peak 5 ~t=200) then **fully drains** — 0 stopped from t≈500 on;
+      **15 distinct vehicles** pass through `-2437` over [0,800].
+    - SumoSharp: queue forms and **never drains** — a steady **3 stopped from t≈300 onward**; only
+      **10 distinct vehicles** get through.
+    SumoSharp's per-junction throughput is lower than SUMO's, so queues SUMO drains become permanent
+    standing jams that back up through junction 2436 and teleport — the aggregate junction-throughput
+    residual (`NEED-junctionyield-impatience-saturation.md`), surfacing at moderate density.
+  - **Faithful fix = the un-ported IMPATIENCE / arrival-time gap acceptance, NOT a patch.** SUMO's
+    `MSLink::blockedByFoe` (MSLink.cpp:947-965) blends the foe arrival time toward ego's *braking*
+    arrival as ego's `getImpatience()` grows with accumulated waiting (default `--time-to-impatience
+    180`, `MSFrame.cpp:481`); the engine hardcodes `impatience==0`, so in a near-tie saturated cycle a
+    vehicle waits for a perfect gap that never comes, whereas SUMO's growing impatience accepts a tighter
+    gap and breaks the deadlock. Known tension: a prior session ported impatience byte-identically
+    (goldens unaffected, zero effect on city-3000) but applying it to the APPROACH arm regressed
+    `WillPassSaturationDiagTests` (0→15 stuck). So the work is *where/how* to apply the blend faithfully
+    without re-breaking the saturated-grid stress test — a real design cycle, not a trigger-timing tweak.
+  - **Deliberately NOT attempted here.** Rushing an impatience port would be either a quick patch
+    (forbidden) or a large regression-prone change against the parity gate. It must be its own task with
+    a dedicated design + the `WillPassSaturationDiagTests` gate.
   - **Success (when taken on):** synthetic-junction2 teleports → ~0 and the pop%↔density curve monotone
-    within noise, with the full suite AND `WillPassSaturationDiagTests` green. Start by isolating the
-    negative-gap cross-junction leader (is veh 152 genuinely on veh 78's downstream path?).
+    within noise, with the full suite AND `WillPassSaturationDiagTests` green.
 - **T4 — regression guard. DONE (partial).** `tests/Sim.ParityTests/LowDensityTeleportTests.cs` runs
   the committed synthetic-junction2 through the in-process `SumoShim` path (engine-only, no SUMO) and
   asserts teleports ≤ 5 — locking the T1 (mechanism-A) fix against regression toward 10. The bound
@@ -147,9 +166,11 @@ match or improve them. This must be *verified*, not assumed: the full `dotnet te
 - [x] T1 — havePriority-aware junction yield (TLS half): 10 → 5, goldens byte-identical
 - [~] T2 — RedLightConstraint routed-movement link: investigated, byte-identical on goldens but worsens
       the repro (5→6) and needs a dedicated shared-lane test — DEFERRED, not landed
-- [~] T3 — residual cascade (mechanism B): DIAGNOSED as one single-root intra-junction gridlock at TL
-      2336 (head-of-queue veh 78 blocked by veh 152 on-junction, negative CJL gap); NOT attempted —
-      regression-prone (needs impatience / block-the-box, prior attempts regressed the stress test)
+- [~] T3 — residual cascade (mechanism B): DIAGNOSED (oracle-confirmed) as a multi-junction THROUGHPUT
+      cascade at TL 2336 — vanilla drains the -2437 queue (15 through), SumoSharp never drains it (3
+      permanently stuck, 10 through). Faithful fix = the un-ported impatience / arrival-time gap
+      acceptance; NOT attempted here — a dedicated feature (prior naive port regressed the stress test),
+      not a patch. Blocked on its own design cycle + WillPassSaturationDiagTests gate.
 - [x] T4 — committed low-density-teleport regression guard (teleports ≤ 5)
 
 ## Notes for the implementor
