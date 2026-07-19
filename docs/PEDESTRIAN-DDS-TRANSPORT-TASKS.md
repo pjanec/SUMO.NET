@@ -28,8 +28,13 @@ Legend: `[ ]` not started · `[~]` in progress · `[x]` done · `[!]` blocked/ne
           sim, renders purely from the wire). Verified two-process: the subscriber received all **14 peds**
           and their high-power promotions from a SEPARATE publisher process over CycloneDDS; D3a single-
           process re-verified (no regression). *(Same pre-existing headless-teardown segfault applies.)*
-    - [ ] **Godot** — City3D `--transport=dds --peds`: point `PedReconstructor` at a `DdsPedReplicationSource`
-          fed by `--mode ped-publish`.
+    - [x] **Godot** — City3D `--transport=dds --peds`: `ReadyPeds` + `ProcessPeds` branch on transport, feeding
+          `PedReconstructor` from a `DdsPedReplicationSource` (fed by `--mode ped-publish`) instead of the
+          local byte-loopback `PedSimSource`; server clock driven off the wire (`LatestCrowdTime`, monotonic).
+          Compiles under `-p:City3DRemote=true` (CITY3D_REMOTE). The data path is the SAME
+          `DdsPedReplicationSource` + `PedRemoteReconstructor` the native two-process render verified; Godot's
+          `PedReconstructor` is a thin wrapper over it, and the P7-3 local path already proved Godot renders
+          reconstructed peds. *(Live Godot screenshot depends on fetching the ~100 MB Godot runtime.)*
 
 ## Standing invariants (every task)
 

@@ -165,6 +165,11 @@ public partial class Main : Node3D
     private DdsParticipant? _ddsParticipant;
     private DdsSubscriber? _ddsSource;
     private bool _remoteSceneBuilt;
+    // D3b (docs/PEDESTRIAN-DDS-TRANSPORT-TASKS.md): the live-DDS ped source for `--transport=dds --peds` --
+    // fed by a separate `--mode ped-publish` process (Sim.Viewer), reconstructed by _pedReconstructor. The
+    // server clock is wire-authoritative (newest crowd-frame time), kept monotonic across frames.
+    private DdsPedReplicationSource? _ddsPedSource;
+    private double _pedRemoteServerTime;
 #endif
 
     // Task T1.6 Part B -- built LAZILY on the first _Process frame `sim.Source.TlStateByLane` is
@@ -196,6 +201,7 @@ public partial class Main : Node3D
     public override void _Ready()
     {
         _transport = ParseTransportArg();
+        _peds = ParsePedsArg();
 
         switch (_transport)
         {
@@ -205,7 +211,29 @@ public partial class Main : Node3D
 
             case "dds":
 #if CITY3D_REMOTE
-                ReadyRemote();
+                // D3b: `--peds` over live DDS reuses the ped scene setup (local plaza net for the backdrop)
+                // but swaps the local byte-loopback ped-sim for a DdsPedReplicationSource fed by a separate
+                // `--mode ped-publish` process; the vehicle remote path (ReadyRemote) is unchanged.
+                if (_peds)
+                {
+                    string pedRepoRoot;
+                    try
+                    {
+                        pedRepoRoot = FindRepoRoot();
+                    }
+                    catch (Exception ex)
+                    {
+                        GD.PrintErr($"Main: could not locate repo root (searched upward for Traffic.sln): {ex.Message}");
+                        GetTree().Quit(1);
+                        return;
+                    }
+
+                    ReadyPeds(pedRepoRoot);
+                }
+                else
+                {
+                    ReadyRemote();
+                }
 #else
                 GD.PrintErr(
                     "Main: --transport=dds requires a build with DDS support -- rebuild with " +
@@ -360,7 +388,20 @@ public partial class Main : Node3D
             // Roads-only context for the plaza: the SAME NetworkParser + RoadMeshBuilder path the vehicle
             // viewer uses. (The walkable ped nav is parsed independently INSIDE PedSimSource.)
             pedNetwork = NetworkParser.Parse(pedNetPath);
-            _pedSim = new PedSimSource(repoRoot);
+#if CITY3D_REMOTE
+            if (_transport == "dds")
+            {
+                // D3b: no local ped-sim -- subscribe to a separate `--mode ped-publish` process's live DDS
+                // ped stream. The plaza net (backdrop) is still loaded LOCALLY above, so only ped poses cross
+                // the wire. _pedReconstructor (below) consumes this IPedReplicationSource transport-neutrally.
+                _ddsParticipant ??= new DdsParticipant();
+                _ddsPedSource = new DdsPedReplicationSource(_ddsParticipant);
+            }
+            else
+#endif
+            {
+                _pedSim = new PedSimSource(repoRoot);
+            }
         }
         catch (Exception ex)
         {
@@ -393,7 +434,14 @@ public partial class Main : Node3D
         }
 
         _pedMultiMesh = BuildPedMultiMesh();
-        GD.Print($"Main: --peds active; ped server-sim + wire over 'scenarios/_ped/poc0-crossing-plaza' (transport=local, byte loopback).");
+        var pedTransportDesc = "transport=local, byte loopback";
+#if CITY3D_REMOTE
+        if (_ddsPedSource is not null)
+        {
+            pedTransportDesc = "transport=dds, live CycloneDDS (needs a running `--mode ped-publish` process)";
+        }
+#endif
+        GD.Print($"Main: --peds active; crossing-plaza render ({pedTransportDesc}).");
 
         _shotPath = ParseShotArg();
         if (_shotPath is not null)
@@ -547,19 +595,43 @@ public partial class Main : Node3D
     // the vehicle AdvanceLocalSim + RenderFrame/UpdateCars split, one entity-type over.
     private void ProcessPeds(double delta)
     {
-        if (_pedSim is null || _pedReconstructor is null)
+        if (_pedReconstructor is null)
         {
             return; // _Ready already reported the error.
         }
 
-        _accumulator += delta;
-        while (_accumulator >= PedTickWallSeconds)
+        Sim.Replication.IPedReplicationSource pedSource;
+        double serverTime;
+#if CITY3D_REMOTE
+        if (_ddsPedSource is not null)
         {
-            _pedSim.Tick();
-            _accumulator -= PedTickWallSeconds;
+            // Remote: no local sim to tick. Drive the reconstructor off the WIRE clock (newest crowd-frame
+            // sim-time), kept monotonic so a quiet low-power spell never rewinds playout. Reconstruct() pumps
+            // the DDS source internally.
+            _pedRemoteServerTime = Math.Max(_pedRemoteServerTime, _ddsPedSource.LatestCrowdTime);
+            pedSource = _ddsPedSource;
+            serverTime = _pedRemoteServerTime;
+        }
+        else
+#endif
+        {
+            if (_pedSim is null)
+            {
+                return;
+            }
+
+            _accumulator += delta;
+            while (_accumulator >= PedTickWallSeconds)
+            {
+                _pedSim.Tick();
+                _accumulator -= PedTickWallSeconds;
+            }
+
+            pedSource = _pedSim.Source;
+            serverTime = _pedSim.Time;
         }
 
-        var peds = _pedReconstructor.Reconstruct(_pedSim.Source, _pedSim.Time);
+        var peds = _pedReconstructor.Reconstruct(pedSource, serverTime);
         UpdatePeds(peds);
 
         if (_closeCamera is not null)
@@ -576,7 +648,7 @@ public partial class Main : Node3D
             }
         }
 
-        GD.Print($"Main: frame={_frame} pedTime={_pedSim.Time:F2} peds={peds.Count} highPower={highPower}");
+        GD.Print($"Main: frame={_frame} pedTime={serverTime:F2} peds={peds.Count} highPower={highPower}");
 
         _frame++;
 
@@ -667,6 +739,8 @@ public partial class Main : Node3D
         _pedSim?.Dispose();
         _pedSim = null;
 #if CITY3D_REMOTE
+        _ddsPedSource?.Dispose();
+        _ddsPedSource = null;
         _ddsSource?.Dispose();
         _ddsSource = null;
         _ddsParticipant?.Dispose();
