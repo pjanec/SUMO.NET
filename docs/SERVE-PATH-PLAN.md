@@ -456,6 +456,37 @@ decide whether the residual mid-run lag clears the believability bar. Regression
 scenarios: a `<routing>`-section reroute golden for Bug-1, a dense-TL-junction assertion for Bug-2,
 regenerated from vanilla) is the natural follow-up rung.
 
+## P2-G Bug-3 — the DOMINANT residual: green movement yields to a red-light foe
+
+Building the Bug-2 regression scenario surfaced a third, deeper bug that is almost certainly the
+LARGER gridlock contributor. Minimal witness committed at `scenarios/_repro/tl-redfoe-yield` (2 cars,
+1 TL junction, geometry-free): a green permissive-left (`e_left`, E→S) is frozen **solely** by the
+presence of a red-light-stopped foe (`n_left`, N→E). Run `e_left` alone and it crosses fine; add the
+red foe and it never gets a gap.
+
+**Mechanism.** `Engine.JunctionYieldConstraint` (the crossing gate, ~Engine.cs:6392) yields ego to an
+approaching foe when `foe.WillPass` is true (the foe is still *moving* toward the junction this step).
+A red-light foe is still rolling toward its stop line for a few seconds before it halts, so it is
+marked `WillPass=true`, and a green ego that statically `respondsTo` the foe's minor link yields to
+it — then never gets a gap, because the foe sits at the red forever. Vanilla does not yield here:
+SUMO's foe check (`MSLink::opened` / `havePriority`) is TL-state-aware — a foe approaching on a **red**
+signal holds no right-of-way and does not block a green ego. The engine's gate is TL-state-blind for
+the approaching foe (reads the static `response`/`foe` matrix + the foe's motion, never the foe link's
+live signal state). Same TL-blindness class as Bug-2, but in the **main** crossing gate, and larger.
+
+**Consequence for the regression rung.** The Bug-2 (RBL) regression cannot be cleanly isolated at a TL
+junction while Bug-3 exists — Bug-3 freezes the same green movement first, so `synthetic 75` fails even
+with the Bug-2 fix. Once Bug-3 is fixed, that same TL scenario reaches full parity and becomes the
+combined Bug-2+Bug-3 golden regression (revert either fix → diverge). So Bug-3 is the gate for both the
+remaining gridlock convergence AND the Bug-2 regression lock-in.
+
+**Scope.** This is a high-risk CORE junction-gate change (the load-bearing parity path at every TL
+junction): the fix — treat a foe whose live link state is red/yellow as non-blocking, mirroring
+`MSLink::opened` — must be gated hard against the committed TL/junction goldens
+(09/30/35/08/11/26/27/34/38/39/40 + determinism) staying byte-identical, plus the saturation stress
+tests. Per the owner's "core issues → other session" split, this is a candidate for the Geneva/core
+session; owner decision pending on whether to fix it here or hand it off with this witness.
+
 ## All three gaps landed — definitive acceptance status
 
 GAP-1→GAP-3 are complete and golden-verified against vanilla SUMO 1.20.0. The `sumosharp` binary now
