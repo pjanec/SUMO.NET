@@ -1,9 +1,12 @@
-# Prompt for the SumoData / Geneva session — RE-CHECK after the P2-G gridlock fixes
+# Prompt for the SumoData / Geneva session — VERIFY FROM MAIN (post-merge integration check)
 
-Copy everything in the fenced block below into the SumoData (Geneva) session. This is a **re-run** of
-the ship-acceptance you did before — the one that correctly rejected the drop-in for progressive
-gridlock. The SumoSharp side has since landed the junction fixes that caused it. The acceptance metric
-is the **clearing / halting curve**, exactly as you specified last time — NOT the teleport count.
+Copy everything in the fenced block below into the SumoData (Geneva) session. You already accepted this
+drop-in GREEN from the pre-merge branch; it is **now merged to `main`**. This is a fresh-checkout
+confidence check that `main` reproduces that GREEN. NOTE: the serve-path code on `main` is
+byte-identical to what you accepted (the shim runs pure parity; the junction fixes are the same commits;
+everything added since — a lane-change-mode merge, and retiring an unused cooperative-LC layer — is inert
+for the serve path and kept all 622 committed goldens byte-identical), so it **should reproduce the same
+numbers**. Acceptance metric is still the **clearing / halting curve**, not the teleport count.
 
 ---
 
@@ -15,9 +18,9 @@ the real box progressively gridlocked (on-net halting climbed to ~89% of running
 the fast-follow had to be a PRE-MERGE blocker, and that the acceptance had to be judged on the HALTING
 curve, not the teleport count. The SumoSharp side has now landed the junction fixes. Please re-run.
 
-WHAT CHANGED ON THE SUMOSHARP SIDE (branch, NOT yet on main)
+WHAT IS ON MAIN (already merged and accepted; this run just confirms main reproduces it)
   Repo:   SumoSharp (sibling repo)
-  Branch: claude/sumosharp-drop-in-binary-vq7u9p   (HEAD 5ca7315 or later)
+  Branch: main   (HEAD afec614 or later -- the drop-in is merged)
   Three faithful, golden-safe fixes to the traffic-light junction handling landed. All 622 committed
   parity goldens stay byte-identical; each fix mirrors a specific SUMO mechanism:
     - Bug-1: the config parser now reads device.rerouting.* / routing-algorithm from a <routing>
@@ -38,9 +41,9 @@ WHAT CHANGED ON THE SUMOSHARP SIDE (branch, NOT yet on main)
 
 BUILD THE BINARY FRESH -- AND DO NOT RUN A STALE ONE (this bit the SumoSharp side hard)
   cd <sumosharp-checkout>
-  git fetch origin && git checkout claude/sumosharp-drop-in-binary-vq7u9p && git pull
-  git log --oneline -1        # confirm HEAD is 5ca7315 or later
-  dotnet test                 # offline sanity: 622 parity / 3 skipped, all green
+  git fetch origin && git checkout main && git pull
+  git log --oneline -1        # confirm HEAD is afec614 or later
+  dotnet test                 # offline sanity: 623 parity / 3 skipped, all green
   # Build the shim FRESH and point SUMO_BINARY at THIS build's output, not any older publish:
   dotnet build src/Sim.Sumo/Sim.Sumo.csproj -c Release
   export SUMO_BINARY="dotnet $(pwd)/src/Sim.Sumo/bin/Release/net8.0/sumosharp.dll"
@@ -74,9 +77,10 @@ WHAT TO REPORT BACK (geometry-free is fine and preferred -- summaries/statistics
     ~89%)? Does the residual (SumoSharp still halts somewhat more than vanilla) clear the "believable
     dense traffic" bar for the visible product, or not?
 
-If the halting curve now tracks vanilla and the residual is acceptable, tell the SumoSharp side
-"gridlock re-check green on branch claude/sumosharp-drop-in-binary-vq7u9p" so they can move to merge.
-If SumoSharp still halts materially more than vanilla, send the halting trajectory + trips-cleared
-tables (geometry-free) so the SumoSharp side can localize the remaining source -- on the synthetic the
-residual is now small and diffuse, so a real-box curve is what would point at the next mechanism.
+If the halting curve tracks vanilla (as expected -- the serve-path code is byte-identical to what you
+accepted), tell the SumoSharp side "main verified green (HEAD afec614)" to confirm the merged source of
+truth reproduces. If it does NOT reproduce -- anything different from your prior GREEN -- that points at
+an environment/build discrepancy (likely a stale binary again, or a pipeline change on your side); send
+the halting trajectory + trips-cleared tables (geometry-free) and the exact SUMO_BINARY path + its mtime
+so the SumoSharp side can reconcile.
 ```
