@@ -114,13 +114,29 @@ match or improve them. This must be *verified*, not assumed: the full `dotnet te
   — is mis-gated), but it is (a) not needed for this ask, (b) counterproductive to the target metric,
   and (c) a semantics change that warrants its own purpose-built shared-lane test before landing. Held
   out of this change; revisit with a dedicated test + re-measurement.
-- **T3 — priority-junction on-junction wedge (mechanism B).** The 5 residual teleports are all at a
-  priority (uncontrolled, state `'M'`) junction — four vehicles wedging on the same internal lane
-  `:2436_0_1`, plus one red case — the pre-existing on-junction minor-turner / cascade residual
-  (`ISSUE2-JUNCTION-TELEPORT-DESIGN.md` §4-CORRECTION), NOT TLS-related. Separate, later stage; prior
-  attempts on these arms regressed `WillPassSaturationDiagTests`, so treat with care.
-  **Success:** synthetic-junction2 teleports → ~0 and the pop%↔density curve monotone within noise,
-  full suite green.
+- **T3 — the residual cascade (mechanism B). DIAGNOSED, NOT ATTEMPTED (regression-prone).** Traced the
+  5 residual teleports this session: they are **one single-root cascade**, not five independent wedges.
+  - Four of them (veh 102/196/262/307) teleport at the *exact same spot* — internal lane `:2436_0_1`
+    pos ~13.3 — one after another (~every 125 s). Each is held by `CrossJunctionLeaderConstraint`
+    (crossJL≈0) car-following a stopped leader that has crossed onto the downstream lane.
+  - Following the chain: the `:2436` wedgers follow **veh 99** (stopped on `-2437_1` pos 5.1), which
+    follows a queue on `-2437` whose head is **veh 78** (pos 20.1). Edge `-2437` feeds **TL junction
+    2336**. So the whole cascade is rooted at ONE head-of-queue vehicle that never clears its TL green.
+  - veh 78 at 2336: during red phases `RedLightConstraint` holds it (correct); during other steps it is
+    held by `JunctionYieldConstraint=0` while its own `egoState='r'` (redundant with red, harmless) and,
+    critically, by a `CrossJunctionLeaderConstraint` to **veh 152 sitting on the junction's OWN internal
+    lane `:2336_2_0`** with a **negative gap (−6.53)** — an intra-junction "block-the-box" gridlock:
+    152 occupies the junction and cannot exit, so 78 cannot enter behind it, so the queue never drains.
+  - This is the classic on-junction gridlock the tracked residual describes
+    (`ISSUE2-JUNCTION-TELEPORT-DESIGN.md` §4-CORRECTION, `NEED-junctionyield-impatience-saturation.md`):
+    faithfully fixing it needs the un-ported SUMO mechanisms (impatience / arrival-time gap acceptance,
+    and/or a correct block-the-box + cross-junction-leader-gap treatment). Prior attempts on these arms
+    regressed `WillPassSaturationDiagTests`, and the negative cross-junction-leader gap suggests a
+    separate false-leader sub-bug to isolate first. **Deliberately NOT attempted here** — it is not a
+    small trigger-timing change and must not be rushed against the parity gate.
+  - **Success (when taken on):** synthetic-junction2 teleports → ~0 and the pop%↔density curve monotone
+    within noise, with the full suite AND `WillPassSaturationDiagTests` green. Start by isolating the
+    negative-gap cross-junction leader (is veh 152 genuinely on veh 78's downstream path?).
 - **T4 — regression guard. DONE (partial).** `tests/Sim.ParityTests/LowDensityTeleportTests.cs` runs
   the committed synthetic-junction2 through the in-process `SumoShim` path (engine-only, no SUMO) and
   asserts teleports ≤ 5 — locking the T1 (mechanism-A) fix against regression toward 10. The bound
@@ -131,7 +147,9 @@ match or improve them. This must be *verified*, not assumed: the full `dotnet te
 - [x] T1 — havePriority-aware junction yield (TLS half): 10 → 5, goldens byte-identical
 - [~] T2 — RedLightConstraint routed-movement link: investigated, byte-identical on goldens but worsens
       the repro (5→6) and needs a dedicated shared-lane test — DEFERRED, not landed
-- [ ] T3 — priority-junction on-junction wedge (mechanism B): the 5 residual teleports
+- [~] T3 — residual cascade (mechanism B): DIAGNOSED as one single-root intra-junction gridlock at TL
+      2336 (head-of-queue veh 78 blocked by veh 152 on-junction, negative CJL gap); NOT attempted —
+      regression-prone (needs impatience / block-the-box, prior attempts regressed the stress test)
 - [x] T4 — committed low-density-teleport regression guard (teleports ≤ 5)
 
 ## Notes for the implementor
