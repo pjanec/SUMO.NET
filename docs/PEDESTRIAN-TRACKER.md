@@ -123,9 +123,11 @@ loopback; the live CycloneDDS binding remains a separate out-of-`Traffic.sln` co
 
 ## Stage P4 — Engine coordination seams (Core; with lane-engine session)
 
-- [~] **P4-1** Engine TLS-crossing signal projection (gate reads live signal; parity hash unchanged) —
-      **prototype landed on this branch, parity-clean, pending Engine-session review/merge of the Sim.Core
-      change.** `Engine.TryGetTlLinkState(tlId, linkIndex, out char)` — a pure read-only accessor over the
+- [x] **P4-1** Engine TLS-crossing signal projection (gate reads live signal; parity hash unchanged) —
+      **DONE: Sim.Core coordination resolved** (core handed to the ped track; main's finished P2-G/junction
+      work merged into this branch, full gate re-green at **630 parity (+3 skip)** / 142 ped / 2 / 1 with the
+      projection layered on — inert against the new, larger baseline).
+      `Engine.TryGetTlLinkState(tlId, linkIndex, out char)` — a pure read-only accessor over the
       SAME private `TlLinkStateChar` the frozen parity path uses (actuated `CurrentState` / static formula
       split), at `CurrentTime`; reaches the walkingarea→crossing links the vehicle-facing `TlStates`
       structurally excludes. Never called from `Step()`, mutates nothing → parity hash `909605E965BFFE59`
@@ -135,9 +137,11 @@ loopback; the live CycloneDDS binding remains a separate out-of-`Traffic.sln` co
       3 tests (142 ped total): over a full stepped POC-0 cycle the live gate opens/closes **exactly** with
       the Engine's crossing signal and agrees char-for-char with today's XML re-derivation (faithful drop-in;
       the actuated case where they'd diverge rides the already-parity-tested `TlLinkStateChar` actuated
-      branch), plus the projection's unknown-tl / out-of-range guards. **Remaining:** success condition 3
-      (coordinated merge) — the Engine track owns the `Engine.cs` edit; hand them this reviewed, parity-clean
-      diff.
+      branch), plus the projection's unknown-tl / out-of-range guards. The live path is **opt-in**: an
+      Engine-coupled integration wires `ForCrossingLive`; Engine-less ped contexts (demos, pure-ped tests)
+      keep the exact-for-static XML re-derivation, since the live read needs an Engine to query. No
+      production consumer wires the gate to an Engine today, so nothing to retrofit — the seam is ready for
+      the first car+ped coupling that needs it.
 
 ## Stage P5 — Evac generalization
 
