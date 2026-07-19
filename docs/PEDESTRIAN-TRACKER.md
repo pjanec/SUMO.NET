@@ -258,11 +258,14 @@ permissive → existing goldens unchanged). Waits on P2-3 + P1-1 + a real croppe
       crossing-throughput guarantee), composes with the P8-3 weighted demand. **P8-4b** (dynamic per-crossing
       guard) DEFERRED — needs the vehicle-calibration seam + P4 vehicle-yields-at-crossing (SumoData-owned).*
 - [~] **P8-5** Scenario/manifest slot-in + shared FCD replay (cars + peds in one Sim.Viz stream) —
-      *sub-area session owns the merge/slot-in. **Ped side landed:** `SubareaFcdRecorder` + `PersonFcdWriter`
-      drive the box with P8-3 weighted demand sized by the P8-4a knob and emit a SUMO `<person>` FCD stream
-      (world-frame x/y/angle/speed, deterministic, appearance-legitimate by construction) via
-      `Sim.Viz --ped-subarea-fcd <out> [--dial d] [--seconds s] [--box dir]`. The shared car+ped edge/coordinate
-      contract + the vehicle-row merge are theirs (see `docs/PEDESTRIAN-P8-BACKLOG.md`).*
+      *sub-area session owns the merge/slot-in (their `sim_viz.py --ped-fcd`; consumer landed, format pinned in
+      `SUBAREA-SHARED-REPLAY-CONTRACT.md`). **Ped side landed + aligned to the contract:** `SubareaFcdRecorder`
+      + `PersonFcdWriter` drive the box with P8-3 weighted demand sized by the P8-4a knob and emit a SUMO
+      `<person>` FCD stream in **box SUMO XY metres** (same frame as net.xml — no transform) with **timesteps on
+      the vehicle FCD grid** (t=0 start, `FrameDt` = box `step-length` = 1.0 s) so the merge aligns on exact
+      time values; world-frame x/y/angle/speed, deterministic, appearance-legitimate by construction. Emit via
+      `Sim.Viz --ped-subarea-fcd <out> [--dial d] [--seconds s] [--box dir]`, hand to `sim_viz --ped-fcd`. The
+      vehicle-row merge + shared edge/coordinate contract are theirs (see `docs/PEDESTRIAN-P8-BACKLOG.md`).*
 
 ---
 

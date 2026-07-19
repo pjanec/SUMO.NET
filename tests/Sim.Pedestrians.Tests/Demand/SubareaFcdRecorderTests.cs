@@ -62,8 +62,12 @@ public class SubareaFcdRecorderTests
         Assert.Equal(result.Frames, timesteps.Count);
         Assert.True(result.PopulationCap > 0, "the dialed cap should be positive");
 
-        // Timesteps advance by dt (first frame is at t = dt).
-        Assert.Equal(opt.Dt, double.Parse(timesteps[0].Attribute("time")!.Value, CultureInfo.InvariantCulture), precision: 9);
+        // Frames align to the vehicle FCD grid: first frame at t=0 (SUMO begin), cadence = FrameDt (the
+        // box's step-length=1.0), so the shared replay merges car+ped timesteps on identical time values.
+        var t0 = double.Parse(timesteps[0].Attribute("time")!.Value, CultureInfo.InvariantCulture);
+        var t1 = double.Parse(timesteps[1].Attribute("time")!.Value, CultureInfo.InvariantCulture);
+        Assert.Equal(0.0, t0, precision: 9);
+        Assert.Equal(opt.FrameDt, t1 - t0, precision: 9);
 
         var totalPersonRows = 0;
         var maxConcurrent = 0;
