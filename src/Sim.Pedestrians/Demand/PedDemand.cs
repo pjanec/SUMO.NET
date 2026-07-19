@@ -38,6 +38,12 @@ public sealed class PedDemand
     // consumes an extra draw from (or reorders) either of the other two.
     private const ulong LivelinessSalt = 0x5044_5354_4C49_5601UL;  // "PDSTLIV1" ascii-ish, arbitrary distinct constant
 
+    // P8-3b (docs/PEDESTRIAN-P8-3-DEMAND-DESIGN.md §4): a FOURTH, dedicated salt for the weighted
+    // sub-area O/D draw. Kept separate from OriginDestSalt so the weighted path (WeightedEndpoints set)
+    // never aliases the uniform path's stream. This salt is only ever consumed when WeightedEndpoints is
+    // set -- the null (default) path constructs no stream on it, so it can never perturb existing goldens.
+    private const ulong SubareaODSalt = 0x5044_5354_5741_5701UL;   // "PDSTWAW1" ascii-ish, arbitrary distinct constant
+
     private readonly PedDemandConfig _config;
     private readonly IPedNavigation _navigation;
     private readonly PedLodManager _lodManager;
@@ -53,14 +59,26 @@ public sealed class PedDemand
 
     public PedDemand(PedDemandConfig config, IPedNavigation navigation, PedLodManager lodManager, double startTime = 0.0)
     {
-        if (config.Origins.Count == 0)
+        // With WeightedEndpoints set, the endpoint set supplies O/D, so Origins/Destinations may be
+        // empty (the P8-3b relaxation); without it, the uniform path still requires both.
+        if (config.WeightedEndpoints is { } weighted)
         {
-            throw new ArgumentException("PedDemandConfig.Origins must have at least one point.", nameof(config));
+            if (weighted.Count == 0)
+            {
+                throw new ArgumentException("PedDemandConfig.WeightedEndpoints must have at least one endpoint.", nameof(config));
+            }
         }
-
-        if (config.Destinations.Count == 0)
+        else
         {
-            throw new ArgumentException("PedDemandConfig.Destinations must have at least one point.", nameof(config));
+            if (config.Origins.Count == 0)
+            {
+                throw new ArgumentException("PedDemandConfig.Origins must have at least one point.", nameof(config));
+            }
+
+            if (config.Destinations.Count == 0)
+            {
+                throw new ArgumentException("PedDemandConfig.Destinations must have at least one point.", nameof(config));
+            }
         }
 
         _config = config;
@@ -148,25 +166,52 @@ public sealed class PedDemand
     {
         var id = _nextId++;
 
-        // ONE per-ped stream, seeded from (config.Seed, id, OriginDestSalt) -- independent of every
-        // other ped's stream and of the spawn-timing stream above (VehicleRng.SeedFor's salted
-        // overload), so which O/D pair a ped draws never depends on how many peds spawned before it
-        // beyond its own id, nor on thread/evaluation order (this class is single-threaded anyway).
-        var rng = VehicleRng.SeedFor(_config.Seed, id, OriginDestSalt);
-        var originIndex = PickIndex(ref rng, _config.Origins.Count);
-        var destIndex = PickIndex(ref rng, _config.Destinations.Count);
-
-        var origin = _config.Origins[originIndex];
-        var destination = _config.Destinations[destIndex];
-
-        // Avoid a trivial zero-length trip when an alternative destination exists -- deterministic
-        // (no extra random draw): just walk to the next candidate destination.
-        var guard = 0;
-        while (PointsCoincide(origin, destination) && guard < _config.Destinations.Count)
+        Vec2 origin;
+        Vec2 destination;
+        if (_config.WeightedEndpoints is { } weighted)
         {
-            destIndex = (destIndex + 1) % _config.Destinations.Count;
+            // P8-3b (docs/PEDESTRIAN-P8-3-DEMAND-DESIGN.md §4): weighted sub-area O/D. ONE per-ped stream
+            // on the dedicated SubareaODSalt (never aliases the uniform OriginDestSalt path), two weighted
+            // draws -> origin then destination. Every endpoint is a fringe or POI edge, so both ends are
+            // appearance-legitimate by construction (the P8-3 x P8-2 synergy).
+            var rng = VehicleRng.SeedFor(_config.Seed, id, SubareaODSalt);
+            var originIdx = weighted.DrawWeightedIndex(ref rng);
+            var destIdx = weighted.DrawWeightedIndex(ref rng);
+            origin = weighted[originIdx].Pos;
+            destination = weighted[destIdx].Pos;
+
+            // Same zero-length guard as the uniform path -- deterministic, no extra draw: walk to the
+            // next endpoint when origin/destination coincide.
+            var guard = 0;
+            while (PointsCoincide(origin, destination) && guard < weighted.Count)
+            {
+                destIdx = (destIdx + 1) % weighted.Count;
+                destination = weighted[destIdx].Pos;
+                guard++;
+            }
+        }
+        else
+        {
+            // ONE per-ped stream, seeded from (config.Seed, id, OriginDestSalt) -- independent of every
+            // other ped's stream and of the spawn-timing stream above (VehicleRng.SeedFor's salted
+            // overload), so which O/D pair a ped draws never depends on how many peds spawned before it
+            // beyond its own id, nor on thread/evaluation order (this class is single-threaded anyway).
+            var rng = VehicleRng.SeedFor(_config.Seed, id, OriginDestSalt);
+            var originIndex = PickIndex(ref rng, _config.Origins.Count);
+            var destIndex = PickIndex(ref rng, _config.Destinations.Count);
+
+            origin = _config.Origins[originIndex];
             destination = _config.Destinations[destIndex];
-            guard++;
+
+            // Avoid a trivial zero-length trip when an alternative destination exists -- deterministic
+            // (no extra random draw): just walk to the next candidate destination.
+            var guard = 0;
+            while (PointsCoincide(origin, destination) && guard < _config.Destinations.Count)
+            {
+                destIndex = (destIndex + 1) % _config.Destinations.Count;
+                destination = _config.Destinations[destIndex];
+                guard++;
+            }
         }
 
         var path = _navigation.FindPath(origin, destination);
@@ -416,6 +461,14 @@ public sealed class PedDemandConfig
     /// `TrySpawnOne` instead build an `ActivityTimeline` (the routed path as Walk segments with seeded
     /// Pause beats spliced in) and call `AddPedLively`.
     public PedLivelinessConfig? Liveliness { get; init; }
+
+    /// P8-3b (docs/PEDESTRIAN-P8-3-DEMAND-DESIGN.md §4): ADDITIVE, optional weighted sub-area endpoint
+    /// set. Null (the default) => O/D are drawn from the uniform `Origins`/`Destinations` exactly as
+    /// before -- bit-identical to pre-P8-3 `PedDemand` (the ITERON RULE; no stream is constructed on the
+    /// dedicated sub-area salt). When set, `TrySpawnOne` draws origin+destination from it (weighted by
+    /// endpoint weight) instead; every endpoint is a fringe or POI edge, so both ends are appearance-
+    /// legitimate by construction. `Origins`/`Destinations` may be empty when this is set.
+    public SubareaDemand? WeightedEndpoints { get; init; }
 }
 
 /// LIVE-PROD-1b (docs/PEDESTRIAN-LIVELINESS-DESIGN.md §4): per-trip liveliness knobs. Deliberately

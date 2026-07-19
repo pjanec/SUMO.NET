@@ -32,8 +32,12 @@ once the POCs converge.
       serves each exactly once per cycle; `--ped-waiter` scene (building + seated patrons + waiter,
       hidden between rounds); 4 tests inc. exact server==IG sweep, serves-every-table, inside=hidden;
       589 parity + 101 ped green)*
-- [ ] **LIVE-POC-4** — auto-deduced liveliness demand in a subarea + density knob + shared-mask legitimacy
-      (after Stage P8 + a real cropped box; zero on-camera pops audited)
+- [~] **LIVE-POC-4** — auto-deduced liveliness demand in a subarea + density knob + shared-mask legitimacy
+      (after Stage P8 + a real cropped box; zero on-camera pops audited) — *core LANDED against the committed
+      synthetic box: auto-deduced weighted demand (P8-3), density knob (P8-4a), and legitimacy-by-construction
+      endpoints (no on-camera pop possible on this path); recorded to the shared replay (P8-5 ped side).
+      Remaining for full closure: a REAL cropped box (not the synthetic handoff crop) and an explicit
+      zero-on-camera-pop audit once a live camera/visible-set exists (P8-2 live gate, `PEDESTRIAN-P8-BACKLOG.md`).*
 
 Graduation into production (making the *routed ambient crowd* lively):
 - [x] **LIVE-PROD-1a** — `PedLodManager` low-power `ActivityTimeline` (lively) peds *(`AddPedLively`;
@@ -166,17 +170,19 @@ zones along sidewalks with forced promotion; the legacy car-centric radial evac 
       50.1 ms/step (20.0 steps/s, 6.45× serial); bandwidth **36.75 / 182.4 / 294.4 Mbit/s** confirmed under
       the 500 Mbit/s budget (byte-identical). All 3 success conditions PASS. Full report:
       `docs/PEDESTRIAN-P6-1-RESULTS.md`; findings docs updated with on-target columns (POC7A/7B/7C).
-- [ ] **P6-2** Region decomposition — **GO (triggered by P6-1, confirmed by the combined-load test)**.
-      P6-1: the `Sim.BenchCrowd` 100k thread sweep plateaus at ~8–16 threads and is **flat 16→24** on a
-      24-physical-core box (efficiency 69% @8t → 42% @16t → 28% @24t) — memory-bandwidth bound + P/E split.
-      **Combined-load test (`docs/PEDESTRIAN-COMBINED-LOAD-RESULTS.md`)** makes it concrete: under the
-      single-station envelope (~10k veh + 100k ped sharing ~half the box), **peds are the sole real-time-
-      marginal engine** — vehicles clear by 29–53×, but ped heavy-churn **fails real-time when starved to
-      4 cores (5.5 st/s vs 10 st/s bar)** and is core-scaling-limited, not contention-limited (the
-      cross-engine tax is only ~5–9% at 6–8 cores). Porting the vehicle engine's byte-identical `--region`
-      decomposition to `OrcaCrowd.Step` is the direct lever (needs ~1.4× ped churn per-core uplift to clear
-      churn on a 6-core budget). Safe operating point until then: **peds ≥ 8 cores for churn-heavy loads**
-      (the 4+8 split passes today).
+- [~] **P6-2** Region decomposition — **implemented + bit-identical, but the region-*task* version FALLS
+      SHORT of the perf target; phase-2 SoA-reorder needed.** GO was established by P6-1 (BenchCrowd 100k
+      plateaus/flat 16→24) + the combined-load test (peds the sole RT-marginal engine; churn fails at 4
+      cores). **P6-2-1/2/3/5 landed** (`OrcaCrowd.UseRegionDecomposition` + `PedLodManager` passthrough,
+      default-off, bit-identical: `OrcaRegionDecompositionTests`/`PedLodRegionDecompositionTests` +
+      full gate 649/143/2/1 green). **On-target perf validation (`docs/PEDESTRIAN-P6-2-RESULTS.md`, this
+      perf session): targets NOT met** — region-task scheduling over the shared frozen grid (no SoA reorder)
+      is neutral-to-slightly-negative: raw ORCA best 1.03×, isolated ped churn best **1.08×** (4c), regresses
+      at 16–24c; 6-core churn 12.2 st/s (~1.2× margin, not the ≥1.5× goal); concurrent 8+4 churn still fails
+      (6.8 st/s). Root cause: a region's agents stay at scattered SoA indices, so neighbour reads still
+      scatter — no locality win. **Next: the design §8 phase-2 SoA-reorder refinement** (region-contiguous
+      order via index permutation, permuted back for bit-identity), then re-run the P6-2-RESULTS campaign.
+      Operating point until then: **peds ≥ 8 cores for churn-heavy loads** (the 4+8 split clears).
 - [x] **P6-3** Requirement-indexed property-test suite (reqs 1–7, each named; parity untouched) *(11 tests,
       each over ≥5 seeded configs with anti-vacuous guards: Req1 perf (parallel==serial bit-exact over
       78k comparisons + low-power 0 per-step samples), Req2 believability (ORCA no-overlap, worst margin
@@ -231,15 +237,50 @@ Realizes `SUBAREA-FOR-PEDESTRIAN-SESSION.md` §3; mapping in `COORDINATION-pedes
 consequences in `PEDESTRIAN-LIVELINESS-DESIGN.md` §11. All additive + inert by default (empty visible set →
 permissive → existing goldens unchanged). Waits on P2-3 + P1-1 + a real cropped box `net.xml`.
 
-- [ ] **P8-1** Verify the SUMO-geometry bake against a real cropped sub-area net (fringe = boundary-cut
-      walkable stubs; pin the fringe set) — *cheap; run when a crop is available*
-- [ ] **P8-2** Appearance-legitimacy layer (`PedSpawnPolicy`) — the no-cheating gate, **orthogonal to
+**Current capability (what works end-to-end today, against the committed `scenarios/_ped/subarea-box`):**
+the box crop bakes into a connected walkable navmesh (P8-1); a weighted O→D endpoint set is built from the
+deduced POIs + the walkable fringe (`SubareaDemand`, P8-3a) and wired into `PedDemand` as an inert-default
+`WeightedEndpoints` (P8-3b), so every spawn/arrival lands on a fringe/POI edge — **appearance-legitimate by
+construction** (no camera needed on this path); a dialable density knob (`PedDensityKnob`, P8-4a) sizes the
+crowd as pedestrians-per-walkable-km with a LoS-C safe ceiling; and the whole run is recorded as a SUMO
+`<person>` FCD stream aligned to the vehicle FCD grid (`SubareaFcdRecorder`/`PersonFcdWriter`,
+`Sim.Viz --ped-subarea-fcd`, P8-5 ped side) for the shared car+ped replay. All deterministic, all inert to
+existing goldens, gate green (649 parity / 168 ped / 2 DotRecast). What's NOT yet done and why is indexed in
+`docs/PEDESTRIAN-P8-BACKLOG.md` (P8-2 live-camera gate, P8-4b dynamic crossing guard, P8-5 merge/slot-in).
+
+- [x] **P8-1** Verify the SUMO-geometry bake against a real cropped sub-area net (fringe = boundary-cut
+      walkable stubs; pin the fringe set) — *done: SumoData handoff box committed at
+      `scenarios/_ped/subarea-box/`; `SubareaBoxBakeTests` bakes the crop into a connected pathable navmesh
+      and pins all 48 walkable-fringe edges as baked sidewalks. Re-verify vs a real crop later.*
+- [~] **P8-2** Appearance-legitimacy layer (`PedSpawnPolicy`) — the no-cheating gate, **orthogonal to
       sim-LOD**; spawn/despawn only at fringe/sink/off-camera, reading the same camera visible-edge set as
-      the vehicle `RealismMask`; inert-default bit-identical — *the load-bearing new piece*
-- [ ] **P8-3** Auto-deduced pedestrian demand (O→D + POIs from walkable-space + land-use; their
-      `deduce_weights.py` as template; spawns land at fringe/doors)
-- [ ] **P8-4** Pedestrian density knob + crossing-throughput guard (crowds never deadlock the calibrated cars)
-- [ ] **P8-5** Scenario/manifest slot-in + shared FCD replay (cars + peds in one Sim.Viz stream)
+      the vehicle `RealismMask`; inert-default bit-identical — *the load-bearing new piece*.
+      *Mechanism LANDED:* `PedSpawnPolicy` (mirrors `RealismMask`) + tests (inert-default + all 4 predicate
+      branches); design + wiring plan in `docs/PEDESTRIAN-P8-2-APPEARANCE-LEGITIMACY-DESIGN.md`. *Next:* wire
+      into `PedDemand` spawn (origin→edge; deny-defers) + `PedLodManager` despawn (route-to-sink/hold) + host
+      fringe/visible-set plumbing — intertwined with P8-3 edge-aware demand.
+- [~] **P8-3** Auto-deduced pedestrian demand (O→D + POIs from walkable-space + land-use; their
+      `deduce_weights.py` as template; spawns land at fringe/doors) — *P8-3a + P8-3b DONE
+      (`docs/PEDESTRIAN-P8-3-DEMAND-DESIGN.md`): `SubareaDemand` (weighted fringe+POI endpoint set,
+      deterministic weighted draw, fringe→sidewalk-midpoint resolve) wired into `PedDemand` behind the
+      optional inert-default `WeightedEndpoints`; box run = every O/D a fringe/POI endpoint (legitimacy by
+      construction, the P8-3×P8-2 synergy), cap held, `unreachableSkips=0`, deterministic. Density scaling is
+      P8-4.*
+- [~] **P8-4** Pedestrian density knob + crossing-throughput guard (crowds never deadlock the calibrated cars)
+      — *design: `docs/PEDESTRIAN-P8-4-DENSITY-DESIGN.md`. **P8-4a DONE** (`PedDensityKnob`): dialable
+      pedestrians-per-walkable-km knob (mirrors the vehicle knee_veh_lkm density model; length not area so a
+      cap is never inflated), Little's-law rate, dial clamped to a LoS-C safe ceiling (the static
+      crossing-throughput guarantee), composes with the P8-3 weighted demand. **P8-4b** (dynamic per-crossing
+      guard) DEFERRED — needs the vehicle-calibration seam + P4 vehicle-yields-at-crossing (SumoData-owned).*
+- [~] **P8-5** Scenario/manifest slot-in + shared FCD replay (cars + peds in one Sim.Viz stream) —
+      *sub-area session owns the merge/slot-in (their `sim_viz.py --ped-fcd`; consumer landed, format pinned in
+      `SUBAREA-SHARED-REPLAY-CONTRACT.md`). **Ped side landed + aligned to the contract:** `SubareaFcdRecorder`
+      + `PersonFcdWriter` drive the box with P8-3 weighted demand sized by the P8-4a knob and emit a SUMO
+      `<person>` FCD stream in **box SUMO XY metres** (same frame as net.xml — no transform) with **timesteps on
+      the vehicle FCD grid** (t=0 start, `FrameDt` = box `step-length` = 1.0 s) so the merge aligns on exact
+      time values; world-frame x/y/angle/speed, deterministic, appearance-legitimate by construction. Emit via
+      `Sim.Viz --ped-subarea-fcd <out> [--dial d] [--seconds s] [--box dir]`, hand to `sim_viz --ped-fcd`. The
+      vehicle-row merge + shared edge/coordinate contract are theirs (see `docs/PEDESTRIAN-P8-BACKLOG.md`).*
 
 ---
 
