@@ -1,10 +1,47 @@
 # PEDESTRIAN-P6-2-REGION-DESIGN.md — spatial region decomposition for `OrcaCrowd.Step`
 
-**Status: design (design-first per `CLAUDE.md`).** HOW + a task breakdown with success conditions. This is
-the pedestrian port of the vehicle engine's proven byte-identical `--region` domain decomposition
-(`Engine.cs`, `docs/SPATIAL-OPT.md`), triggered and justified by the perf campaign
-(`PEDESTRIAN-P6-1-RESULTS.md`, `PEDESTRIAN-COMBINED-LOAD-RESULTS.md`; the P6-2 line in
-`PEDESTRIAN-TRACKER.md` — owned by the perf session — records the GO).
+**Status: region-*task* decomposition SHIPPED (bit-identical, default-off); phase-2 SoA-reorder DEFERRED.**
+HOW + task breakdown. Pedestrian port of the vehicle engine's byte-identical `--region` domain decomposition
+(`Engine.cs`, `docs/SPATIAL-OPT.md`), triggered by the perf campaign (`PEDESTRIAN-P6-1-RESULTS.md`,
+`PEDESTRIAN-COMBINED-LOAD-RESULTS.md`). The on-target verdict is `PEDESTRIAN-P6-2-RESULTS.md` (perf session).
+The P6-2 line in `PEDESTRIAN-TRACKER.md` is owned by the perf session.
+
+> ## ⏸️ DEFERRAL — phase-2 SoA-reorder (return-to-later)
+>
+> **Decision (user, this session): defer the SoA-reorder.** P6-2-1/2/3/5 shipped — `OrcaCrowd.UseRegionDecomposition`
+> is bit-identical to serial and default-off — but the on-target measurement (`PEDESTRIAN-P6-2-RESULTS.md`)
+> found the region-*task* version **falls short**: best **1.08×** vs the ≥1.4× target, ~1.0× at 6 cores,
+> slightly *negative* at 16–24 threads. Root cause: it changed only *which agents a worker processes
+> together*; a region's agents still sit at **scattered SoA indices**, so neighbour reads still scatter
+> across the whole array — the bandwidth bottleneck is untouched, leaving only dispatch overhead.
+>
+> **Why deferred, not done now:**
+> - **Deep + parity-sensitive.** The ORCA gather sorts candidates by *slot* index, which is also the agent's
+>   identity. A reorder must thread a **stable original index** through the gather → LP → write-back so the
+>   neighbour *order* (hence every trajectory) is unchanged — invasive and easy to get subtly wrong.
+> - **Perf-uncertain.** ORCA is memory-bandwidth-bound with a ~3× ceiling (the vehicle `--region` evidence);
+>   the reorder should improve locality but hitting 1.4× is not guaranteed.
+> - **Not self-validatable here.** The payoff only shows on the 24-core box → every attempt needs a
+>   perf-session re-run of the campaign. Bit-identity *is* checkable here (the existing hash gate).
+> - **Not a correctness need.** The deployment is feasible **today at the 4+8 split** (peds ≥ 8 cores clear
+>   heavy churn). So phase-2 is a *margin / tighter-ped-core-budget* investment, not a gap.
+>
+> **What it entails when we return (the design):** reorder the agent SoA into region-contiguous (grid/Morton)
+> order via an **index permutation** each `Step` (move an index array, not the payload, or reorder payload
+> incrementally since agents move little/step); make the neighbour gather sort by the **stable original
+> index** (not the permuted slot) so results are bit-identical; write `_newVelocity` back to original slots;
+> **validate bit-identity with the existing `OrcaRegionDecompositionTests` hash gate** (extend for the reorder);
+> then **re-run** `Sim.BenchCrowd --region-decomp` + the `Sim.BenchPedLod` 6+6/8+4 splits on-target for the
+> ≥1.4× / ≥1.5×-margin check.
+>
+> **Triggers to revisit:** (a) the deployment must run peds on **< 8 cores**; (b) heavy-churn margin beyond
+> ~1.2× at 6 ped cores is wanted; (c) a **larger simultaneous high-power crowd** than the LOD split produces
+> (e.g. a mass-promotion incident) needs to clear real-time.
+>
+> **Operating point until then:** peds **≥ 8 cores** for churn-heavy loads (the 4+8 split), and keep
+> `UseRegionDecomposition` **default-off** (it is neutral-to-slightly-negative as-built, so nothing consumes
+> it by default; the code + gate stay in place, ready for the reorder). See `PEDESTRIAN-P6-2-RESULTS.md` for
+> the full measured tables.
 
 ## 1. Why (the trigger, in one paragraph)
 
@@ -129,7 +166,10 @@ Legend: `[ ]` not started · `[~]` in progress · `[x]` done.
   50k ~flat). *Pending (perf session, on-target 24-core box):* the acceptance measurement — **≥1.4× ped churn
   per-core uplift** vs the flat parallel path at the 4–8-core caps, and a re-run of the 6+6 / 8+4 combined-load
   splits showing heavy churn clearing real-time with ≥1.5× margin at 6 ped cores. Documented in a P6-2 results
-  doc / findings update.
+  doc / findings update. *(MEASURED — `PEDESTRIAN-P6-2-RESULTS.md`: **falls short**, best 1.08×; the target is
+  not met by the region-task version → phase-2 SoA-reorder needed, DEFERRED — see the deferral banner up top.)*
+- [ ] **P6-2-6 (phase 2, DEFERRED) — SoA region-contiguous reorder.** The locality piece the as-built version
+  omitted; required to hit ≥1.4×. Design + triggers + operating point in the deferral banner (top of this doc).
 - [x] **P6-2-5 — Wire into `PedLodManager`** high-power crowd (opt-in). *Done:* `UseRegionDecompositionHighCrowd`
   + `HighCrowdRegionCellSizeMultiplier` passthroughs (mirror `UseParallelHighCrowd`), default off.
   `PedLodRegionDecompositionTests` promotes 400 peds (≥256 high-power after the dwell) through the FULL manager
