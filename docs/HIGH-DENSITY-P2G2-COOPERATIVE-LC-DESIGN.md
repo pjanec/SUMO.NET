@@ -6,6 +6,32 @@ model that unblocks the faithful multi-lane lane-change work (P2G-3 and the P2-G
 gridlocking saturated traffic. Grounds in `sumo/src/microsim/lcmodels/MSLCM_LC2013.cpp`
 (`informFollower`/`informLeader`/`amBlockingFollowerPlusNB`/`saveBlockerLength`, the `myVSafes` channel).
 
+## ⚠️ 2026-07 UPDATE — the serve-path P2-G junction fixes overtook the FLOW rationale
+
+The serve-path drop-in effort landed three traffic-light junction fixes (Bug-1 `<routing>` config
+parsing, **Bug-2** RBL `traffic_light` exclusion, **Bug-3** red-held-foe `WillPass=false`; see
+`docs/SERVE-PATH-PLAN.md` and `docs/FOLLOWUP-TL-throughput-flowrate.md`). Merged with this P2G-2 work,
+they **remove the saturated-grid gridlock at its root**, which changes this feature's characterization:
+
+- **Saturated `-L2` grid now drains for EVERY config** (measured, stuck at t=700): parity **1**,
+  dense-only **1**, dense+informFollower **1**. Previously dense-only gridlocked (~51) and informFollower
+  rescued it (0). So the informFollower's **saturated-grid rescue is obsolete** — the gridlock was
+  substantially a junction TL-blindness problem, now fixed upstream.
+- **Organic-net throughput is now equivalent across configs** (arrived at 600 steps): parity **327**,
+  dense-only **325**, dense+inform **326** (was 278 / 278 / 268). Dense-LC is now throughput-**neutral**
+  vs parity, not the clear win it was framed as.
+
+This is consistent with §1's own conclusion below ("required for PARITY, not for flow"). **The feature's
+remaining, untouched justification is FIDELITY** — the SUMO-faithful speed-gain lane choice on
+scenarios/46 (`CoordinatedLaneChange_On_Scenario46_TakesFasterLane` still passes). The two flow-oriented
+acceptance tests were **re-baselined** to the measured post-fix reality (see
+`tests/Sim.ParityTests/RungHDp2g2CoordinatedLaneChangeTests.cs`); the gate-OFF default remains
+byte-identical (all committed parity goldens green).
+
+**OPEN DECISION for the high-density effort:** with the flow/gridlock rationale gone and throughput now
+neutral, does the cooperative `informFollower` opt-in still earn its place, or does its value collapse to
+the fidelity (lane-distribution) case alone? Not resolved here — flagged for a deliberate call.
+
 ## 1. The analysis — why this exists, what it buys, what it costs
 
 ### Is the coordinated LC model required for FLOW? NO.
