@@ -76,7 +76,7 @@ internal static class Program
         var fastGate = false;
         var spatial = false;
         var region = false;
-        var coordinatedLc = true; // P2G-2: coordinated dense LC is the PRODUCT DEFAULT (robustness hardened); --parity opts out
+        var coordinatedLc = true;  // P2G-2: aggressive dense LC is the PRODUCT DEFAULT (best organic flow, robust); --parity opts out
         var regionGrid = 4;
         string? sumoSummaryPath = null;
         string? sumoTripinfoPath = null;
@@ -161,14 +161,13 @@ internal static class Program
                     fastGate = true;
                     break;
                 case "--coordinated-lc":
-                    // P2G-2: the coordinated dense lane-change model (cooperative informFollower +
-                    // cross-junction speed-gain). This is now the DEFAULT; the flag is kept as an explicit
-                    // opt-in for scripts/back-compat. Believable multi-lane overtaking/merging.
+                    // P2G-2: the aggressive dense lane-change model (cross-junction speed-gain). This is now
+                    // the DEFAULT; the flag is kept as an explicit opt-in for scripts/back-compat.
                     coordinatedLc = true;
                     break;
                 case "--parity":
                     // Deterministic SUMO-anchor mode (byte-identical to the committed goldens) -- the
-                    // A/B baseline for benchmarking the coordinated default against the parity path.
+                    // A/B baseline for benchmarking the dense-LC default against the parity path.
                     coordinatedLc = false;
                     break;
                 default:
@@ -220,7 +219,7 @@ internal static class Program
         engine.SpatialPlan = spatial; // opt-in spatial plan probe (off = default; byte-identical when on)
         engine.RegionGrid = regionGrid; // spatial region grid G (regions = G*G); set BEFORE LoadScenario
         engine.RegionPlan = region; // opt-in region-parallel plan/willPass (byte-identical when on)
-        engine.CoordinatedLaneChange = coordinatedLc; // P2G-2 opt-in coordinated dense LC (believable, costs LC-phase time)
+        engine.CoordinatedLaneChange = coordinatedLc; // P2G-2 aggressive dense LC (default; believable, best organic flow)
 
         engine.LoadScenario(net, rou, cfg);
 

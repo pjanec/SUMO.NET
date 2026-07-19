@@ -54,9 +54,12 @@ internal static class Program
         var warmupSteps = 0;
         string? summaryOut = null;
         string? statisticOut = null;
-        // P2G-2: the coordinated dense lane-change model is the PRODUCT DEFAULT (believable multi-lane
-        // overtaking/merging, perf-neutral, robust). `--parity` selects the deterministic SUMO-anchor mode
-        // (byte-identical to the committed goldens) -- the mode the offline `dotnet test` suite runs.
+        // P2G-2: the dense lane-change model (aggressive multi-lane overtaking/merging) is the PRODUCT
+        // DEFAULT -- believable, and it flows the realistic organic net about as well as parity. `--parity`
+        // selects the deterministic SUMO-anchor mode (byte-identical to the committed goldens, the mode the
+        // offline `dotnet test` suite runs). (The cooperative informFollower layer was retired -- its only
+        // benefit was a synthetic saturated-grid rescue that the P2-G traffic-light junction fixes now
+        // provide at the engine level, and it degraded organic flow + cost perf.)
         var coordinatedLc = true;
         for (var i = 1; i < args.Length; i++)
         {
@@ -81,7 +84,7 @@ internal static class Program
                     coordinatedLc = false; // deterministic SUMO-anchor mode (matches the committed goldens)
                     break;
                 case "--coordinated-lc":
-                    coordinatedLc = true; // explicit (already the default)
+                    coordinatedLc = true; // explicit (already the default: aggressive dense LC)
                     break;
                 default:
                     Console.Error.WriteLine($"error: unrecognized argument: {args[i]}");
