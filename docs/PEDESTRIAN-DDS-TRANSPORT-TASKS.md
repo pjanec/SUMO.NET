@@ -8,8 +8,13 @@ Legend: `[ ]` not started · `[~]` in progress · `[x]` done · `[!]` blocked/ne
 
 ## At-a-glance tracker
 
-- [ ] **D1** — DDS ped topics + names + QoS + `DdsPedReplicationSink`/`Source` binding
-- [ ] **D2** — Live DDS loopback proof: `server == IG` over real CycloneDDS (+ bytes/sec readout)
+- [x] **D1** — DDS ped topics + names + QoS + `DdsPedReplicationSink`/`Source` binding
+      *(`PedTopics.cs` + 4 topic names + sink/source; `dotnet build src/Sim.Replication.Dds -c Release` green;
+      gate untouched)*
+- [x] **D2** — Live DDS loopback proof: `server == IG` over real CycloneDDS (+ bytes/sec readout)
+      *(`src/Sim.PedDdsLoopback`, out of `Traffic.sln`: PathArc + ActivityTimeline reconstruct exactly
+      (0/801 mismatches), promoted FreeKinematic error 2.67e-7 m ≤ 0.02 m, promotion observed over the wire;
+      live single-stream bandwidth readout emitted; PASS/exit 0)*
 - [ ] **D3** *(follow-on, gated on user)* — wire the live DDS ped path into native viewer `--mode remote`
       + Godot City3D `--transport=dds`
 
