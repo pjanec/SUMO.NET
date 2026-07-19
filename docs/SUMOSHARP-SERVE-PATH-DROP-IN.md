@@ -99,6 +99,11 @@ served scenario to completion via SumoSharp with the audit green.
   turnover; we don't today. Skip unless requested.
 - **Multi-lane LC parity residual (scenario 46)** — pre-existing, sub-10 m transient, net still drains;
   not a serve-path blocker.
+- **`--max-parallelism N` on the serve CLI** — DONE. Caps engine worker threads (perf only, output
+  byte-identical for any value) so the SumoData preprocessing sweep can run many probe sims concurrently
+  (`--workers`) without `workers × all-cores` oversubscribing a many-core box. Parsed order-independently
+  (rides in a `SUMO_BINARY` prefix, no SumoData change). Design + tracker:
+  `docs/SUMOSHARP-CLI-MAXPARALLELISM.md`.
 
 ## 5. Suggested order & the definitive acceptance test
 

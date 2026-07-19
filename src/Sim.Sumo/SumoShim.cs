@@ -37,6 +37,15 @@ namespace Sim.Sumo;
 //                              IN.md §2). Sourced from engine.CompletedTrips (Engine.cs's
 //                              CaptureCompletedTrips), written via Sim.Harness.TripInfoWriter.
 //   --no-step-log [bool]       accepted and ignored (we never print a per-step log)
+//   --max-parallelism <N>      caps the engine's worker-thread degree (Engine.MaxParallelism). N<=0 =>
+//                              all cores (the default, unchanged); N>=1 => at most N threads. A PERF
+//                              knob only -- output is byte-identical regardless of N (the engine's
+//                              plan/willPass/emit loops are order-independent), which is what lets the
+//                              SumoData `--workers`×threads sweep trust its timing. Reuses the exact
+//                              flag name the Sim.BenchCity/Crowd/PedLod bench tools already use, and
+//                              (like every flag here) is parsed order-independently so it works before
+//                              or after `-c` -- e.g. a `SUMO_BINARY="dotnet sumosharp.dll
+//                              --max-parallelism 4"` prefix rides ahead of SumoData's `-c <cfg> ...`.
 // Any OTHER flag is TOLERATED (a warning to stderr, not an abort) so minor extra flags SumoData
 // passes never break the run. Both `--flag value` and `--flag=value` forms are accepted.
 public static class SumoShim
@@ -54,7 +63,11 @@ public static class SumoShim
         {
             stderr.WriteLine(
                 "usage: sumosharp -c <cfg> [--begin t] [--end t] [--fcd-output F] " +
-                "[--summary-output S] [--statistic-output T] [--tripinfo-output TI] [--no-step-log]");
+                "[--summary-output S] [--statistic-output T] [--tripinfo-output TI] [--no-step-log] " +
+                "[--max-parallelism N]");
+            stderr.WriteLine(
+                "  --max-parallelism N   cap engine worker threads (N<=0 = all cores, the default); " +
+                "perf knob only, output is identical for any N.");
             return args.Length == 0 ? 1 : 0;
         }
 
@@ -65,6 +78,8 @@ public static class SumoShim
         string? summaryOut = null;
         string? statisticOut = null;
         string? tripinfoOut = null;
+        // Perf knob (see class header): -1 == engine default (all cores). Set from --max-parallelism.
+        var maxParallelism = -1;
 
         try
         {
@@ -115,6 +130,13 @@ public static class SumoShim
                         break;
                     case "--tripinfo-output":
                         tripinfoOut = TakeValue();
+                        break;
+                    case "--max-parallelism":
+                        // Perf-only: caps Engine.MaxParallelism. Parsed here (order-independently, like
+                        // every flag) so it works before OR after -c, letting SumoData carry it as a
+                        // SUMO_BINARY prefix with no SumoData-side change. N<=0 keeps the all-cores
+                        // default; the Engine setter maps any non-positive value back to -1.
+                        maxParallelism = ParseInt(TakeValue(), flag);
                         break;
                     case "--no-step-log":
                         // Accept and ignore. SUMO passes `--no-step-log true`; the value (only when it
@@ -187,6 +209,10 @@ public static class SumoShim
         var steps = (int)Math.Round((endTime - beginTime) / config.StepLength);
 
         var engine = new Engine();
+        // Perf knob only -- does NOT change results (the engine's parallel loops are order-independent;
+        // the parallelism-invariance parity test asserts byte-identical output across values). Set
+        // before the run; <=0 leaves the all-cores default (the setter maps non-positive to -1).
+        engine.MaxParallelism = maxParallelism;
         try
         {
             engine.LoadScenario(cfgPath);
@@ -282,6 +308,16 @@ public static class SumoShim
         }
 
         return t;
+    }
+
+    private static int ParseInt(string value, string flag)
+    {
+        if (!int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var n))
+        {
+            throw new CliError($"{flag} value '{value}' is not an integer");
+        }
+
+        return n;
     }
 
     private static bool IsBooleanLiteral(string s) =>

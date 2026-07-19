@@ -417,6 +417,14 @@ hyper-threading oversubscription regresses. Every point is **byte-identical** to
 approximation. The single-thread **1.24×** is the data-oriented engine being leaner than SUMO per tick;
 the rest is the region-parallel scaling on top.
 
+The **`sumosharp` drop-in serve CLI** (the `sumo`-compatible binary the SumoData pipeline calls via
+`SUMO_BINARY`) exposes this same worker-thread cap as **`--max-parallelism N`** — `N<=0` (or omitted) =
+all cores, `N>=1` = at most N. It is parsed order-independently (works before or after `-c`, so it can
+ride in a `SUMO_BINARY="dotnet …/sumosharp.dll --max-parallelism 4"` prefix), letting a batch of
+concurrent probe sims cap per-sim threads instead of each grabbing every core. It is a **performance
+knob only**: output is byte-identical for any value (invariance is asserted by
+`RungHDgap4MaxParallelismTests`). See `docs/SUMOSHARP-CLI-MAXPARALLELISM.md`.
+
 **Optimizations that built the curve.** Every one is **byte-identical** (holds that same hash) — gated
 so any special-feature scenario falls back to the exact serial path, and each keeps the committed
 goldens unchanged. In roughly the order they landed:
