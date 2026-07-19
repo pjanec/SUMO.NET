@@ -119,3 +119,112 @@ O(high-water) not O(live)). A maintained dense ascending live-slot list — or s
 top slots free — would make cost track LIVE count and could widen P0-3's churn margin. Correctness and the
 architectural benefit (O(1) per switch, no re-routing every ped each change) already hold; this is a pure
 throughput refinement.
+
+---
+
+## P0-4 — turn on the crowd's spatial hash (root cause: the high-power crowd was brute-force O(n²))
+
+**Root cause.** `PedLodManager` constructed its persistent high-power `OrcaCrowd` bare (`new OrcaCrowd()`),
+so `UseSpatialHash` defaulted to `false` and every `Plan()` neighbour gather brute-force-scanned the WHOLE
+high-power crowd (O(n) per agent, O(n²) per step) instead of using the proven bit-identical spatial-hash
+pre-filter that had existed since the P0-1/Q3 era (`OrcaSpatialHashTests`) but was simply never turned on
+here. `LotCoupling`'s two bare crowds (`_peds: OrcaCrowd`, `_carCrowd: MixedTrafficCrowd`) had the same gap.
+
+**Part A change.** `PedLodManager`'s persistent `_highCrowd` is now constructed with `UseSpatialHash = true`
+(`src/Sim.Pedestrians/Lod/PedLodManager.cs`). It carries no static obstacles, so `UseObstacleSpatialIndex`
+is left off (nothing for it to accelerate). `LotCoupling`'s own bare `_peds` gets both `UseSpatialHash =
+true` and `UseObstacleSpatialIndex = true` (P2-1 — it DOES carry static parked-car-box obstacles via
+`AddParkedCarBox`); its bare `_carCrowd` gets `UseSpatialHash = true` too. A caller-supplied `peds` crowd
+(the `LotCoupling(OrcaCrowd? peds)` constructor parameter) is left untouched — only the crowd instances
+this code creates itself are "bare" in the sense the task means. `MaxNeighbours` was deliberately NOT set
+anywhere (that caps the neighbour set — a behavioral change) so this stays a pure, bit-identical pre-filter
+change; both spatial-hash mechanisms are proven bit-identical by construction (candidates gathered from the
+grid are sorted into the exact same order the brute-force scan would visit them in).
+
+**Correctness gate.** Full `dotnet test Traffic.sln` (Release, no-build): **585 passed + 3 skipped (parity)
++ 72 (Sim.Pedestrians.Tests) + 2 (Sim.Pedestrians.Nav.DotRecast.Tests) + 1 (Sim.Host.Tests) — all green,
+zero failures**, identical to the pre-change count. Every `PedLodManagerTests` / `LotCoupling*` test
+(`LotCouplingDeterminismTests`, `LotCouplingMutualAvoidanceTests`, `LotCouplingCarYieldsTests`) passed
+unchanged — these assert exact/deterministic trajectories, so this confirms the crowds behave identically,
+only faster. `git diff` touches only the three authorized files (`PedLodManager.cs`, `LotCoupling.cs`,
+`Sim.BenchPedLod/Program.cs` — the last for benchmark reporting only, see below).
+
+**Measurement discipline.** All numbers below were taken on this session's 4-core VM, in isolation:
+`dotnet build-server shutdown` + `kill -9` on any lingering MSBuild/VBCSCompiler node processes before each
+run (leftover node-reuse processes from a prior `dotnet build` were confirmed via `pgrep -a dotnet` and
+killed — they are NOT part of a `dotnet test`/build run but were still resident and could contend), then
+`dotnet build -c Release` once, `dotnet run -c Release --no-build --project src/Sim.BenchPedLod -- --sizes
+20000,50000,100000 --high-fraction 0.1 --steps 30 --warmup 8`. "Before" was measured on the unmodified
+pre-P0-4 commit; "after" on this change, both back-to-back on the same idle VM. Each side was run twice to
+confirm reproducibility; the numbers below are representative single runs (see honest caveats below for
+where repeats disagreed).
+
+### Before / after — Verdict Q1 isolation (does cost scale with the HIGH set or the TOTAL)
+
+| config | actualHigh | serial before → after | parallel before → after | serial×/parallel× |
+|---|---:|---|---|---|
+| 10 000 high-only (0 low) | 6 714 | 251.3 → 192.6 ms | 69.7 → 55.9 ms | 1.30× / 1.25× |
+| 100 000 total (~10k high + ~90k low) | 10 477 | 537.3 → 239.2 ms | 167.3 → 94.4 ms | 2.25× / 1.77× |
+
+### Before / after — main sweep
+
+| N total | scenario | actualHigh | serial before → after | parallel before → after | serial×/parallel× |
+|---:|---|---:|---|---|---|
+| 20 000 | A/stable | 2 098 | 39.4 → **46.9–56.9** ms | 16.3 → **20.4–21.4** ms | **0.7–0.8× (SLOWER)** |
+| 20 000 | B/churn | 5 254 | 107.3 → 91.6–92.1 ms | 33.3 → 30.4–33.8 ms | ~1.1–1.2× (noisy/flat) |
+| 50 000 | A/stable | 5 235 | 164.9 → 118.7–124.5 ms | 55.9 → 44.5–48.0 ms | 1.32–1.39× / 1.17–1.26× |
+| 50 000 | B/churn | 12 160 | 649.6 → 274.8–304.4 ms | 186.0 → 91.5–98.0 ms | 2.13–2.36× / 1.90–2.03× |
+| 100 000 | A/stable | 10 477 | 548.6 → 232.9–254.2 ms | 169.9 → 88.5–102.3 ms | 2.16–2.36× / 1.66–1.92× |
+| 100 000 | B/churn | 23 515 | 2537.4 → 537.7–542.9 ms | 680.3 → 182.9–184.5 ms | **4.67–4.72× / 3.68–3.72×** |
+
+**Headline result: the worst-case scenario wins biggest.** 100k B/churn — the scenario the whole
+POC-7c → P0-3 chain was fighting (P0-3 only shaved ~9% off it) — drops from **~680 ms/step to ~183
+ms/step parallel** (~1.5 steps/s → ~5.5 steps/s on this 4-core VM), a **~3.7× parallel / ~4.7× serial**
+win, because it holds the most high-power agents spread across the most simultaneously-active interest-
+source neighbourhoods (more separate regions for the grid to let each agent skip entirely). 100k A/stable
+gets a solid but smaller ~2.2–2.4× serial / ~1.7–1.9× parallel.
+
+**Honest finding #1 — the win is real but smaller than a naive O(n²)→O(n) framing predicts, and WHY.**
+An isolated probe (`OrcaCrowd` alone, no `PedLodManager` overhead, 10 clusters × ~1048 agents at the
+bench's own density/promote-radius, matching the 100k scenario's geometry exactly) measured only **~1.3–
+1.4×** from the hash — not 10×. Reason: this benchmark's per-source promote radius (~25.6 m, sized to
+hold ~1000 peds) is only ~1.7× `NeighbourDist` (15 m default), so a 3×3 grid block (45×45 m) already
+spans almost an entire cluster — the grid mainly earns its keep by letting an agent skip the OTHER 9
+clusters entirely (not by shrinking its own cluster's candidate list much), and that saving is partly
+offset by the per-step grid rebuild plus the per-agent `Array.Sort` over each ~1000-strong candidate list
+(needed for the bit-identical ordering guarantee). More separate high-power regions → more savings (this
+is exactly why 100k, with 10 well-separated clusters, wins far more than 20k, with only ~2).
+
+**Honest finding #2 — a REAL regression at the smallest scale tested.** 20 000-total A/stable (only 2 098
+high-power agents in ~2 clusters) is measurably **slower** with the hash on, reproduced across two
+separate runs (39.4 ms before vs. 46.9 and 56.9 ms after, serial; 16.3 ms before vs. 20.4 and 21.4 ms
+after, parallel). With only ~2 clusters, brute-force wastes iterating just ~1 other cluster per agent —
+too little for the grid-rebuild + per-agent-sort overhead to earn back. This is below the design's ~10k
+high-power target scale (docs/PEDESTRIAN-DESIGN.md §9) and does not threaten the acceptance case, but it
+is a real, reproducible result and is recorded here rather than glossed over: **`UseSpatialHash` is a net
+win at the design's target scale (≥~5k well-separated high-power agents) and a net loss on small/sparse
+high-power sets.** A future refinement (not implemented here — out of scope for P0-4, which is
+authorized only to flip the existing flag, not add new heuristics) could gate `UseSpatialHash` on crowd
+size or cluster count; not worth the complexity until a real deployment shows it matters.
+
+### Part B — live-slot compaction: investigated, NOT implemented (Part A subsumes it)
+
+Added a diagnostic-only `PedLodManager.HighCrowdSlotHighWater` (mirrors `OrcaCrowd.Count`'s existing
+high-water semantics) and wired it into `Sim.BenchPedLod`'s churn rows to measure the bloat the P0-3
+follow-up hypothesis worried about, WITH the spatial hash now on:
+
+| N total (churn) | live (`HighPowerCount`) | slot high-water | bloat | bloat as % of live |
+|---:|---:|---:|---:|---:|
+| 50 000 | 12 160 | 15 024 | 2 864 | ~23.6% |
+| 100 000 | 23 515 | 28 675 | 5 160 | ~21.9% |
+
+The high-water mark IS bloated ~22–24% above the live count under sustained churn, confirming the
+hypothesis's premise. But every place that iterates it (`Step`'s plan/execute loops, `RebuildGrid`) skips
+a vacated slot with a single `!_slotAlive[i]` bool-array read + branch — no distance math, no solver work,
+no allocation. At ~5 160 extra skipped slots against a ~183 ms/step parallel budget (100k churn, hash
+on), that overhead is on the order of microseconds, i.e. **well under 0.1% of the measured step cost** —
+nowhere near the dominant O(n²) brute-force cost Part A just removed. **Verdict: Part A subsumes the
+churn-bloat concern. Compaction is NOT implemented** — the measured benefit would be negligible and not
+worth the added complexity (a dense live-slot list, or high-water-shrink-on-trailing-vacate, both need
+their own bit-identical-ordering argument for no real payoff). If a future profiling pass on REAL (not
+synthetic) production churn shows otherwise, this diagnostic getter is already in place to re-check.
