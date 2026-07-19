@@ -32,8 +32,12 @@ once the POCs converge.
       serves each exactly once per cycle; `--ped-waiter` scene (building + seated patrons + waiter,
       hidden between rounds); 4 tests inc. exact server==IG sweep, serves-every-table, inside=hidden;
       589 parity + 101 ped green)*
-- [ ] **LIVE-POC-4** — auto-deduced liveliness demand in a subarea + density knob + shared-mask legitimacy
-      (after Stage P8 + a real cropped box; zero on-camera pops audited)
+- [~] **LIVE-POC-4** — auto-deduced liveliness demand in a subarea + density knob + shared-mask legitimacy
+      (after Stage P8 + a real cropped box; zero on-camera pops audited) — *core LANDED against the committed
+      synthetic box: auto-deduced weighted demand (P8-3), density knob (P8-4a), and legitimacy-by-construction
+      endpoints (no on-camera pop possible on this path); recorded to the shared replay (P8-5 ped side).
+      Remaining for full closure: a REAL cropped box (not the synthetic handoff crop) and an explicit
+      zero-on-camera-pop audit once a live camera/visible-set exists (P8-2 live gate, `PEDESTRIAN-P8-BACKLOG.md`).*
 
 Graduation into production (making the *routed ambient crowd* lively):
 - [x] **LIVE-PROD-1a** — `PedLodManager` low-power `ActivityTimeline` (lively) peds *(`AddPedLively`;
@@ -232,6 +236,17 @@ zones along sidewalks with forced promotion; the legacy car-centric radial evac 
 Realizes `SUBAREA-FOR-PEDESTRIAN-SESSION.md` §3; mapping in `COORDINATION-pedestrian-x-subarea.md`, design
 consequences in `PEDESTRIAN-LIVELINESS-DESIGN.md` §11. All additive + inert by default (empty visible set →
 permissive → existing goldens unchanged). Waits on P2-3 + P1-1 + a real cropped box `net.xml`.
+
+**Current capability (what works end-to-end today, against the committed `scenarios/_ped/subarea-box`):**
+the box crop bakes into a connected walkable navmesh (P8-1); a weighted O→D endpoint set is built from the
+deduced POIs + the walkable fringe (`SubareaDemand`, P8-3a) and wired into `PedDemand` as an inert-default
+`WeightedEndpoints` (P8-3b), so every spawn/arrival lands on a fringe/POI edge — **appearance-legitimate by
+construction** (no camera needed on this path); a dialable density knob (`PedDensityKnob`, P8-4a) sizes the
+crowd as pedestrians-per-walkable-km with a LoS-C safe ceiling; and the whole run is recorded as a SUMO
+`<person>` FCD stream aligned to the vehicle FCD grid (`SubareaFcdRecorder`/`PersonFcdWriter`,
+`Sim.Viz --ped-subarea-fcd`, P8-5 ped side) for the shared car+ped replay. All deterministic, all inert to
+existing goldens, gate green (649 parity / 168 ped / 2 DotRecast). What's NOT yet done and why is indexed in
+`docs/PEDESTRIAN-P8-BACKLOG.md` (P8-2 live-camera gate, P8-4b dynamic crossing guard, P8-5 merge/slot-in).
 
 - [x] **P8-1** Verify the SUMO-geometry bake against a real cropped sub-area net (fringe = boundary-cut
       walkable stubs; pin the fringe set) — *done: SumoData handoff box committed at
