@@ -38,35 +38,56 @@ public sealed class SumoNavMesh : IPedNavigation
     /// Deterministic (BFS over the fixed adjacency); offline, not a per-step cost.
     public int ConnectedComponentCount()
     {
+        var labels = ComponentLabels();
+        var max = -1;
+        foreach (var c in labels)
+        {
+            if (c > max)
+            {
+                max = c;
+            }
+        }
+
+        return max + 1; // labels are 0..k-1 in first-seen order; -1 -> 0 for an empty set
+    }
+
+    /// P8-1c Part 2 (docs/PEDESTRIAN-P8-1C-NAVMESH-CONTINUATION-DESIGN.md Section 5): the connected-component
+    /// id per polygon (0..k-1, assigned in first-seen polygon order), the labelling behind ConnectedComponentCount.
+    /// `NavmeshReachability` uses it to keep O/D demand on the dominant reachable component(s) so a real crop's
+    /// unbridgeable island stubs (Mode-3) don't drag the achieved density below the dial. Deterministic (BFS over
+    /// the fixed adjacency); offline, not a per-step cost.
+    public int[] ComponentLabels()
+    {
         var n = _polygons.Count;
-        var seen = new bool[n];
-        var components = 0;
+        var labels = new int[n];
+        Array.Fill(labels, -1);
+        var next = 0;
         var stack = new Stack<int>();
         for (var start = 0; start < n; start++)
         {
-            if (seen[start])
+            if (labels[start] != -1)
             {
                 continue;
             }
 
-            components++;
-            seen[start] = true;
+            var id = next++;
+            labels[start] = id;
             stack.Push(start);
             while (stack.Count > 0)
             {
                 var cur = stack.Pop();
                 foreach (var portal in _graph.Neighbors(cur))
                 {
-                    if (!seen[portal.Neighbor])
+                    if (labels[portal.Neighbor] == -1)
                     {
-                        seen[portal.Neighbor] = true;
+                        labels[portal.Neighbor] = id;
                         stack.Push(portal.Neighbor);
                     }
                 }
             }
         }
 
-        return components;
+        return labels;
     }
 
     // ADDITIVE (POC-5, docs/PEDESTRIAN-POC-PLAN.md POC-5 "reroute"; docs/PEDESTRIAN-DESIGN.md §6

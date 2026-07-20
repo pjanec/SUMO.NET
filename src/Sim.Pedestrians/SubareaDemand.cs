@@ -46,10 +46,18 @@ public sealed class SubareaDemand
     // Build the endpoint set from the deduced POIs (internal, per-POI weight) + the walkable fringe
     // (external, `fringeWeight` each). Order is POIs (in list order) then fringe (in list order) -- fixed
     // and deterministic. At least one endpoint is required.
+    // `reachable` (P8-1c Part 2, docs/PEDESTRIAN-P8-1C-NAVMESH-CONTINUATION-DESIGN.md Section 5): an optional
+    // demand-side reachable-component filter (typically NavmeshReachability.IsReachable). When supplied, an
+    // endpoint whose position is NOT on the dominant reachable navmesh component(s) is dropped, so a real crop's
+    // unbridgeable island stubs don't waste O/D draws and drag the achieved density below the dial. `null` (the
+    // default) keeps every endpoint -- bit-identical to before, so every existing caller/golden is unchanged.
+    // If the filter would drop ALL endpoints (a pathological fully-fragmented input), it falls back to the
+    // UNFILTERED set so demand is never empty.
     public static SubareaDemand Build(
         IReadOnlyList<PedPoi> pois,
         IReadOnlyList<(string EdgeId, Vec2 Pos)> fringeEndpoints,
-        double fringeWeight = 1.0)
+        double fringeWeight = 1.0,
+        Func<Vec2, bool>? reachable = null)
     {
         if (pois is null)
         {
@@ -69,16 +77,29 @@ public sealed class SubareaDemand
         var list = new List<Endpoint>(pois.Count + fringeEndpoints.Count);
         foreach (var p in pois)
         {
-            list.Add(new Endpoint(p.Edge, p.Pos, p.Weight, IsFringe: false));
+            if (reachable is null || reachable(p.Pos))
+            {
+                list.Add(new Endpoint(p.Edge, p.Pos, p.Weight, IsFringe: false));
+            }
         }
 
         foreach (var f in fringeEndpoints)
         {
-            list.Add(new Endpoint(f.EdgeId, f.Pos, fringeWeight, IsFringe: true));
+            if (reachable is null || reachable(f.Pos))
+            {
+                list.Add(new Endpoint(f.EdgeId, f.Pos, fringeWeight, IsFringe: true));
+            }
         }
 
         if (list.Count == 0)
         {
+            // The filter emptied the set -> fall back to the unfiltered build so a fully-fragmented crop still
+            // spawns rather than stalling. Without a filter, an empty set is a genuine caller error.
+            if (reachable is not null && (pois.Count > 0 || fringeEndpoints.Count > 0))
+            {
+                return Build(pois, fringeEndpoints, fringeWeight, reachable: null);
+            }
+
             throw new ArgumentException("SubareaDemand needs at least one endpoint (no POIs and no fringe).", nameof(pois));
         }
 

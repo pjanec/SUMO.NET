@@ -441,6 +441,7 @@ internal static class Program
         var dial = 0.03;
         var seconds = 120.0;
         string? boxDir = null;
+        var reachableFilter = false;
         for (var i = 2; i < args.Length; i++)
         {
             switch (args[i])
@@ -453,6 +454,12 @@ internal static class Program
                     break;
                 case "--box" when i + 1 < args.Length:
                     boxDir = args[++i];
+                    break;
+                // P8-1c Part 2: draw O/D demand only from the dominant reachable navmesh component(s) -- for a
+                // fragmented real crop where unbridgeable island stubs would otherwise starve the crowd. Inert
+                // on a connected box (the committed witnesses), so their recorder output is unchanged with it on.
+                case "--reachable-filter":
+                    reachableFilter = true;
                     break;
                 default:
                     Console.Error.WriteLine($"error: unrecognized argument: {args[i]}");
@@ -467,7 +474,7 @@ internal static class Program
             return 2;
         }
 
-        var options = new Sim.Pedestrians.SubareaFcdRecorder.Options { Dial = dial, Seconds = seconds };
+        var options = new Sim.Pedestrians.SubareaFcdRecorder.Options { Dial = dial, Seconds = seconds, ReachableFilter = reachableFilter };
         Sim.Pedestrians.SubareaFcdRecorder.Result result;
         using (var writer = new Sim.Pedestrians.PersonFcdWriter(outPath))
         {

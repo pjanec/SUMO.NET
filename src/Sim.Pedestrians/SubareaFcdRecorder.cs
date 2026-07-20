@@ -47,6 +47,14 @@ public static class SubareaFcdRecorder
         public double MaxSpeed { get; init; } = 1.4;
         public double Radius { get; init; } = 0.3;
         public double ArrivalRadius { get; init; } = 0.5;
+
+        // P8-1c Part 2 (docs/PEDESTRIAN-P8-1C-NAVMESH-CONTINUATION-DESIGN.md Section 5): draw O/D endpoints only
+        // from the dominant reachable navmesh component(s), so a fragmented real crop's unbridgeable island
+        // stubs (Mode-3) don't waste demand and drag the achieved density below the dial. Default false ->
+        // inert (every endpoint kept, bit-identical). On a fully-connected box (the committed witnesses, and
+        // any crop the P8-1c bridge connects to one component) it is inert regardless, via the AllReachable
+        // fast path below.
+        public bool ReachableFilter { get; init; } = false;
     }
 
     public sealed record Result(
@@ -91,7 +99,21 @@ public static class SubareaFcdRecorder
         var manager = new PedLodManager(nav, new PedPublisher(), arriveRadius: opt.Radius, dwellSeconds: 1.0);
 
         var fringe = SubareaDemand.FringeEndpointsFromNetwork(network, manifest.WalkableFringeEdges);
-        var demandSet = SubareaDemand.Build(pois, fringe, opt.FringeWeight);
+
+        // P8-1c Part 2: when enabled, keep O/D demand on the dominant reachable component(s). AllReachable
+        // short-circuits to no filter when nothing would drop (a fully-connected box), so the committed
+        // witnesses stay bit-identical whether the flag is on or off.
+        Func<Sim.Core.Orca.Vec2, bool>? reachable = null;
+        if (opt.ReachableFilter)
+        {
+            var r = new NavmeshReachability(polygons, nav.ComponentLabels());
+            if (!r.AllReachable)
+            {
+                reachable = r.IsReachable;
+            }
+        }
+
+        var demandSet = SubareaDemand.Build(pois, fringe, opt.FringeWeight, reachable);
         var knob = PedDensityKnob.ForNetwork(network, opt.Dial, opt.SafePedsPerWalkableKm, opt.MeanTripSeconds);
 
         var config = new PedDemandConfig
