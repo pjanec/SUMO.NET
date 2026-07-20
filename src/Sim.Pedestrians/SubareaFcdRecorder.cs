@@ -55,6 +55,13 @@ public static class SubareaFcdRecorder
         // any crop the P8-1c bridge connects to one component) it is inert regardless, via the AllReachable
         // fast path below.
         public bool ReachableFilter { get; init; } = false;
+
+        // R7 (docs/SUMOSHARP-DEMO-CITY-REQUIREMENTS.md): turn the deterministic lateral weave ON. The weave
+        // lives on the LIVELY low-power path, so enabling it also routes spawns through AddPedLively (a mild
+        // liveliness block); each Walk leg then carries the baked per-vertex sidewalk half-width and the ped
+        // weaves within it (wider band on the 4 m arterial sidewalks than the 2 m locals). Off (default) keeps
+        // the recorder bit-identical to before -- plain PathArc peds, no weave.
+        public bool EnableWeave { get; init; } = false;
     }
 
     public sealed record Result(
@@ -127,6 +134,12 @@ public static class SubareaFcdRecorder
             Radius = opt.Radius,
             ArrivalRadius = opt.ArrivalRadius,
             WeightedEndpoints = demandSet,
+            // R7: weave rides the lively path -> enable a mild liveliness block so spawns go through
+            // AddPedLively, and turn the weave on. Off by default -> plain PathArc, bit-identical to before.
+            Liveliness = opt.EnableWeave
+                ? new PedLivelinessConfig { PauseProbability = 0.12, MinPauseSeconds = 2.0, MaxPauseSeconds = 6.0, MaxPausesPerTrip = 1, PauseAnimTag = "idle" }
+                : null,
+            EnableWeave = opt.EnableWeave,
         };
 
         var demand = new PedDemand(config, nav, manager);

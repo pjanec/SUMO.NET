@@ -74,6 +74,7 @@ internal static class Program
             "--ped-weave-density-csv" => RunPedWeaveDensityCsv(args),
             "--ped-weave-cross-csv" => RunPedWeaveCrossCsv(args),
             "--ped-weave-cross2-csv" => RunPedWeaveCross2Csv(args),
+            "--ped-weave-bands-csv" => RunPedWeaveBandsCsv(args),
             _ => RunSingle(args),
         };
     }
@@ -632,6 +633,81 @@ internal static class Program
 
         System.IO.File.WriteAllText(outPath, sb.ToString());
         Console.WriteLine($"wrote {outPath}  frames={(int)(tMax / dt) + 1} length={length} (ambient weave + phone + doorway actors)");
+        return 0;
+    }
+
+    // R7 (docs/SUMOSHARP-DEMO-CITY-REQUIREMENTS.md): band-vs-width proof on the REAL composed net. Picks one
+    // representative sidewalk edge of each width class (2 m and 4 m) from the demo-city bake and samples the
+    // deterministic weave along it (in the corridor frame: arc-length x, signed lateral y), so the band visibly
+    // fills +-1 m on the 2 m edge and +-2 m on the 4 m edge -- the weave consuming the baked per-edge width.
+    private static int RunPedWeaveBandsCsv(string[] args)
+    {
+        if (args.Length < 3)
+        {
+            Console.Error.WriteLine("error: --ped-weave-bands-csv requires <out.csv> <boxDir>");
+            return 2;
+        }
+
+        var outPath = args[1];
+        var boxDir = args[2];
+        var network = Sim.Pedestrians.PedNetworkParser.Load(Path.Combine(boxDir, "net.xml"));
+        var polygons = Sim.Pedestrians.Navigation.Bake.WalkablePolygonBaker.Bake(network);
+        var wp = Sim.Pedestrians.Lod.WeaveParams.Default;
+        var inv = System.Globalization.CultureInfo.InvariantCulture;
+        var sb = new System.Text.StringBuilder();
+        sb.Append("wclass,halfWidth,seed,s,lateral\n");
+
+        // For each target full-width, pick the sidewalk polygon of that width with the LONGEST spine (a good,
+        // representative straight-ish run to show the band along).
+        foreach (var wclass in new[] { 2.0, 4.0 })
+        {
+            var half = wclass / 2.0;
+            Sim.Pedestrians.Navigation.Bake.BakedPolygon? best = null;
+            var bestLen = 0.0;
+            foreach (var poly in polygons)
+            {
+                if (poly.Kind != Sim.Pedestrians.Navigation.Bake.BakedPolygonKind.SidewalkSegment || poly.Spine is null)
+                {
+                    continue;
+                }
+
+                if (Math.Abs(poly.HalfWidth - half) > 1e-6)
+                {
+                    continue;
+                }
+
+                var len = Sim.Pedestrians.Lod.PathArcMotion.PathLength(poly.Spine);
+                if (len > bestLen)
+                {
+                    bestLen = len;
+                    best = poly;
+                }
+            }
+
+            if (best is null)
+            {
+                Console.Error.WriteLine($"warn: no sidewalk polygon of full-width {wclass} m found");
+                continue;
+            }
+
+            var L = bestLen;
+            // 16 seeded peds fan into a band across the edge's own half-width.
+            for (var k = 0; k < 16; k++)
+            {
+                var seed = (ulong)(0xB0A0D0000UL + ((ulong)wclass * 1000) + (ulong)k);
+                for (var s = 0.0; s <= L; s += 0.5)
+                {
+                    var off = Sim.Pedestrians.Lod.LateralWeave.Offset(s, L, seed, best.HalfWidth, wp);
+                    sb.Append(wclass.ToString("F1", inv)).Append(',').Append(best.HalfWidth.ToString("F2", inv)).Append(',')
+                      .Append(k).Append(',').Append(s.ToString("F2", inv)).Append(',').Append(off.ToString("F4", inv)).Append('\n');
+                }
+            }
+
+            Console.WriteLine($"width {wclass:F1} m -> edge '{best.Id}' halfWidth={best.HalfWidth:F2} spineLen={L:F1} m");
+        }
+
+        System.IO.File.WriteAllText(outPath, sb.ToString());
+        Console.WriteLine($"wrote {outPath}");
         return 0;
     }
 
@@ -1333,6 +1409,7 @@ internal static class Program
         var seconds = 120.0;
         string? boxDir = null;
         var reachableFilter = false;
+        var enableWeave = false;
         for (var i = 2; i < args.Length; i++)
         {
             switch (args[i])
@@ -1352,6 +1429,10 @@ internal static class Program
                 case "--reachable-filter":
                     reachableFilter = true;
                     break;
+                // R7: turn the deterministic lateral weave ON (lively path + baked per-edge width).
+                case "--weave":
+                    enableWeave = true;
+                    break;
                 default:
                     Console.Error.WriteLine($"error: unrecognized argument: {args[i]}");
                     return 2;
@@ -1365,7 +1446,7 @@ internal static class Program
             return 2;
         }
 
-        var options = new Sim.Pedestrians.SubareaFcdRecorder.Options { Dial = dial, Seconds = seconds, ReachableFilter = reachableFilter };
+        var options = new Sim.Pedestrians.SubareaFcdRecorder.Options { Dial = dial, Seconds = seconds, ReachableFilter = reachableFilter, EnableWeave = enableWeave };
         Sim.Pedestrians.SubareaFcdRecorder.Result result;
         using (var writer = new Sim.Pedestrians.PersonFcdWriter(outPath))
         {
