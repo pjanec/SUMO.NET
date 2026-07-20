@@ -76,6 +76,7 @@ internal static class Program
             "--ped-weave-cross2-csv" => RunPedWeaveCross2Csv(args),
             "--ped-weave-bands-csv" => RunPedWeaveBandsCsv(args),
             "--ped-net-polys-csv" => RunPedNetPolysCsv(args),
+            "--ped-navmesh-components-csv" => RunPedNavmeshComponentsCsv(args),
             _ => RunSingle(args),
         };
     }
@@ -634,6 +635,37 @@ internal static class Program
 
         System.IO.File.WriteAllText(outPath, sb.ToString());
         Console.WriteLine($"wrote {outPath}  frames={(int)(tMax / dt) + 1} length={length} (ambient weave + phone + doorway actors)");
+        return 0;
+    }
+
+    // R1 diagnostic (docs/SUMOSHARP-DEMO-CITY-REQUIREMENTS.md): dumps per-polygon connected-component
+    // membership so the residual fragments (the dining-plaza-36 + corner stubs) can be localized and
+    // characterized before designing the net-connectivity stitch. Row: index,id,kind,component,cx,cy,area.
+    private static int RunPedNavmeshComponentsCsv(string[] args)
+    {
+        if (args.Length < 3)
+        {
+            Console.Error.WriteLine("error: --ped-navmesh-components-csv requires <out.csv> <boxDir>");
+            return 2;
+        }
+
+        var network = Sim.Pedestrians.PedNetworkParser.Load(Path.Combine(args[2], "net.xml"));
+        var polygons = Sim.Pedestrians.Navigation.Bake.WalkablePolygonBaker.Bake(network);
+        var nav = new Sim.Pedestrians.Navigation.Bake.SumoNavMesh(polygons, new Sim.Pedestrians.Navigation.Bake.SumoWalkableSpace(polygons));
+        var labels = nav.ComponentLabels();
+        var inv = System.Globalization.CultureInfo.InvariantCulture;
+        var sb = new System.Text.StringBuilder();
+        sb.Append("index,id,kind,component,cx,cy\n");
+        for (var i = 0; i < polygons.Count; i++)
+        {
+            var p = polygons[i];
+            sb.Append(i).Append(',').Append(p.Id).Append(',').Append(p.Kind).Append(',').Append(labels[i]).Append(',')
+              .Append(p.Centroid.X.ToString("F1", inv)).Append(',').Append(p.Centroid.Y.ToString("F1", inv)).Append('\n');
+        }
+
+        System.IO.File.WriteAllText(args[1], sb.ToString());
+        var comps = new HashSet<int>(labels);
+        Console.WriteLine($"wrote {args[1]}  polys={polygons.Count} components={comps.Count}");
         return 0;
     }
 
