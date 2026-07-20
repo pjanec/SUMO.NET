@@ -48,14 +48,24 @@ pop to absorb.
 
 ## 2. Data-model changes
 
-1. **Per-ped `Seed` (`ulong`).** Lives on `ActivityTimeline` (per-ped) and on the plain-PathArc `PedEntry`.
-   Assigned once at `AddPed*`, from a deterministic source (the ped id mixed with a scenario seed — the same
-   SplitMix64 family, never `System.Random`). This is the `seed` argument to every `LateralWeave.Offset`.
+1. **Per-ped `Seed` (`ulong`) — derived from the SHARED scenario root, not a new one.** SumoSharp already has a
+   single scenario-global seed, `Engine.Seed` (default 42; it maps to SUMO's `<random_number><seed>` via
+   `ScenarioConfig.Seed`), and an established per-entity discipline: `VehicleRng.SeedFor(globalSeed, entityIndex,
+   salt)` (SplitMix64, thread-order-independent, no `System.Random`) — the exact mechanism that makes **cars
+   deterministic**. The weave reuses it: `seed = VehicleRng.SeedFor(Engine.Seed, pedIndex, WeaveSalt).RawState`
+   with a distinct `WeaveSalt` so the weave stream never aliases a car/dawdle stream. Consequences we WANT:
+   (a) the whole run (cars + peds + weave) reproduces from one number; (b) server==IG — both sides derive the
+   identical per-ped seed; (c) forward-compat — future ped↔car deterministic interactions (crossing gap
+   acceptance, jaywalk decisions) slot into the same rooted, salted discipline. The seed lives on
+   `ActivityTimeline` (per-ped) and the plain-PathArc `PedEntry`, assigned once at `AddPed*`.
 
-2. **Per-leg `HalfWidth` (`double`).** On `WalkSegment` (and the PathArc leg). The corridor half-width the
-   offset clamps to. **POC:** one constant per leg (the min lane half-width along the leg — conservative, never
-   overflows a narrowing). **Refinement (W5):** piecewise per-edge `halfWidth(s)` when a leg spans edges of
-   differing width, smoothed over a short blend at edge joins so the band doesn't step.
+2. **Per-vertex `HalfWidth` (`double[]`, one per route vertex) — piecewise from day 1.** On `WalkSegment` (and
+   the PathArc leg), parallel to `Path`. `halfWidth(s)` is evaluated piecewise as the leg is walked (the
+   evaluator already resolves `s`→segment, so `width[segment]` is free). We take piecewise (not a per-leg min)
+   from the start because the real cost is associating route geometry with lane widths (§4) — paid either way —
+   and once each vertex carries `Width/2`, keeping the array vs collapsing to a scalar is trivial and it is the
+   eventual format. **Deferred (W-polish, cosmetic only):** blending the band width across an edge join so it
+   doesn't visibly step; piecewise-constant is correct meanwhile, and the clamp handles any jump safely.
 
 3. **Resume fields on a demote leg only:** `ResumeLateral` (`l_r`, `double`) + `LeadIn` (`double`). Absent /
    sentinel on a normally-spawned leg (which uses `Offset`); present on a leg emitted by a demote (which uses
@@ -72,11 +82,21 @@ In the shared Walk evaluation, at arc-length `s` along a leg of length `L` with 
 ```
 centre = Walk(path, s)                       // existing polyline point
 n̂      = t̂.PerpCW                            // right-normal (already available in Walk)
+hw     = halfWidth(s)                         // piecewise per-vertex (§4)
+c      = LateralWeave.CenterShift(s, now, L, Engine.Seed, maxShift, P)   // shared moving interface
+room   = hw - dirSign * c                     // direction-aware: the moving centre squeezes one side, widens the other
 off    = resumeLeg
-         ? LateralWeave.OffsetWithResumeOnRoute(sAbs, sSinceDemote, L, seed, halfWidth, l_r, leadIn, P)
-         : LateralWeave.Offset(s, L, seed, halfWidth, P)
-pose   = centre + n̂ * off
+         ? LateralWeave.OffsetWithResumeOnRoute(sAbs, sSinceDemote, L, seed, room, l_r, leadIn, P)
+         : LateralWeave.Offset(s, L, seed, room, P)
+pose   = centre + n̂ * (dirSign * c + off)     // offset measured from the shifted interface, on the ped's own side
 ```
+
+- **`CenterShift` (folded into the core, not deferred).** The shared counterflow interface `c(s, now)` is a pure
+  function of the SAME `Engine.Seed` we already introduced for the per-ped seed, so its only dependency is now
+  free. It shifts the dividing line between the two travel directions; `dirSign` (+1 / −1 from the ped's travel
+  direction, already known from `t̂`) makes the squeeze direction-aware — the stream the interface drifts toward
+  loses room, the other gains it. This is the "the crowd's centreline breathes" behaviour; without it opposing
+  flows still separate (keep-right sign) but the divide is static per segment. `maxShift` is a fraction of `hw`.
 
 - `s` and `t̂` already exist inside `Walk` (`PathArcMotion.cs:90-91`); only `seed`, `halfWidth`, `L`, and the
   multiply are added.
@@ -102,16 +122,19 @@ guarantees this for the existing fields).
 ## 4. Width threading (PedLane → leg)
 
 Width is first-class on `PedLane.Width` but is dropped before the LOD layer — `IPedNavigation.FindPath` returns
-a bare `IReadOnlyList<Vec2>`. Threading options:
+a bare `IReadOnlyList<Vec2>`. The real work is **associating each route vertex with the lane it lies on** and
+stamping that lane's `Width/2`; that association is paid whether the result is piecewise or a collapsed min, so
+we keep it **piecewise from day 1** (ad-2 decision):
 
-- **POC (chosen):** after `FindPath` returns the centreline polyline, look up the min half-width of the lanes
-  the route traverses (a `routeId/edgeId → Width/2` lookup already implied by the bake), and stamp one
-  `HalfWidth` on the leg. Small, additive, no signature churn on `FindPath`.
-- **W5 refinement:** return per-vertex/per-edge width alongside the polyline (a small `RouteWithWidth` record),
-  and evaluate `halfWidth(s)` piecewise. Only needed once legs routinely span differing-width edges.
-
-Fallback: `0.5 m` half-width when `Width` is unset — matching `WalkablePolygonBaker.cs:63` exactly, so the
-motion band and the baked walkable strip agree.
+- `FindPath` (or a thin wrapper) returns the centreline polyline **plus a parallel `double[] halfWidth`** (one
+  per vertex) — a small `RouteWithWidth` record rather than a bare polyline. The width per vertex is the
+  traversed lane's `Width/2`.
+- The evaluator resolves `s`→segment already; `halfWidth(s)` is then `halfWidth[segment]` (or a lerp between the
+  segment's endpoint widths — decide in W2; piecewise-constant is fine to start).
+- Fallback `0.5 m` half-width when `Width` is unset — matching `WalkablePolygonBaker.cs:63` exactly, so the
+  motion band and the baked walkable strip agree.
+- **Deferred (cosmetic):** smoothing the width transition across an edge join. Not correctness- or format-
+  affecting; a piecewise-constant step is safe (the clamp absorbs it).
 
 ---
 
@@ -142,16 +165,17 @@ Two production specifics the prototype glossed:
 `ActivityTimelineWire` is a fixed positional layout of full LE doubles (bit-exact by design). Additions:
 
 - `+ ulong Seed` once per timeline (after `T0`).
-- `+ double HalfWidth` per Walk segment (after `speed`).
+- `+ double HalfWidth` **per route vertex** in a Walk segment (alongside each `X,Y` — piecewise, §2/§4).
 - `+ (byte hasResume, double ResumeLateral, double LeadIn)` per Walk — only meaningful on a demote leg.
+- The scenario-global `Engine.Seed` that `CenterShift` reads is **broadcast once** on the replication header
+  (not per ped) — it is already a single scenario constant, so this is one `ulong` for the whole stream.
 
 This is a **breaking format bump** (no version tag today): `Encode`/`Decode` and `ActivityTimelineWireTests`
 change together. The plain-PathArc publish path (`PublishPathArc`, `PedLodManager.cs:176/404`) carries the same
-three inputs via its own record — mirror the addition there. Determinism unchanged: all inputs are exact
+inputs via its own record — mirror the addition there. Determinism unchanged: all inputs are exact
 doubles/ulongs; the offset is a pure SplitMix64 function; no `System.Random`; independent of thread order.
-
-**CenterShift** (the shared counterflow-interface meander) needs a **scenario-global seed** on the replication
-header (broadcast once). Deferred to W5 — the per-ped `Offset` is the core; `CenterShift` is counterflow polish.
+Because the per-ped seed and the global seed both derive from `Engine.Seed`, the IG reconstructs every offset
+(including `CenterShift`) with zero extra per-ped bytes beyond `l_r` at a demote seam.
 
 ---
 
@@ -170,16 +194,20 @@ not a SUMO-parity behaviour).
 
 Each task names its design section, the files, and a numeric/observable done-condition.
 
-**W1 — evaluator injection + data model (seed, per-leg halfWidth).** §2, §3.
-Files: `PathArcMotion.cs`, `ActivityTimeline.cs`, `ActivityTimelineWire.cs` (seed+width only).
-Done: a low-power ped's `PoseAt(now)` equals `centre + n̂·LateralWeave.Offset(s,L,seed,halfWidth)` (new unit
-test); `Seed`/`HalfWidth` round-trip through Encode/Decode; **decode→PoseAt == server PoseAt bit-for-bit** over
-a leg; all existing ped tests green.
+**W1 — evaluator injection + data model (seed from `Engine.Seed`, `CenterShift`).** §2(1), §3.
+Files: `PathArcMotion.cs`, `ActivityTimeline.cs`, `VehicleRng` reuse for the seed, `ActivityTimelineWire.cs`
+(seed + global-seed header).
+Done: a low-power ped's `PoseAt(now)` equals `centre + n̂·(dirSign·CenterShift + Offset(s,L,seed,room))` (new
+unit test); per-ped seed derives from `VehicleRng.SeedFor(Engine.Seed, pedIndex, WeaveSalt)`; `Seed` +
+global-seed round-trip through Encode/Decode; **decode→PoseAt == server PoseAt bit-for-bit** over a leg; all
+existing ped tests green.
 
-**W2 — width threading from `PedLane`.** §4.
-Files: navigation route seam, `PedLodManager.AddPed*`.
-Done: a leg over a lane of known `Width` carries `Width/2` (and `0.5` when unset); the offset clamp never
-exceeds the baked walkable half-width for a scenario lane (assert against `WalkablePolygonBaker` half).
+**W2 — piecewise width threaded from `PedLane` (day 1).** §2(2), §4.
+Files: navigation route seam (`RouteWithWidth`), `PedLodManager.AddPed*`, `ActivityTimelineWire` (per-vertex
+width).
+Done: a leg over lanes of known `Width` carries per-vertex `Width/2` (and `0.5` when unset); `halfWidth(s)`
+evaluated piecewise; the offset clamp never exceeds the baked walkable half-width at any `s` (assert against
+`WalkablePolygonBaker` half along the route).
 
 **W3 — reconstructor server==IG on the weave path.** §1, §3, §6.
 Files: `HeadlessIg` (Sim.Replication) decode wiring; `PedRemoteReconstructor` (verify untouched).
@@ -192,24 +220,27 @@ Done: promote→demote of a low-power ped resumes with seam ‖Δ‖ < 1e-9 m; s
 bystander shoved by a promoted neighbour rejoins its own track (extend the promote/demote test with the D2
 assertions ported off the Sim.Viz prototype).
 
-**W5 — refinements (deferred, non-blocking).** §3, §4, §6.
-Piecewise per-edge `halfWidth(s)` with join smoothing; `CenterShift` scenario-global seed + counterflow
-interface; optional heading-from-offset. Gated on need (measured), not required for the core to ship.
+**W-polish — cosmetic, deferred, non-blocking.** §2(2), §4.
+Edge-join width smoothing; optional heading-from-offset derivative; the per-ped-demote-timing optimization
+("(a)", §10.2-bis). Gated on measured need, not required for the core to ship.
 
 ### Tracker
-- [ ] **W1** evaluator injection + seed/halfWidth data model + server==IG bit-exact unit test
-- [ ] **W2** width threaded from `PedLane` (min half-width per leg, 0.5 fallback)
+- [ ] **W1** evaluator injection + seed (from `Engine.Seed`) + `CenterShift` + server==IG bit-exact unit test
+- [ ] **W2** piecewise per-vertex width threaded from `PedLane` (0.5 fallback); clamp ≤ baked half everywhere
 - [ ] **W3** `HeadlessIg` decodes new fields; reconstruction exact on the weave path
 - [ ] **W4** demote re-anchor `l_r` (project frozen pose → centreline); no-pop seam < 1e-9; D2 assertions ported
-- [ ] **W5** (deferred) piecewise width + `CenterShift` global seed + heading polish
+- [ ] **W-polish** (deferred) edge-join width smoothing + heading polish + per-ped demote timing
 
 ---
 
-## 9. Open questions for sign-off
-1. **Seed source:** derive per-ped seed from `hash(pedId, scenarioSeed)` (reproducible across a run) — confirm
-   there's a scenario-global seed to mix in, or introduce one.
-2. **Width granularity for the POC:** one min-half-width per leg (W2) acceptable as the first cut, with W5 for
-   piecewise? (Recommended: yes.)
-3. **Heading:** keep raw tangent as render heading for now (recommended), or derive from the offset derivative?
-4. **CenterShift:** confirm it's OK to ship the core `Offset` weave first and add the counterflow-interface
-   `CenterShift` in W5, rather than together.
+## 9. Resolved decisions (sign-off)
+1. **Seed source — RESOLVED.** Derive the per-ped weave seed from the SHARED scenario root via
+   `VehicleRng.SeedFor(Engine.Seed, pedIndex, WeaveSalt)` — the same rooted, salted, thread-order-independent
+   discipline that makes cars deterministic. No new seed infrastructure; gives whole-run reproducibility,
+   server==IG, and forward-compat for future deterministic ped↔car interaction.
+2. **Width granularity — RESOLVED.** Piecewise per-vertex width from day 1 (the route→width association is paid
+   regardless; the array is the eventual format). Only edge-join width *smoothing* is deferred as cosmetic.
+3. **Heading — RESOLVED.** Keep the raw tangent as render heading; offset-derivative heading is deferred polish.
+4. **CenterShift — RESOLVED.** Folded into the core (W1), not deferred: its only dependency (the scenario-global
+   `Engine.Seed`) is already introduced for the per-ped seed, so including it early is nearly free and it is in
+   the final solution regardless. It adds a direction-aware clamp (the moving interface squeezes one side).
