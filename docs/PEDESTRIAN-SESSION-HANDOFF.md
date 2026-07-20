@@ -59,6 +59,23 @@ is the orientation map: what exists, what's parked, where to look, and how to ru
   existing bake bit-identical. `SumoNavMesh.ConnectedComponentCount()` diagnostic + recorder connectivity
   report. `docs/PEDESTRIAN-P8-1B-NAVMESH-CONNECTIVITY-DESIGN.md`, witness at
   `scenarios/_ped/subarea-irregular/` (222 → 1 component / peak 0 → 113).
+- **P8-1c real-net navmesh RESIDUAL (both parts landed; sub-area to validate on the real crop).**
+  `docs/PEDESTRIAN-P8-1C-NAVMESH-CONTINUATION-DESIGN.md`, witness at `scenarios/_ped/subarea-pedfrag2/`.
+  - *Part 1 — sidewalk↔sidewalk continuation bridge* (`PolygonGraph.AddSidewalkContinuationAdjacency`): a 4th
+    pass connecting `SidewalkSegment`↔`SidewalkSegment` near-abutment (≤5 cm) at genuine continuations, gated
+    by a spine end-tangent collinearity test (`ContinuationMinAngleDeg`, **provisional 135°**) so junction
+    corners are never bridged (no-shortcut). Witness 83 → 1 component, peakLive 13 → 55; grid + irregular stay
+    1; no-shortcut corner guard test. Handles both the dropped-degenerate-walkingArea and no-walkingArea seam
+    sub-shapes (broader than rehabilitating the walkingArea).
+  - *Part 2 — demand-side reachable filter* (`NavmeshReachability` + `SumoNavMesh.ComponentLabels()` +
+    `SubareaDemand.Build(..., reachable)` + `--ped-subarea-fcd --reachable-filter`, opt-in/inert-default):
+    draws O/D only from the dominant component(s) (total |area| ≥ **5%** of the largest — a fraction, keeps the
+    real crop's core + second-large region, drops the island tail) so a fragmented crop fills to the dial
+    instead of wasting draws on unbridgeable Mode-3 stubs. Inert (byte-identical) on any connected box.
+  - **Pending from the sub-area session:** real-Geneva-crop validation (Part 1 → 366 → ~213; Part 2 → density
+    recovery to the reachable surface) + the real-net seam end-tangent-angle distribution to tune the 135°
+    threshold, and the real component-size distribution to tune the 5% area fraction. Both are **provisional**
+    (validated only on synthetic witnesses — necessary, not sufficient).
 
 ## 4. Open / parked work (what a new session might pick up)
 
