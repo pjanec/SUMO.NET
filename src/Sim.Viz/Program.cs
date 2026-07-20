@@ -69,6 +69,7 @@ internal static class Program
             "--ped-remote" => RunPedRemote(args),
             "--ped-subarea-fcd" => RunPedSubareaFcd(args),
             "--ped-weave-csv" => RunPedWeaveCsv(args),
+            "--ped-weave-bend-csv" => RunPedWeaveBendCsv(args),
             _ => RunSingle(args),
         };
     }
@@ -509,6 +510,123 @@ internal static class Program
 
         System.IO.File.WriteAllText(outPath, sb.ToString());
         Console.WriteLine($"wrote {outPath}  streams=2 perStream={perStream} length={length} halfWidth={halfWidth}");
+        return 0;
+    }
+
+    // PED-REALISM-1 Prototype 2 (docs/PEDESTRIAN-LOWPOWER-AVOIDANCE-DESIGN.md Section 8): the SAME weave over a
+    // MULTI-SEGMENT route with a rounded bend, to validate the production requirement that the offset flows
+    // CONTINUOUSLY across a segment join and anchors ONLY at the true O/D -- never re-zeroed at the bend. The
+    // lateral frame (corridor-left) follows the centreline as it turns, so the keep-right bands + moving
+    // interface wrap around the corner. World-XY output (columns ped,dir,x,y,t; dir 2 = centreline).
+    private static int RunPedWeaveBendCsv(string[] args)
+    {
+        if (args.Length < 2)
+        {
+            Console.Error.WriteLine("error: --ped-weave-bend-csv requires an output path");
+            return 2;
+        }
+
+        var outPath = args[1];
+        const double halfWidth = 2.0;
+        const int perStream = 40;
+        const double stepDs = 0.25;
+        var wp = Sim.Pedestrians.Lod.WeaveParams.Default;
+        var inv = System.Globalization.CultureInfo.InvariantCulture;
+
+        // Dense centreline: straight east, a rounded 60-deg left bend (the walkingArea curve), straight again.
+        var px = new List<double>();
+        var py = new List<double>();
+        double x = 0.0, y = 0.0, h = 0.0; // heading (rad)
+        void March(double dist, double curvature)
+        {
+            var n = (int)Math.Round(dist / stepDs);
+            for (var i = 0; i < n; i++)
+            {
+                px.Add(x); py.Add(y);
+                h += curvature * stepDs;
+                x += stepDs * Math.Cos(h);
+                y += stepDs * Math.Sin(h);
+            }
+        }
+
+        const double turn = Math.PI / 3.0; // 60 deg
+        const double radius = 6.0;
+        March(24.0, 0.0);              // straight approach
+        March(radius * turn, 1.0 / radius); // rounded left bend (curvature 1/R)
+        March(24.0, 0.0);              // straight after the bend
+        px.Add(x); py.Add(y);
+        var lastIdx = px.Count - 1;
+        var length = lastIdx * stepDs; // total route arc-length
+
+        (double tx, double ty) Tangent(int idx)
+        {
+            var a = Math.Max(0, idx - 1);
+            var b = Math.Min(lastIdx, idx + 1);
+            var dx = px[b] - px[a];
+            var dy = py[b] - py[a];
+            var m = Math.Sqrt((dx * dx) + (dy * dy));
+            return m > 1e-9 ? (dx / m, dy / m) : (1.0, 0.0);
+        }
+
+        const ulong globalSeed = 777UL;
+        var maxShift = 0.35 * halfWidth;
+
+        var sb = new System.Text.StringBuilder();
+        sb.Append("ped,dir,x,y,t\n");
+
+        // c(a) and corridor-left frame are evaluated at the CORRIDOR arc-length a (shared by both directions);
+        // the per-ped lane plan uses the ped's OWN arc-length s. A = s for eastbound, A = length - s for west.
+        void Emit(int pedId, int dir, double worldX, double worldY, double t)
+            => sb.Append(pedId).Append(',').Append(dir).Append(',')
+                 .Append(worldX.ToString("F3", inv)).Append(',')
+                 .Append(worldY.ToString("F3", inv)).Append(',')
+                 .Append(t.ToString("F2", inv)).Append('\n');
+
+        for (var stream = 0; stream < 2; stream++)
+        {
+            var dir = stream == 0 ? 1 : -1;
+            for (var i = 0; i < perStream; i++)
+            {
+                var seed = (ulong)((stream * 100_000) + i + 1);
+                var pedId = (stream * perStream) + i;
+                const double speed = 1.3;
+                var startT = i * 1.0;
+                for (var s = 0.0; s <= length + 1e-9; s += stepDs)
+                {
+                    var a = dir == 1 ? s : length - s;            // corridor arc-length (shared frame)
+                    var idx = (int)Math.Round(a / stepDs);
+                    if (idx < 0) idx = 0; else if (idx > lastIdx) idx = lastIdx;
+                    var (tx, ty) = Tangent(idx);
+                    var leftX = -ty; var leftY = tx;             // corridor-left = rot(tangent, +90)
+                    var now = startT + (s / speed);
+                    var c = Sim.Pedestrians.Lod.LateralWeave.CenterShift(a, now, length, globalSeed, maxShift, wp);
+                    double lat = dir == 1
+                        ? c - Sim.Pedestrians.Lod.LateralWeave.Offset(s, length, seed, c + halfWidth, wp)
+                        : c + Sim.Pedestrians.Lod.LateralWeave.Offset(s, length, seed, halfWidth - c, wp);
+                    Emit(pedId, dir, px[idx] + (lat * leftX), py[idx] + (lat * leftY), now);
+                }
+            }
+        }
+
+        // Centreline (dir=2) + interface c(a,t) snapshots (dir=0), in world XY.
+        for (var idx = 0; idx <= lastIdx; idx++)
+        {
+            Emit(-2, 2, px[idx], py[idx], 0.0);
+        }
+
+        foreach (var t in new[] { 0.0, 15.0, 30.0, 45.0 })
+        {
+            for (var idx = 0; idx <= lastIdx; idx++)
+            {
+                var a = idx * stepDs;
+                var (tx, ty) = Tangent(idx);
+                var c = Sim.Pedestrians.Lod.LateralWeave.CenterShift(a, t, length, globalSeed, maxShift, wp);
+                Emit(-1, 0, px[idx] + (c * -ty), py[idx] + (c * tx), t);
+            }
+        }
+
+        System.IO.File.WriteAllText(outPath, sb.ToString());
+        Console.WriteLine($"wrote {outPath}  bent route length={length:F1} m, {2 * perStream} peds");
         return 0;
     }
 
