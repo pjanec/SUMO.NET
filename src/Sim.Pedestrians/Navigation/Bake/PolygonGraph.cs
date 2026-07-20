@@ -56,6 +56,24 @@ internal sealed class PolygonGraph
     // connecting two non-area polygons regardless.
     private const double AbutProximityEps = 0.05;
 
+    // P8-1c (docs/PEDESTRIAN-P8-1C-NAVMESH-CONTINUATION-DESIGN.md): the continuation-angle gate for the
+    // sidewalk<->sidewalk near-abutment pass. Two buffered sidewalk strips are bridged only when their
+    // outward end-tangents at the abutting ends are anti-parallel to within this angle -- a straight or
+    // gently-bending CONTINUATION (~180 deg) -- and never when they meet at a junction CORNER (~90 deg),
+    // which must still route through its walkingArea (the POC-0 no-shortcut invariant).
+    //
+    // PROVISIONAL: 135 deg is validated only on the synthetic straight-stub witness (subarea-pedfrag2),
+    // where continuations sit at ~180 deg and corners at ~90 deg -- trivially separable. REAL sidewalks
+    // curve, so a legit curving continuation may sit lower and a shallow corner higher; this awaits the
+    // real-net seam end-tangent-angle distribution from the sub-area session (design doc Section 4). Kept a
+    // single named constant so tuning is a one-line change.
+    private const double ContinuationMinAngleDeg = 135.0;
+
+    // theta >= ContinuationMinAngleDeg  <=>  cos(theta) <= cos(threshold); compared against Dot of the two
+    // (unit) outward end-tangents, avoiding a trig call per pair.
+    private static readonly double ContinuationMaxTangentDot =
+        Math.Cos(ContinuationMinAngleDeg * Math.PI / 180.0);
+
     private readonly List<PolygonPortal>[] _adjacency;
 
     public PolygonGraph(IReadOnlyList<BakedPolygon> polygons)
@@ -89,6 +107,7 @@ internal sealed class PolygonGraph
 
         AddVertexProximityAdjacency(polygons, adjacency);
         AddAreaOverlapAdjacency(polygons, adjacency);
+        AddSidewalkContinuationAdjacency(polygons, adjacency);
 
         // Fixed iteration order per node: sort each neighbour list ascending by neighbour index,
         // so graph traversal (and hence A*) never depends on the O(n^2) build order above.
@@ -241,6 +260,124 @@ internal sealed class PolygonGraph
                 }
             }
         }
+    }
+
+    // FOURTH adjacency pass (P8-1c, docs/PEDESTRIAN-P8-1C-NAVMESH-CONTINUATION-DESIGN.md): bridges
+    // SidewalkSegment<->SidewalkSegment near-abutment at genuine CONTINUATIONS -- the residual real-net seams
+    // the AREA-ANCHORED third pass structurally cannot connect (two buffered sidewalk strips meet within
+    // AbutProximityEps with NO walkingArea between them: SUMO's dropped zero-area continuation walkingArea, or
+    // an irregular seam with no area at all). Both leave the same signature -- two collinear sidewalk strips
+    // <= 5 cm apart -- so this catches both the "dropped walkingArea" and "no walkingArea" cases (the witness
+    // subarea-pedfrag2 embeds the latter, which approach B -- rehabilitating the dropped walkingArea -- could
+    // not connect).
+    //
+    // THREE safety properties keep it invariant-preserving (POC-0 no-shortcut) and parity-neutral:
+    //  1. CONTINUATION-GATED: only bridges when the two strips' outward end-tangents at their abutting ends
+    //     are anti-parallel within ContinuationMinAngleDeg (IsCollinearContinuation) -- a straight/gently-
+    //     bending continuation. A junction CORNER (~90 deg turn) is rejected, so A* is never handed a portal
+    //     that would let it cut across the non-walkable junction interior (the exact failure the area-anchored
+    //     pass avoided by refusing sidewalk<->sidewalk entirely). Corner connectivity still runs through the
+    //     walkingArea via the third pass.
+    //  2. ADDITIVE + DEDUP: only pairs with no existing portal are considered, so every pair the earlier
+    //     passes connected (all synthetic-grid / POC-0 pairs, which share exact edges and have no <=5 cm gaps)
+    //     is left byte-identical -- this pass strictly ADDS the missing collinear-sidewalk portals that appear
+    //     only on irregular real geometry.
+    //  3. SIDEWALK-ONLY: restricted to SidewalkSegment<->SidewalkSegment; crossing<->sidewalk and
+    //     crossing<->crossing are never touched here.
+    // The seam portal (TryFindOverlapPortal at the <=5 cm abutment) sits on the seam between the two strips,
+    // physically within a ped's own body width across a <=5 cm gap -- the same seam portal the P8-1b area
+    // abutment already places.
+    private static void AddSidewalkContinuationAdjacency(
+        IReadOnlyList<BakedPolygon> polygons, List<PolygonPortal>[] adjacency)
+    {
+        var n = polygons.Count;
+        for (var i = 0; i < n; i++)
+        {
+            if (polygons[i].Kind != BakedPolygonKind.SidewalkSegment)
+            {
+                continue;
+            }
+
+            for (var j = i + 1; j < n; j++)
+            {
+                if (polygons[j].Kind != BakedPolygonKind.SidewalkSegment)
+                {
+                    continue;
+                }
+
+                if (adjacency[i].Exists(p => p.Neighbor == j))
+                {
+                    continue; // already connected by an earlier pass -- dedup
+                }
+
+                if (!IsCollinearContinuation(polygons[i].Spine, polygons[j].Spine))
+                {
+                    continue; // corner / non-continuation -- never bridge (no-shortcut invariant)
+                }
+
+                if (PolygonGeometry.TryFindOverlapPortal(
+                        polygons[i].Vertices, polygons[j].Vertices, OverlapMargin, AbutProximityEps, out var point))
+                {
+                    adjacency[i].Add(new PolygonPortal(j, point));
+                    adjacency[j].Add(new PolygonPortal(i, point));
+                }
+            }
+        }
+    }
+
+    // True when two sidewalk spines meet end-to-end as a COLLINEAR continuation (P8-1c): the outward
+    // end-tangents at their NEAREST ends point substantially at each other (angle >= ContinuationMinAngleDeg,
+    // i.e. Dot <= ContinuationMaxTangentDot). A junction corner turns ~90 deg (Dot ~0) and is rejected. The
+    // nearest-end pairing localizes the tangent to the abutting end, so a strip that bends far from the seam
+    // does not skew the angle. Requires both spines to have >= 2 points; returns false otherwise (no tangent
+    // -> not a continuation -> leave the pair unbridged, the safe default).
+    private static bool IsCollinearContinuation(IReadOnlyList<Vec2>? spineA, IReadOnlyList<Vec2>? spineB)
+    {
+        if (spineA is not { Count: >= 2 } || spineB is not { Count: >= 2 })
+        {
+            return false;
+        }
+
+        // Each spine's two endpoints and the outward tangent there (endpoint - its inner neighbour, so it
+        // points OUT of the strip toward a potential seam).
+        var a0 = spineA[0];
+        var a0T = Normalize(spineA[0] - spineA[1]);
+        var a1 = spineA[^1];
+        var a1T = Normalize(spineA[^1] - spineA[^2]);
+        var b0 = spineB[0];
+        var b0T = Normalize(spineB[0] - spineB[1]);
+        var b1 = spineB[^1];
+        var b1T = Normalize(spineB[^1] - spineB[^2]);
+
+        // Pick the nearest end pair (the ends that actually abut) and take those two outward tangents.
+        var best = double.MaxValue;
+        var ta = Vec2.Zero;
+        var tb = Vec2.Zero;
+        void Consider(Vec2 pa, Vec2 tpa, Vec2 pb, Vec2 tpb)
+        {
+            var d = (pa - pb).AbsSq;
+            if (d < best)
+            {
+                best = d;
+                ta = tpa;
+                tb = tpb;
+            }
+        }
+
+        Consider(a0, a0T, b0, b0T);
+        Consider(a0, a0T, b1, b1T);
+        Consider(a1, a1T, b0, b0T);
+        Consider(a1, a1T, b1, b1T);
+
+        // Anti-parallel outward tangents == the two strips continue each other in a line. A zero-length
+        // tangent (degenerate spine end) yields Dot 0, which fails the <= negative-cos threshold -> false.
+        return Vec2.Dot(ta, tb) <= ContinuationMaxTangentDot;
+    }
+
+    private static Vec2 Normalize(Vec2 v)
+    {
+        var m = v.Abs;
+        return m > 1e-12 ? v / m : Vec2.Zero;
     }
 
     private static bool IsArea(BakedPolygonKind kind) =>

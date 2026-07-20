@@ -126,6 +126,84 @@ public class NavmeshConnectivityTests
         _out.WriteLine($"[P8-1b] irregular witness box: {polygons.Count} polygons, {nav.ConnectedComponentCount()} component (was 222)");
     }
 
+    // -- P8-1c: sidewalk<->sidewalk continuation bridging (docs/PEDESTRIAN-P8-1C-NAVMESH-CONTINUATION-DESIGN.md) --
+
+    // A horizontal sidewalk strip (x0..x1 at height yc, half-width hw) carrying its centreline Spine -- the
+    // travel axis the P8-1c continuation gate reads. (The plain Rect() helper leaves Spine null, which is why
+    // the P8-1b MiniJunction tests are untouched by the continuation pass.)
+    private static BakedPolygon HStrip(int index, string id, double x0, double x1, double yc, double hw)
+        => new(index, id, BakedPolygonKind.SidewalkSegment,
+            new[] { new Vec2(x0, yc - hw), new Vec2(x1, yc - hw), new Vec2(x1, yc + hw), new Vec2(x0, yc + hw) },
+            new[] { new Vec2(x0, yc), new Vec2(x1, yc) });
+
+    // A vertical sidewalk strip (y0..y1 at abscissa xc, half-width hw) + centreline Spine.
+    private static BakedPolygon VStrip(int index, string id, double y0, double y1, double xc, double hw)
+        => new(index, id, BakedPolygonKind.SidewalkSegment,
+            new[] { new Vec2(xc - hw, y0), new Vec2(xc + hw, y0), new Vec2(xc + hw, y1), new Vec2(xc - hw, y1) },
+            new[] { new Vec2(xc, y0), new Vec2(xc, y1) });
+
+    [Fact]
+    public void SidewalkContinuation_BridgesCollinearStrips_NoWalkingArea()
+    {
+        // Two collinear sidewalk strips meeting end-to-end with a 3 cm gap and NO walkingArea between them --
+        // the witness's Mode-1 residual (a dropped/absent continuation walkingArea). The area-anchored P8-1b
+        // pass leaves these two islands; the P8-1c continuation pass bridges them (outward end-tangents +x and
+        // -x -> Dot -1 -> continuation) into ONE routable component.
+        var polys = new List<BakedPolygon>
+        {
+            HStrip(0, "a", -10.0, 0.0, yc: 2.0, hw: 1.0),
+            HStrip(1, "b", 0.03, 10.0, yc: 2.0, hw: 1.0), // 3 cm gap, collinear
+        };
+        var nav = new SumoNavMesh(polys);
+
+        Assert.Equal(1, nav.ConnectedComponentCount());
+        Assert.NotNull(nav.FindPath(new Vec2(-9.0, 2.0), new Vec2(9.0, 2.0)));
+        _out.WriteLine("[P8-1c] collinear sidewalk continuation (3 cm gap, no WA): 2 islands -> 1 component");
+    }
+
+    [Fact]
+    public void SidewalkCorner_StaysUnbridged_NoWalkingArea()
+    {
+        // THE NO-SHORTCUT GUARD. A horizontal strip and a vertical strip that abut within 3 cm at a right-angle
+        // CORNER (no walkingArea between them). The continuation gate rejects it (outward end-tangents +x and
+        // -y -> Dot 0, well above the -cos(135 deg) threshold), so the two strips stay SEPARATE components --
+        // a ped must route around through a real walkingArea, never cut the corner across the (non-walkable)
+        // junction interior. This is the POC-0 invariant the whole gate exists to preserve; if the continuation
+        // pass ever bridged this, it would be exactly the blanket "connect anything close" shortcut the witness
+        // README warns against.
+        var polys = new List<BakedPolygon>
+        {
+            HStrip(0, "h", -10.0, 0.0, yc: 2.0, hw: 1.0),  // top edge y = 3, x in [-10,0]
+            VStrip(1, "v", 3.03, 13.0, xc: 0.0, hw: 1.0),  // bottom edge y = 3.03, x in [-1,1] -> 3 cm gap, 90 deg
+        };
+        var nav = new SumoNavMesh(polys);
+
+        Assert.Equal(2, nav.ConnectedComponentCount());
+        _out.WriteLine("[P8-1c] perpendicular sidewalk corner (3 cm gap, no WA): stays 2 components (no shortcut)");
+    }
+
+    [Fact]
+    public void PedFrag2WitnessBox_ConnectsToOneComponent()
+    {
+        // P8-1c real-net acceptance: the committed pedfrag2 witness (the sub-area session's geometry-free
+        // residual repro) bakes to 83 components under the P8-1b (area-anchored) graph -- all sidewalk<->
+        // sidewalk <=5 cm collinear seams with no walkingArea. The P8-1c continuation pass must connect it to
+        // ONE routable component (the exact residual the fix targets), pinned against genuine netgenerate
+        // geometry.
+        var dir = RepoRoot();
+        var net = Path.Combine(dir, "scenarios", "_ped", "subarea-pedfrag2", "net.xml");
+        var polygons = WalkablePolygonBaker.Bake(PedNetworkParser.Load(net));
+        var nav = new SumoNavMesh(polygons);
+
+        Assert.Equal(1, nav.ConnectedComponentCount());
+
+        var lo = polygons.OrderBy(p => p.Centroid.X + p.Centroid.Y).First().Centroid;
+        var hi = polygons.OrderByDescending(p => p.Centroid.X + p.Centroid.Y).First().Centroid;
+        Assert.NotNull(nav.FindPath(lo, hi));
+
+        _out.WriteLine($"[P8-1c] pedfrag2 witness box: {polygons.Count} polygons, {nav.ConnectedComponentCount()} component (was 83)");
+    }
+
     private static string RepoRoot()
     {
         var dir = AppContext.BaseDirectory;
