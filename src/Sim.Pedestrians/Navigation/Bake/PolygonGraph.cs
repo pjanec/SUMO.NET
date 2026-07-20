@@ -48,6 +48,14 @@ internal sealed class PolygonGraph
     // this; a shared-corner touch penetrates ~0, so it never reads as an overlap. 1 mm matches AdjacencyEpsilon.
     private const double OverlapMargin = 1e-3;
 
+    // Max ABUTMENT gap for the area-overlap pass: two polygons whose boundaries approach within this are
+    // connected even if they do not overlap. netconvert's independent buffering leaves sub-mm-to-few-mm gaps
+    // between a walkingArea and the sidewalks/crossings that meet it (the pedfrag witness gaps are <= ~2 mm);
+    // 5 cm catches those with wide margin while staying far below the metre-scale spacing between genuinely
+    // distinct walkable surfaces, so it never bridges unrelated polygons. Area-anchoring (below) keeps it from
+    // connecting two non-area polygons regardless.
+    private const double AbutProximityEps = 0.05;
+
     private readonly List<PolygonPortal>[] _adjacency;
 
     public PolygonGraph(IReadOnlyList<BakedPolygon> polygons)
@@ -226,7 +234,7 @@ internal sealed class PolygonGraph
                     continue; // already connected by an earlier pass -- edge/vertex portal wins (dedup)
                 }
 
-                if (PolygonGeometry.TryFindOverlapPortal(polygons[i].Vertices, polygons[j].Vertices, OverlapMargin, out var point))
+                if (PolygonGeometry.TryFindOverlapPortal(polygons[i].Vertices, polygons[j].Vertices, OverlapMargin, AbutProximityEps, out var point))
                 {
                     adjacency[i].Add(new PolygonPortal(j, point));
                     adjacency[j].Add(new PolygonPortal(i, point));

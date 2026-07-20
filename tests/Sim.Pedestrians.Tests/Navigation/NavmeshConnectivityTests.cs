@@ -105,10 +105,29 @@ public class NavmeshConnectivityTests
     }
 
     [Fact]
-    public void SyntheticBox_StaysOneComponent()
+    public void IrregularWitnessBox_ConnectsToOneComponent()
     {
-        // The committed synthetic box already connected (shared exact edges) -> 1 component; the additive
-        // overlap pass must not change that. Anchors the report's "synthetic grid -> 1 component" baseline.
+        // P8-1b-5 real-net acceptance: the committed irregular witness (netgenerate --rand, sub-area session's
+        // pedfrag repro) bakes to 222 disconnected components with the pre-fix graph (crowd peak 0). With the
+        // area-overlap/abutment pass it must connect to ONE component and be routable end-to-end -- the exact
+        // failure the fix targets, pinned against genuine netconvert geometry.
+        var dir = RepoRoot();
+        var net = Path.Combine(dir, "scenarios", "_ped", "subarea-irregular", "net.xml");
+        var polygons = WalkablePolygonBaker.Bake(PedNetworkParser.Load(net));
+        var nav = new SumoNavMesh(polygons);
+
+        Assert.Equal(1, nav.ConnectedComponentCount());
+
+        // Routable across the whole box (nearest polygons to opposite corners).
+        var lo = polygons.OrderBy(p => p.Centroid.X + p.Centroid.Y).First().Centroid;
+        var hi = polygons.OrderByDescending(p => p.Centroid.X + p.Centroid.Y).First().Centroid;
+        Assert.NotNull(nav.FindPath(lo, hi));
+
+        _out.WriteLine($"[P8-1b] irregular witness box: {polygons.Count} polygons, {nav.ConnectedComponentCount()} component (was 222)");
+    }
+
+    private static string RepoRoot()
+    {
         var dir = AppContext.BaseDirectory;
         while (dir is not null && !File.Exists(Path.Combine(dir, "Traffic.sln")))
         {
@@ -116,7 +135,15 @@ public class NavmeshConnectivityTests
         }
 
         Assert.NotNull(dir);
-        var boxNet = Path.Combine(dir!, "scenarios", "_ped", "subarea-box", "net.xml");
+        return dir!;
+    }
+
+    [Fact]
+    public void SyntheticBox_StaysOneComponent()
+    {
+        // The committed synthetic box already connected (shared exact edges) -> 1 component; the additive
+        // overlap pass must not change that. Anchors the report's "synthetic grid -> 1 component" baseline.
+        var boxNet = Path.Combine(RepoRoot(), "scenarios", "_ped", "subarea-box", "net.xml");
         var network = PedNetworkParser.Load(boxNet);
         var polygons = WalkablePolygonBaker.Bake(network);
         var nav = new SumoNavMesh(polygons);

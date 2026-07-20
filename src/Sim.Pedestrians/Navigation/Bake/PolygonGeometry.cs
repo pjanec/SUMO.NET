@@ -131,15 +131,20 @@ internal static class PolygonGeometry
         return true;
     }
 
-    // Do two polygons genuinely OVERLAP in 2D area (not merely touch at a corner)? Evidence collected:
-    // any vertex of one strictly inside the other, and any proper edge crossing. When they overlap, a
-    // representative interior portal point (the average of that evidence -- all points inside the walkable
-    // union) is returned in `portal`. `margin` is the strict-inside slack (see ContainsStrict). This is the
-    // invariant-safe adjacency signal for real buffered geometry: abutting sidewalk/crossing strips overlap
-    // the junction walkingArea by a sliver, but a sidewalk and a crossing (which only meet the area, not
-    // each other) do not overlap -- so no illegitimate shortcut portal is ever produced.
+    // Do two polygons ABUT -- genuinely OVERLAP in 2D area, OR nearly touch within `proximityEps`? This is
+    // the invariant-safe adjacency signal for real buffered geometry: netconvert emits sidewalk/crossing
+    // strips and walkingArea polygons that meet a junction either overlapping by a sliver OR separated by a
+    // sub-mm-to-few-mm gap (independent buffering slop), neither of which shares an exact edge/vertex. A mere
+    // corner touch between a sidewalk and a crossing is not an area overlap, and those pairs are excluded by
+    // the caller's area-anchoring, so no illegitimate shortcut portal is ever produced.
+    //
+    // Portal (always inside/at the seam of the walkable union):
+    //  - if they overlap, the average of the overlap evidence (vertices strictly inside the other, proper
+    //    edge crossings) -- a point interior to both;
+    //  - else, the midpoint of the closest pair of boundary points (on the ~0-gap seam between them).
+    // `margin` is the strict-inside slack (see ContainsStrict); `proximityEps` is the max abutment gap.
     public static bool TryFindOverlapPortal(
-        IReadOnlyList<Vec2> a, IReadOnlyList<Vec2> b, double margin, out Vec2 portal)
+        IReadOnlyList<Vec2> a, IReadOnlyList<Vec2> b, double margin, double proximityEps, out Vec2 portal)
     {
         portal = default;
         double sx = 0.0, sy = 0.0;
@@ -182,13 +187,63 @@ internal static class PolygonGeometry
             }
         }
 
-        if (count == 0)
+        if (count > 0)
         {
-            return false;
+            portal = new Vec2(sx / count, sy / count);
+            return true;
         }
 
-        portal = new Vec2(sx / count, sy / count);
-        return true;
+        // No overlap -- fall back to near-abutment: connect if the boundaries approach within proximityEps.
+        var gapSq = ClosestBoundaryApproach(a, b, out var seam);
+        if (gapSq <= proximityEps * proximityEps)
+        {
+            portal = seam;
+            return true;
+        }
+
+        return false;
+    }
+
+    // Squared min distance between the two polygons' boundaries (vertex-to-edge both ways -- exact for the
+    // near-abutment case, which is either vertex-to-edge or vertex-to-vertex; a true edge crossing is the
+    // overlap case handled above). `seam` returns the midpoint of the closest boundary pair.
+    private static double ClosestBoundaryApproach(IReadOnlyList<Vec2> a, IReadOnlyList<Vec2> b, out Vec2 seam)
+    {
+        var bestSq = double.MaxValue;
+        var bestSeam = Vec2.Zero;
+
+        for (var i = 0; i < a.Count; i++)
+        {
+            var v = a[i];
+            for (var j = 0; j < b.Count; j++)
+            {
+                var onOther = NearestPointOnSegment(b[j], b[(j + 1) % b.Count], v);
+                var dSq = (v - onOther).AbsSq;
+                if (dSq < bestSq)
+                {
+                    bestSq = dSq;
+                    bestSeam = 0.5 * (v + onOther);
+                }
+            }
+        }
+
+        for (var j = 0; j < b.Count; j++)
+        {
+            var v = b[j];
+            for (var i = 0; i < a.Count; i++)
+            {
+                var onOther = NearestPointOnSegment(a[i], a[(i + 1) % a.Count], v);
+                var dSq = (v - onOther).AbsSq;
+                if (dSq < bestSq)
+                {
+                    bestSq = dSq;
+                    bestSeam = 0.5 * (v + onOther);
+                }
+            }
+        }
+
+        seam = bestSeam;
+        return bestSq;
     }
 
     // Signed area via the shoelace formula, over the implicitly-closed ring. Used to detect and

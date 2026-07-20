@@ -1,6 +1,6 @@
 # PEDESTRIAN-P8-1B-NAVMESH-CONNECTIVITY-DESIGN.md — connect the walkable bake on real geometry (HOW)
 
-**Status: implemented (hermetic gate green); awaiting a real-net fixture for end-to-end acceptance.** Fix for the fragmentation reported in
+**Status: DONE — fix landed and accepted end-to-end against the real-net witness (gate green).** Fix for the fragmentation reported in
 `docs/SUMOSHARP-P8-1-REAL-NET-NAVMESH.md` (the WHAT): on a real ~2 km crop the walkable bake shatters into
 ~1000 disconnected components (synthetic grid → 1), so O/D routing fails and the crowd can't populate
 (peak 3 vs 203). Tracked as **P8-1b** (`PEDESTRIAN-TRACKER.md` Stage P8).
@@ -41,11 +41,16 @@ has, and it is **invariant-safe by construction**:
 - The portal lands **inside the overlap region** (inside both polygons ⇒ inside the walkable union), so the
   A* segments through it stay walkable — unlike the corner-point portal the vertex pass rightly refuses.
 
-**Overlap detection (cheap, no full polygon clipping):** two polygons overlap iff
+**Overlap / abutment detection (cheap, no full polygon clipping):** two polygons are adjacent iff
 - a vertex of one lies **strictly inside** the other (strict = inside by more than a small margin, so a
   boundary/corner touch does NOT count — this is what preserves the POC-0 corner), **or**
 - an edge of one **properly crosses** an edge of the other (proper = interior segment intersection, not a
-  shared endpoint).
+  shared endpoint), **or**
+- (near-**abutment**) their boundaries approach within `AbutProximityEps` (5 cm) — the real witness has
+  walkingArea↔sidewalk **gaps of ≤ ~2 mm** from independent buffering, below the 1 mm shared-edge/vertex
+  epsilon and not an overlap, so a small proximity is required to bridge them. 5 cm is far below the
+  metre-scale spacing between genuinely distinct surfaces, so it never connects unrelated polygons; and
+  area-anchoring still forbids bridging two non-area polygons regardless.
 
 Portal point:
 - if a strictly-contained vertex exists, use it (guaranteed inside both);
@@ -111,9 +116,11 @@ and is sufficient to develop and gate the fix.)
 - [x] **P8-1b-4 — recorder diagnostic**: `SubareaFcdRecorder.Result` now carries `WalkablePolygons` /
   `ConnectedComponents` / `UnreachableSkips`, and `--ped-subarea-fcd` prints them (with a `[WARN] fragmented
   navmesh` note when components > 5) so the next real-crop run self-reports connectivity.
-- [ ] **P8-1b-5 — real-net end-to-end acceptance** (awaiting the sub-area session's `netgenerate --rand`
-  irregular box). *Success:* commit it as a fixture; `ConnectedComponentCount()` is 1 (or few), the recorder's
-  `UnreachableSkips` ≈ 0, and the crowd populates to the dialed density (not 3).
+- [x] **P8-1b-5 — real-net end-to-end acceptance** (sub-area session's `netgenerate --rand` pedfrag witness).
+  *Done* — committed as `scenarios/_ped/subarea-irregular/` (net + manifest + POIs). With the pre-fix graph it
+  baked to **222 components / peak-live 0**; with the fix it bakes to **1 component**, recorder
+  `unreachableSkips=0`, and the crowd **populates to the dial (peak 113 / cap 115)** — while the uniform grid
+  stays **1 component / peak 203**. Pinned by `NavmeshConnectivityTests.IrregularWitnessBox_ConnectsToOneComponent`.
 
 ## 7. Invariants
 

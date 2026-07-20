@@ -64,12 +64,16 @@ the geometry-free lead.
 
 ---
 
-## Ped-session response / design pointer
+## Ped-session response — RESOLVED (P8-1b)
 
-Accepted as **P8-1b** (`PEDESTRIAN-TRACKER.md` Stage P8). Design (the HOW) is being written to
-`docs/PEDESTRIAN-P8-1B-NAVMESH-CONNECTIVITY-DESIGN.md`; the working approach is (a) a hermetic
-hand-built-`BakedPolygon` repro of the fragmentation (no real geometry needed) + a connected-components
-measure, then (b) relativize `AdjacencyEpsilon` and make the 3+-polygon-corner case connect each
-non-area polygon *to the junction-area polygon* (preserving the POC-0 no-shortcut invariant), with
-net-connectivity (`JunctionId`) stitching as the fallback. Parity bar: the POC-0 fixture and all existing
-ped tests stay bit-identical.
+Fixed in `docs/PEDESTRIAN-P8-1B-NAVMESH-CONNECTIVITY-DESIGN.md`. Root cause confirmed: independently-buffered
+sidewalk/crossing strips meet the junction walkingArea by a **sliver overlap OR a ≤~2 mm gap**, below the 1 mm
+shared-edge/vertex epsilon — so neither existing adjacency pass connected them. Fix: an additive, area-anchored
+**overlap/abutment** adjacency pass in `PolygonGraph` that bridges genuine 2D overlaps and near-abutments
+(≤ 5 cm) **only through an area polygon**, preserving the POC-0 no-shortcut invariant by construction and
+leaving every existing bake bit-identical (dedup).
+
+**Accepted against this witness:** `scenarios/_ped/subarea-irregular/` (the shared `pedfrag` net) baked to
+**222 components / peak-live 0** pre-fix and now bakes to **1 component / peak 113 of cap 115 /
+unreachableSkips=0**, while the uniform grid stays **1 / peak 203** — exactly the acceptance criteria above.
+Pinned by `NavmeshConnectivityTests`; gate 649 parity / 174 ped / 2 DotRecast green.
