@@ -43,6 +43,7 @@ public sealed class PedDemand
     // never aliases the uniform path's stream. This salt is only ever consumed when WeightedEndpoints is
     // set -- the null (default) path constructs no stream on it, so it can never perturb existing goldens.
     private const ulong SubareaODSalt = 0x5044_5354_5741_5701UL;   // "PDSTWAW1" ascii-ish, arbitrary distinct constant
+    private const ulong WeaveSalt = 0x5044_5354_5745_5601UL;       // "PDSTWEV1" -- the per-ped lateral-weave stream, independent of the others
 
     private readonly PedDemandConfig _config;
     private readonly IPedNavigation _navigation;
@@ -229,7 +230,17 @@ public sealed class PedDemand
         if (_config.Liveliness is { } liveliness)
         {
             var livelinessRng = VehicleRng.SeedFor(_config.Seed, id, LivelinessSalt);
-            var timeline = BuildLivelyTimeline(path, now, liveliness, _config.MaxSpeed, ref livelinessRng);
+
+            // W2 (docs/PEDESTRIAN-WEAVE-PRODUCTION-DESIGN.md): when the weave is enabled, this ped gets a
+            // per-ped weave seed off the SHARED scenario root (same discipline as the liveliness stream) and
+            // GlobalSeed = the scenario seed for the counterflow interface. Off => 0/0 => weave inactive =>
+            // timelines are built exactly as before (byte-identical poses; the ITERON RULE holds).
+            var weaveSeed = _config.EnableWeave ? VehicleRng.SeedFor(_config.Seed, id, WeaveSalt).RawState : 0UL;
+            var globalSeed = _config.EnableWeave ? _config.Seed : 0UL;
+
+            var timeline = BuildLivelyTimeline(
+                path, now, liveliness, _config.MaxSpeed, ref livelinessRng,
+                _config.EnableWeave, weaveSeed, globalSeed, _navigation.HalfWidthsAlong);
             _lodManager.AddPedLively(id, timeline, _config.MaxSpeed, _config.Radius, now);
         }
         else
@@ -259,8 +270,15 @@ public sealed class PedDemand
     // candidates are then sorted by fraction so they always splice into the route in along-route
     // order, independent of draw order.
     private static ActivityTimeline BuildLivelyTimeline(
-        IReadOnlyList<Vec2> path, double now, PedLivelinessConfig liveliness, double maxSpeed, ref VehicleRng rng)
+        IReadOnlyList<Vec2> path, double now, PedLivelinessConfig liveliness, double maxSpeed, ref VehicleRng rng,
+        bool weave, ulong seed, ulong globalSeed, Func<IReadOnlyList<Vec2>, IReadOnlyList<double>> halfWidthsAlong)
     {
+        // W2: each Walk leg's per-vertex half-width, sampled from the navmesh for that exact (possibly
+        // pause-split) sub-path -- so an interpolated split point gets the width of the polygon it lands in.
+        // Weave off => null widths => the WalkSegment weave is inactive (pose stays on the centreline).
+        WalkSegment MakeWalk(IReadOnlyList<Vec2> pts) =>
+            weave ? new WalkSegment(pts, maxSpeed, halfWidthsAlong(pts)) : new WalkSegment(pts, maxSpeed);
+
         var pauses = new List<(double Fraction, double Duration)>();
         for (var i = 0; i < liveliness.MaxPausesPerTrip; i++)
         {
@@ -306,7 +324,7 @@ public sealed class PedDemand
 
             if (prefix.Count >= 2)
             {
-                segments.Add(new WalkSegment(prefix, maxSpeed));
+                segments.Add(MakeWalk(prefix));
             }
 
             segments.Add(new PauseSegment(duration, liveliness.PauseAnimTag));
@@ -323,17 +341,17 @@ public sealed class PedDemand
 
         if (remainingPath.Count >= 2)
         {
-            segments.Add(new WalkSegment(remainingPath, maxSpeed));
+            segments.Add(MakeWalk(remainingPath));
         }
         else if (segments.Count == 0)
         {
             // No pause ever got far enough to consume anything (e.g. zero accepted draws, or a
             // degenerate 0/1-point path) -- fall back to walking the untouched original path so the
             // timeline is never empty (ActivityTimeline requires >= 1 segment).
-            segments.Add(new WalkSegment(path, maxSpeed));
+            segments.Add(MakeWalk(path));
         }
 
-        return new ActivityTimeline(now, segments);
+        return new ActivityTimeline(now, segments, seed, globalSeed);
     }
 
     // Interpolated point at `fraction` (0..1) of `path`'s own arc length, plus the index `i` such that
@@ -461,6 +479,14 @@ public sealed class PedDemandConfig
     /// `TrySpawnOne` instead build an `ActivityTimeline` (the routed path as Walk segments with seeded
     /// Pause beats spliced in) and call `AddPedLively`.
     public PedLivelinessConfig? Liveliness { get; init; }
+
+    /// W2 (docs/PEDESTRIAN-WEAVE-PRODUCTION-DESIGN.md): ADDITIVE, off by default. When false, lively
+    /// timelines are built exactly as before (no seed, no per-vertex widths => the weave is inactive =>
+    /// byte-identical poses; the ITERON RULE). When true, each lively spawn's Walk legs carry the baked
+    /// per-vertex sidewalk half-width and the timeline carries a per-ped weave seed (off `Seed` via
+    /// `VehicleRng.SeedFor`) + GlobalSeed=`Seed`, so the ped weaves deterministically within its sidewalk
+    /// (server==IG holds -- W1). Only takes effect together with `Liveliness` (the low-power lively path).
+    public bool EnableWeave { get; init; }
 
     /// P8-3b (docs/PEDESTRIAN-P8-3-DEMAND-DESIGN.md §4): ADDITIVE, optional weighted sub-area endpoint
     /// set. Null (the default) => O/D are drawn from the uniform `Origins`/`Destinations` exactly as

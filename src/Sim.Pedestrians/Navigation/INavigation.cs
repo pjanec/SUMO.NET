@@ -41,6 +41,18 @@ public interface IPedNavigation
     /// <c>null</c> when the goal is unreachable. The first point is (near) <paramref name="start"/> and
     /// the last is (near) <paramref name="goal"/>. Deterministic: the same inputs return the same path.
     IReadOnlyList<Vec2>? FindPath(Vec2 start, Vec2 goal);
+
+    /// W2 (docs/PEDESTRIAN-WEAVE-PRODUCTION-DESIGN.md §4): the sidewalk half-width (metres) at each vertex of
+    /// `path` -- the per-vertex clamp width the deterministic low-power weave rides within. Default: a safe
+    /// 0.5 m everywhere (so a navigation provider that has no width model yields a minimal, always-in-bounds
+    /// band); SumoNavMesh overrides it with the baked per-polygon width. Implemented as a default interface
+    /// method so the existing providers (DotRecast, the test doubles) need no change.
+    IReadOnlyList<double> HalfWidthsAlong(IReadOnlyList<Vec2> path)
+    {
+        var widths = new double[path.Count];
+        Array.Fill(widths, 0.5);
+        return widths;
+    }
 }
 
 /// Tactical steering: turn a path + current pose into a PREFERRED velocity. This is the single point the
