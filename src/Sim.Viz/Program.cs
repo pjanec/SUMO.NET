@@ -70,6 +70,7 @@ internal static class Program
             "--ped-subarea-fcd" => RunPedSubareaFcd(args),
             "--ped-weave-csv" => RunPedWeaveCsv(args),
             "--ped-weave-bend-csv" => RunPedWeaveBendCsv(args),
+            "--ped-weave-anim-csv" => RunPedWeaveAnimCsv(args),
             _ => RunSingle(args),
         };
     }
@@ -518,6 +519,135 @@ internal static class Program
     // CONTINUOUSLY across a segment join and anchors ONLY at the true O/D -- never re-zeroed at the bend. The
     // lateral frame (corridor-left) follows the centreline as it turns, so the keep-right bands + moving
     // interface wrap around the corner. World-XY output (columns ped,dir,x,y,t; dir 2 = centreline).
+    // PED-REALISM-1 Prototype C (docs/PEDESTRIAN-LOWPOWER-AVOIDANCE-DESIGN.md §11): an ANIMATED demo -- a
+    // flowing weave crowd (two counterflows, staggered spawns) PLUS low-power live-behaviour actors expressed
+    // as lateral-profile overrides (§10.1): "check phone" = drift to the kerb, Pause, rejoin; "enter building"
+    // = drift to a doorway, vanish. All deterministic, no ORCA (§9a). Dumps per-frame disc positions
+    // (columns frame,x,y,kind) for a GIF. Harness only; off the parity path.
+    private static int RunPedWeaveAnimCsv(string[] args)
+    {
+        if (args.Length < 2)
+        {
+            Console.Error.WriteLine("error: --ped-weave-anim-csv requires an output path");
+            return 2;
+        }
+
+        var outPath = args[1];
+        const double length = 50.0, halfWidth = 2.0, speed = 1.3;
+        const double spawnEvery = 1.7;             // seconds between spawns per stream
+        const double tMax = 34.0, dt = 0.2;        // animation window / frame step
+        const ulong globalSeed = 777UL;
+        var maxShift = 0.35 * halfWidth;
+        var wp = Sim.Pedestrians.Lod.WeaveParams.Default;
+        var inv = System.Globalization.CultureInfo.InvariantCulture;
+        var sb = new System.Text.StringBuilder();
+        sb.Append("frame,x,y,kind\n");
+
+        double Smooth(double x) { var t = x < 0 ? 0 : (x > 1 ? 1 : x); return t * t * (3 - (2 * t)); }
+
+        // One ambient weave ped's lateral offset (signed, world Y) at corridor-arc a, own arc-length s.
+        double AmbientY(int dir, double s, double a, double now, ulong seed)
+        {
+            var c = Sim.Pedestrians.Lod.LateralWeave.CenterShift(a, now, length, globalSeed, maxShift, wp);
+            return dir == 1
+                ? c - Sim.Pedestrians.Lod.LateralWeave.Offset(s, length, seed, c + halfWidth, wp)
+                : c + Sim.Pedestrians.Lod.LateralWeave.Offset(s, length, seed, halfWidth - c, wp);
+        }
+
+        for (var f = 0; f * dt <= tMax + 1e-9; f++)
+        {
+            var now = f * dt;
+
+            // Two ambient counterflows. Spawn from before t=0 so the corridor is pre-populated.
+            for (var stream = 0; stream < 2; stream++)
+            {
+                var dir = stream == 0 ? 1 : -1;
+                var k0 = -(int)Math.Ceiling((length / speed) / spawnEvery);
+                var kMax = (int)Math.Floor(tMax / spawnEvery);
+                for (var k = k0; k <= kMax; k++)
+                {
+                    var startT = k * spawnEvery;
+                    var s = speed * (now - startT);
+                    if (s < 0.0 || s > length)
+                    {
+                        continue;
+                    }
+
+                    var seed = (ulong)((stream * 100_000) + (k - k0) + 1);
+                    var a = dir == 1 ? s : length - s;
+                    var x = a;
+                    var y = AmbientY(dir, s, a, now, seed);
+                    sb.Append(f).Append(',').Append(x.ToString("F2", inv)).Append(',')
+                      .Append(y.ToString("F2", inv)).Append(',').Append(dir == 1 ? "east" : "west").Append('\n');
+                }
+            }
+
+            // ACTOR 1 -- "check phone" (eastbound): walk -> step to the kerb -> Pause -> rejoin. §9a.
+            AppendPhoneActor(sb, f, now, startT: 3.0, eventArc: 26.0, dwell: 6.0, length, halfWidth, speed, globalSeed, maxShift, wp, inv, Smooth, seed: 424242UL);
+
+            // ACTOR 2 -- "enter building" (westbound): drift to a doorway on the building side, then vanish. §9a.
+            AppendDoorwayActor(sb, f, now, startT: 1.0, doorArc: 30.0, length, halfWidth, speed, globalSeed, maxShift, wp, inv, Smooth, seed: 515151UL);
+        }
+
+        System.IO.File.WriteAllText(outPath, sb.ToString());
+        Console.WriteLine($"wrote {outPath}  frames={(int)(tMax / dt) + 1} length={length} (ambient weave + phone + doorway actors)");
+        return 0;
+    }
+
+    private static void AppendPhoneActor(
+        System.Text.StringBuilder sb, int f, double now, double startT, double eventArc, double dwell,
+        double length, double halfWidth, double speed, ulong globalSeed, double maxShift,
+        Sim.Pedestrians.Lod.WeaveParams wp, System.Globalization.CultureInfo inv, Func<double, double> smooth, ulong seed)
+    {
+        if (now < startT) return;
+        var pauseStart = startT + (eventArc / speed);
+        var pauseEnd = pauseStart + dwell;
+        double s;
+        var onPhone = false;
+        if (now < pauseStart) s = speed * (now - startT);
+        else if (now < pauseEnd) { s = eventArc; onPhone = true; }
+        else s = eventArc + (speed * (now - pauseEnd));
+        if (s > length) return;
+
+        var a = s; // eastbound
+        var c = Sim.Pedestrians.Lod.LateralWeave.CenterShift(a, now, length, globalSeed, maxShift, wp);
+        var weaveY = c - Sim.Pedestrians.Lod.LateralWeave.Offset(s, length, seed, c + halfWidth, wp);
+        var kerbY = -(halfWidth * 0.92); // eastbound kerb side is -y
+        const double blend = 3.0;
+        double y;
+        if (now < pauseStart) y = Lerp(weaveY, kerbY, smooth(Clamp01((s - (eventArc - blend)) / blend)));
+        else if (now < pauseEnd) y = kerbY;
+        else y = Lerp(kerbY, weaveY, smooth(Clamp01((s - eventArc) / blend)));
+
+        sb.Append(f).Append(',').Append(a.ToString("F2", inv)).Append(',')
+          .Append(y.ToString("F2", inv)).Append(',').Append(onPhone ? "phone" : "actor").Append('\n');
+    }
+
+    private static void AppendDoorwayActor(
+        System.Text.StringBuilder sb, int f, double now, double startT, double doorArc,
+        double length, double halfWidth, double speed, ulong globalSeed, double maxShift,
+        Sim.Pedestrians.Lod.WeaveParams wp, System.Globalization.CultureInfo inv, Func<double, double> smooth, ulong seed)
+    {
+        if (now < startT) return;
+        var s = speed * (now - startT);
+        var arriveT = startT + (doorArc / speed);
+        if (now >= arriveT + 0.6) return; // entered the building -> vanished (visible=false)
+
+        var a = length - s; // westbound corridor arc
+        var c = Sim.Pedestrians.Lod.LateralWeave.CenterShift(a, now, length, globalSeed, maxShift, wp);
+        var weaveY = c + Sim.Pedestrians.Lod.LateralWeave.Offset(s, length, seed, halfWidth - c, wp);
+        var doorY = halfWidth * 0.98; // building side (+y) doorway
+        const double blend = 4.0;
+        // corridor arc AT the door:
+        var y = Lerp(weaveY, doorY, smooth(Clamp01((s - (doorArc - blend)) / blend)));
+        var x = length - s;
+        sb.Append(f).Append(',').Append(x.ToString("F2", inv)).Append(',')
+          .Append(y.ToString("F2", inv)).Append(',').Append("door").Append('\n');
+    }
+
+    private static double Lerp(double x, double y, double t) => x + ((y - x) * t);
+    private static double Clamp01(double v) => v < 0 ? 0 : (v > 1 ? 1 : v);
+
     private static int RunPedWeaveBendCsv(string[] args)
     {
         if (args.Length < 2)
