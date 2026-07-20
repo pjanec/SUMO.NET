@@ -91,6 +91,40 @@ Engineering consequences (mandatory):
   end-tangent-angle distribution** so the threshold is tuned against actual curvature rather than guessed.
   Until then, 135° stands as the documented provisional value.
 
+## 4.1 Real-crop validation result + threshold tuning PARKED (restore path)
+
+**Status: both parts landed and validated on the real Geneva crop; threshold tuning parked per owner.**
+
+Real-crop findings (sub-area session):
+- **Part 2 (reachability filter) is the real-net density win: 544 → 2,773 (cap).** On real geometry the
+  crowd was fragmentation-starved; drawing demand only from the dominant reachable component(s) recovers it
+  to the dial. Density is now **knob-limited** on real nets, not fragmentation-limited.
+- **Part 1 (spine continuation bridge) barely moves real geometry: 366 → 353 components.** It is kept for
+  (a) coverage of the genuine collinear-continuation seams it *does* fix and (b) the committed
+  `subarea-pedfrag2` witness regression, but on the real crop the residual is dominated by Mode-2/Mode-3
+  (gaps > 5 cm, and >2 m isolated stubs) that adjacency cannot reach — which is exactly why Part 2 (not
+  Part 1) carries the density recovery.
+
+**Parked knobs (current provisional values — do not treat as final):**
+- `PolygonGraph.ContinuationMinAngleDeg = 135.0` (Part 1 continuation gate).
+- `NavmeshReachability.DefaultMinAreaFraction = 0.05` (Part 2 dominant-component area fraction).
+
+**Restore path (to resume tuning later):**
+1. Re-instrument the seam diagnostic on the real crop: for every `SidewalkSegment`↔`SidewalkSegment` ≤5 cm
+   near-pair, dump the end-tangent angle θ and the bridge/reject decision (the design's opt-in seam-angle
+   diagnostic — the sub-area session offered to run it once tuning resumes). Collect the **real-net θ
+   distribution** — the data neither the synthetic witness nor this session has.
+2. Tune `ContinuationMinAngleDeg` against that distribution (lower it if curving real continuations sit below
+   135° and are being under-connected; raise it if shallow real corners near 135° are being clipped). It is a
+   single named constant — a one-line change + re-run the witness (must stay 83→1) + the no-shortcut corner
+   guard test.
+3. Tune `DefaultMinAreaFraction` against the real component-size distribution (the sub-area session has it:
+   ~623-poly core + ~151-poly region + singleton tail). 5% keeps both large regions; adjust if a real crop
+   has a third genuinely-large region below 5% of the largest, or if the singleton tail creeps above it.
+4. Since the low-value/high-value split is now known (Part 2 is the density lever, Part 1 is coverage), a
+   future revisit could also weigh Mode-2 (widen `AbutProximityEps` beyond 5 cm for collinear continuations
+   only) — but only with the real θ distribution in hand, to avoid re-triggering corner shortcuts.
+
 ## 5. Part 2 — demand-side reachable-component filter (the other half)
 
 Adjacency bridging structurally caps the real crop at **~366 → ~213**: ~212 components are **Mode-3 isolated
