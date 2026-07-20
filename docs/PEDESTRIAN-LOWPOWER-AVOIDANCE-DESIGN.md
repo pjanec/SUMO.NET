@@ -176,6 +176,16 @@ needs reciprocal avoidance, so it is exactly where a low-power ped **temporarily
    resumes the pure-function reconstruction from the new leg. This reuses the existing reroute-leg
    re-broadcast (P2-2) + the P3-3 demote handling.
 
+### 9b-bis. Per-ped speed + emergent same-direction passing (cheap realism)
+Uniform walking speed is as strong a "fake crowd" tell as the centreline was. Give each ped a **seeded
+preferred speed** (~0.9–1.7 m/s) — it is already the `PathArc` leg's `speed` parameter, on the wire, so it
+is deterministic, O(1), zero extra bytes, server==IG. Two payoffs: the crowd stops moving in lockstep
+(uneven longitudinal spacing), and **overtaking emerges for free** — because the weave already spreads
+same-direction peds across different lateral tracks, a faster ped simply passes a slower one on a
+neighbouring track, no reactivity. The residual (a faster ped catching a slower one on the *same* track)
+is the same accepted "reachable level" as the head-on residual — rare, and handled by ORCA hotspots for the
+worst cases. *(Built into Prototype C.)*
+
 ### 9c. Synergy with the LOD / density design
 The stream-crossings are precisely the **areas of interest / density hotspots** where ORCA is already
 promoted (`PLANNING-INTENTS` lever 3). Concentrating cross-stream behaviors (and road crossings) in those

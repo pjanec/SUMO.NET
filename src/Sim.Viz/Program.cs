@@ -545,6 +545,19 @@ internal static class Program
 
         double Smooth(double x) { var t = x < 0 ? 0 : (x > 1 ? 1 : x); return t * t * (3 - (2 * t)); }
 
+        // Per-ped seeded preferred speed (m/s), ~0.9..1.7 -- breaks the lockstep, and (with the weave's lateral
+        // spread) lets a faster ped overtake a slower one on a neighbouring track, no reactivity. Deterministic;
+        // in production this is just the PathArc leg's `speed`, already on the wire -> server==IG, zero extra bytes.
+        double PedSpeed(ulong seed)
+        {
+            var z = unchecked(((seed ^ 0x5EED0000BADF00D5UL) * 0x9E3779B97F4A7C15UL) + 0x9E3779B97F4A7C15UL);
+            z = unchecked((z ^ (z >> 30)) * 0xBF58476D1CE4E5B9UL);
+            z = unchecked((z ^ (z >> 27)) * 0x94D049BB133111EBUL);
+            z ^= z >> 31;
+            var u = (z >> 11) * (1.0 / 9007199254740992.0);
+            return 0.9 + (0.8 * u);
+        }
+
         // One ambient weave ped's lateral offset (signed, world Y) at corridor-arc a, own arc-length s.
         double AmbientY(int dir, double s, double a, double now, ulong seed)
         {
@@ -562,18 +575,18 @@ internal static class Program
             for (var stream = 0; stream < 2; stream++)
             {
                 var dir = stream == 0 ? 1 : -1;
-                var k0 = -(int)Math.Ceiling((length / speed) / spawnEvery);
+                var k0 = -(int)Math.Ceiling((length / 0.9) / spawnEvery); // slowest ped needs the most lead time
                 var kMax = (int)Math.Floor(tMax / spawnEvery);
                 for (var k = k0; k <= kMax; k++)
                 {
                     var startT = k * spawnEvery;
-                    var s = speed * (now - startT);
+                    var seed = (ulong)((stream * 100_000) + (k - k0) + 1);
+                    var s = PedSpeed(seed) * (now - startT); // per-ped preferred speed (no lockstep)
                     if (s < 0.0 || s > length)
                     {
                         continue;
                     }
 
-                    var seed = (ulong)((stream * 100_000) + (k - k0) + 1);
                     var a = dir == 1 ? s : length - s;
                     var x = a;
                     var y = AmbientY(dir, s, a, now, seed);
