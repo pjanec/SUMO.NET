@@ -1,0 +1,639 @@
+{
+  "status": "warn",
+  "net": "witness.net.xml",
+  "out_dir": "build_final",
+  "scenario_sumocfg": "scenario.sumocfg",
+  "scenario_rou": "scenario.rou.xml",
+  "scenario_add": "scenario.add.xml",
+  "lane_km": 19.851380000000002,
+  "knee": {
+    "veh_lkm": 1.763,
+    "period": 0.353,
+    "pop_pct": 0.0,
+    "degraded": false,
+    "knee_confidence": "ok"
+  },
+  "requested_percent": 100.0,
+  "target_veh_lkm": 1.763,
+  "chosen_period": 0.353,
+  "seed": 42,
+  "serve_end": 3600,
+  "subarea": {
+    "bbox": null,
+    "box_bounds": {
+      "xmin": -179.61,
+      "ymin": -191.94,
+      "xmax": 708.56,
+      "ymax": 749.23
+    },
+    "coordinate_frame": {
+      "units": "metres",
+      "note": "SUMO network XY; same frame as net.net.xml",
+      "net_offset": [
+        318.62,
+        203.46
+      ]
+    },
+    "fringe_edge_count": 112,
+    "fringe_walkable_count": 112,
+    "fringe_edges": [
+      {
+        "id": "-195",
+        "car": true,
+        "ped": true
+      },
+      {
+        "id": "-209",
+        "car": true,
+        "ped": true
+      },
+      {
+        "id": "-223",
+        "car": true,
+        "ped": true
+      },
+      {
+        "id": "-225",
+        "car": true,
+        "ped": true
+      },
+      {
+        "id": "-245",
+        "car": true,
+        "ped": true
+      },
+      {
+        "id": "-408",
+        "car": true,
+        "ped": true
+      },
+      {
+        "id": "-517",
+        "car": true,
+        "ped": true
+      },
+      {
+        "id": "-519",
+        "car": true,
+        "ped": true
+      },
+      {
+        "id": "195",
+        "car": true,
+        "ped": true
+      },
+      {
+        "id": "209",
+        "car": true,
+        "ped": true
+      },
+      {
+        "id": "223",
+        "car": true,
+        "ped": true
+      },
+      {
+        "id": "225",
+        "car": true,
+        "ped": true
+      },
+      {
+        "id": "245",
+        "car": true,
+        "ped": true
+      },
+      {
+        "id": "408",
+        "car": true,
+        "ped": true
+      },
+      {
+        "id": "517",
+        "car": true,
+        "ped": true
+      },
+      {
+        "id": "519",
+        "car": true,
+        "ped": true
+      },
+      {
+        "id": "CH0_0",
+        "car": true,
+        "ped": true
+      },
+      {
+        "id": "CH0_1",
+        "car": true,
+        "ped": true
+      },
+      {
+        "id": "CH0_2",
+        "car": true,
+        "ped": true
+      },
+      {
+        "id": "CH0_3",
+        "car": true,
+        "ped": true
+      },
+      {
+        "id": "CH0_4",
+        "car": true,
+        "ped": true
+      },
+      {
+        "id": "CH0_5",
+        "car": true,
+        "ped": true
+      },
+      {
+        "id": "CH0_6",
+        "car": true,
+        "ped": true
+      },
+      {
+        "id": "CH0_7",
+        "car": true,
+        "ped": true
+      },
+      {
+        "id": "CH10_0",
+        "car": true,
+        "ped": true
+      },
+      {
+        "id": "CH10_1",
+        "car": true,
+        "ped": true
+      },
+      {
+        "id": "CH10_2",
+        "car": true,
+        "ped": true
+      },
+      {
+        "id": "CH10_3",
+        "car": true,
+        "ped": true
+      },
+      {
+        "id": "CH10_4",
+        "car": true,
+        "ped": true
+      },
+      {
+        "id": "CH10_5",
+        "car": true,
+        "ped": true
+      },
+      {
+        "id": "CH10_6",
+        "car": true,
+        "ped": true
+      },
+      {
+        "id": "CH10_7",
+        "car": true,
+        "ped": true
+      },
+      {
+        "id": "CH11_0",
+        "car": true,
+        "ped": true
+      },
+      {
+        "id": "CH11_1",
+        "car": true,
+        "ped": true
+      },
+      {
+        "id": "CH11_2",
+        "car": true,
+        "ped": true
+      },
+      {
+        "id": "CH11_3",
+        "car": true,
+        "ped": true
+      },
+      {
+        "id": "CH11_4",
+        "car": true,
+        "ped": true
+      },
+      {
+        "id": "CH11_5",
+        "car": true,
+        "ped": true
+      },
+      {
+        "id": "CH11_6",
+        "car": true,
+        "ped": true
+      },
+      {
+        "id": "CH11_7",
+        "car": true,
+        "ped": true
+      },
+      {
+        "id": "CH1_0",
+        "car": true,
+        "ped": true
+      },
+      {
+        "id": "CH1_1",
+        "car": true,
+        "ped": true
+      },
+      {
+        "id": "CH1_2",
+        "car": true,
+        "ped": true
+      },
+      {
+        "id": "CH1_3",
+        "car": true,
+        "ped": true
+      },
+      {
+        "id": "CH1_4",
+        "car": true,
+        "ped": true
+      },
+      {
+        "id": "CH1_5",
+        "car": true,
+        "ped": true
+      },
+      {
+        "id": "CH1_6",
+        "car": true,
+        "ped": true
+      },
+      {
+        "id": "CH1_7",
+        "car": true,
+        "ped": true
+      },
+      {
+        "id": "CH2_0",
+        "car": true,
+        "ped": true
+      },
+      {
+        "id": "CH2_1",
+        "car": true,
+        "ped": true
+      },
+      {
+        "id": "CH2_2",
+        "car": true,
+        "ped": true
+      },
+      {
+        "id": "CH2_3",
+        "car": true,
+        "ped": true
+      },
+      {
+        "id": "CH2_4",
+        "car": true,
+        "ped": true
+      },
+      {
+        "id": "CH2_5",
+        "car": true,
+        "ped": true
+      },
+      {
+        "id": "CH2_6",
+        "car": true,
+        "ped": true
+      },
+      {
+        "id": "CH2_7",
+        "car": true,
+        "ped": true
+      },
+      {
+        "id": "CH3_0",
+        "car": true,
+        "ped": true
+      },
+      {
+        "id": "CH3_1",
+        "car": true,
+        "ped": true
+      },
+      {
+        "id": "CH3_2",
+        "car": true,
+        "ped": true
+      },
+      {
+        "id": "CH3_3",
+        "car": true,
+        "ped": true
+      },
+      {
+        "id": "CH3_4",
+        "car": true,
+        "ped": true
+      },
+      {
+        "id": "CH3_5",
+        "car": true,
+        "ped": true
+      },
+      {
+        "id": "CH3_6",
+        "car": true,
+        "ped": true
+      },
+      {
+        "id": "CH3_7",
+        "car": true,
+        "ped": true
+      },
+      {
+        "id": "CH4_0",
+        "car": true,
+        "ped": true
+      },
+      {
+        "id": "CH4_1",
+        "car": true,
+        "ped": true
+      },
+      {
+        "id": "CH4_2",
+        "car": true,
+        "ped": true
+      },
+      {
+        "id": "CH4_3",
+        "car": true,
+        "ped": true
+      },
+      {
+        "id": "CH4_4",
+        "car": true,
+        "ped": true
+      },
+      {
+        "id": "CH4_5",
+        "car": true,
+        "ped": true
+      },
+      {
+        "id": "CH4_6",
+        "car": true,
+        "ped": true
+      },
+      {
+        "id": "CH4_7",
+        "car": true,
+        "ped": true
+      },
+      {
+        "id": "CH5_0",
+        "car": true,
+        "ped": true
+      },
+      {
+        "id": "CH5_1",
+        "car": true,
+        "ped": true
+      },
+      {
+        "id": "CH5_2",
+        "car": true,
+        "ped": true
+      },
+      {
+        "id": "CH5_3",
+        "car": true,
+        "ped": true
+      },
+      {
+        "id": "CH5_4",
+        "car": true,
+        "ped": true
+      },
+      {
+        "id": "CH5_5",
+        "car": true,
+        "ped": true
+      },
+      {
+        "id": "CH5_6",
+        "car": true,
+        "ped": true
+      },
+      {
+        "id": "CH5_7",
+        "car": true,
+        "ped": true
+      },
+      {
+        "id": "CH6_0",
+        "car": true,
+        "ped": true
+      },
+      {
+        "id": "CH6_1",
+        "car": true,
+        "ped": true
+      },
+      {
+        "id": "CH6_2",
+        "car": true,
+        "ped": true
+      },
+      {
+        "id": "CH6_3",
+        "car": true,
+        "ped": true
+      },
+      {
+        "id": "CH6_4",
+        "car": true,
+        "ped": true
+      },
+      {
+        "id": "CH6_5",
+        "car": true,
+        "ped": true
+      },
+      {
+        "id": "CH6_6",
+        "car": true,
+        "ped": true
+      },
+      {
+        "id": "CH6_7",
+        "car": true,
+        "ped": true
+      },
+      {
+        "id": "CH7_0",
+        "car": true,
+        "ped": true
+      },
+      {
+        "id": "CH7_1",
+        "car": true,
+        "ped": true
+      },
+      {
+        "id": "CH7_2",
+        "car": true,
+        "ped": true
+      },
+      {
+        "id": "CH7_3",
+        "car": true,
+        "ped": true
+      },
+      {
+        "id": "CH7_4",
+        "car": true,
+        "ped": true
+      },
+      {
+        "id": "CH7_5",
+        "car": true,
+        "ped": true
+      },
+      {
+        "id": "CH7_6",
+        "car": true,
+        "ped": true
+      },
+      {
+        "id": "CH7_7",
+        "car": true,
+        "ped": true
+      },
+      {
+        "id": "CH8_0",
+        "car": true,
+        "ped": true
+      },
+      {
+        "id": "CH8_1",
+        "car": true,
+        "ped": true
+      },
+      {
+        "id": "CH8_2",
+        "car": true,
+        "ped": true
+      },
+      {
+        "id": "CH8_3",
+        "car": true,
+        "ped": true
+      },
+      {
+        "id": "CH8_4",
+        "car": true,
+        "ped": true
+      },
+      {
+        "id": "CH8_5",
+        "car": true,
+        "ped": true
+      },
+      {
+        "id": "CH8_6",
+        "car": true,
+        "ped": true
+      },
+      {
+        "id": "CH8_7",
+        "car": true,
+        "ped": true
+      },
+      {
+        "id": "CH9_0",
+        "car": true,
+        "ped": true
+      },
+      {
+        "id": "CH9_1",
+        "car": true,
+        "ped": true
+      },
+      {
+        "id": "CH9_2",
+        "car": true,
+        "ped": true
+      },
+      {
+        "id": "CH9_3",
+        "car": true,
+        "ped": true
+      },
+      {
+        "id": "CH9_4",
+        "car": true,
+        "ped": true
+      },
+      {
+        "id": "CH9_5",
+        "car": true,
+        "ped": true
+      },
+      {
+        "id": "CH9_6",
+        "car": true,
+        "ped": true
+      },
+      {
+        "id": "CH9_7",
+        "car": true,
+        "ped": true
+      }
+    ]
+  },
+  "density": {
+    "knee_veh_lkm": 1.763,
+    "served_percent": 100.0,
+    "served_veh_lkm": 1.763
+  },
+  "workers": 3,
+  "knee_mode": "full",
+  "mode_detail": {},
+  "compute_budget": "mid",
+  "compute_budget_explicit_override": false,
+  "calibration_seconds": 7.6,
+  "verify": {
+    "no_cheating": "pass",
+    "birth_violations": 0,
+    "death_violations": 0,
+    "peak_moving": 64.0,
+    "peak_veh_lkm": 3.224,
+    "min_speed_relative": -1.0,
+    "teleports": 26,
+    "teleport_pct": 1.34,
+    "verify_end": 4500,
+    "verify_seconds": 3.0,
+    "note": null,
+    "achieved_vs_target_pct": 182.9
+  },
+  "total_seconds": 12.6,
+  "timings": {
+    "prepare": 0.4,
+    "calibrate": 7.6,
+    "serve": 1.4,
+    "parking": 0.2,
+    "emit": 0.0,
+    "verify": 3.0
+  },
+  "warnings": [
+    "achieved peak_veh_lkm=3.224 outside sane band [0.88, 2.64] of target 1.76"
+  ]
+}
