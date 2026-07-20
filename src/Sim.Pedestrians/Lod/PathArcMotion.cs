@@ -29,6 +29,62 @@ public static class PathArcMotion
         return direction * speed;
     }
 
+    // W1 (docs/PEDESTRIAN-WEAVE-PRODUCTION-DESIGN.md §1, §3): the weave-aware sample. One forward walk of
+    // `path` to arc-length `s` returns the centreline point AND the unit tangent AND the interpolated
+    // half-width there -- everything LateralWeave needs to place `centre + tangent.PerpCW * offset`, without a
+    // second walk. `halfWidths` is per-vertex (parallel to `path`); when null the corridor half-width is 0
+    // (weave OFF -> pose is exactly the centreline, byte-identical to PositionAt). This is the SHARED evaluator
+    // both the server (PedLodManager.PositionOf -> ActivityTimeline.PoseAt) and the IG
+    // (HeadlessIg.ReconstructSample -> the decoded PoseAt) call, so server==IG holds by construction.
+    public static Vec2 SampleAt(
+        IReadOnlyList<Vec2> path, IReadOnlyList<double>? halfWidths, double s, out Vec2 tangent, out double halfWidth)
+    {
+        tangent = Vec2.Zero;
+        halfWidth = 0.0;
+
+        if (path.Count == 0)
+        {
+            return Vec2.Zero;
+        }
+
+        if (path.Count == 1)
+        {
+            halfWidth = halfWidths is { Count: > 0 } ? halfWidths[0] : 0.0;
+            return path[0];
+        }
+
+        var remaining = s < 0.0 ? 0.0 : s;
+        for (var i = 0; i + 1 < path.Count; i++)
+        {
+            var a = path[i];
+            var b = path[i + 1];
+            var seg = b - a;
+            var len = seg.Abs;
+            if (len <= 1e-12)
+            {
+                continue; // degenerate (duplicate-point) segment: no arc-length, skip it
+            }
+
+            if (remaining <= len)
+            {
+                var t = remaining / len;
+                tangent = seg / len;
+                if (halfWidths != null && halfWidths.Count == path.Count)
+                {
+                    halfWidth = halfWidths[i] + ((halfWidths[i + 1] - halfWidths[i]) * t);
+                }
+
+                return new Vec2(a.X + (seg.X * t), a.Y + (seg.Y * t));
+            }
+
+            remaining -= len;
+        }
+
+        // clamped at the final vertex (arrived): tangent stays Zero, half-width is the last vertex's.
+        halfWidth = halfWidths is { Count: > 0 } ? halfWidths[^1] : 0.0;
+        return path[^1];
+    }
+
     private static double ArcLength(double startTime, double speed, double now) =>
         speed * Math.Max(0.0, now - startTime);
 

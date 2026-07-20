@@ -54,7 +54,12 @@ public abstract record ActivitySegment(ActivitySegmentKind Kind, double Duration
 // Move along `Path` (today's PathArc) at `Speed`. Duration = arc-length(Path) / Speed (0 if Speed <= 0
 // or the path has no length -- a degenerate but harmless Walk). AnimTag is always Walk's own
 // "walk" (see ActivityTimeline.WalkAnimTag); Interact is a LATER POC, not modelled here.
-public sealed record WalkSegment(IReadOnlyList<Vec2> Path, double Speed)
+//
+// W1 (docs/PEDESTRIAN-WEAVE-PRODUCTION-DESIGN.md §2): `HalfWidths` is the optional per-vertex sidewalk
+// half-width (parallel to `Path`) the deterministic lateral weave clamps to. NULL == weave OFF: the pose is
+// exactly the centreline (byte-identical to pre-weave PathArc), which is why every existing caller/timeline
+// is unaffected until it opts in by supplying widths (W2 sources them from PedLane.Width/2).
+public sealed record WalkSegment(IReadOnlyList<Vec2> Path, double Speed, IReadOnlyList<double>? HalfWidths = null)
     : ActivitySegment(ActivitySegmentKind.Walk, ComputeDuration(Path, Speed))
 {
     private static double ComputeDuration(IReadOnlyList<Vec2> path, double speed) =>
@@ -104,7 +109,20 @@ public sealed class ActivityTimeline
     public double TotalDuration { get; }
     public double EndTime => T0 + TotalDuration;
 
-    public ActivityTimeline(double t0, IReadOnlyList<ActivitySegment> segments)
+    // W1 (docs/PEDESTRIAN-WEAVE-PRODUCTION-DESIGN.md §2): the deterministic-weave seeds. `Seed` is this ped's
+    // per-entity weave seed -- derived once from the SHARED scenario root via
+    // VehicleRng.SeedFor(Engine.Seed, pedIndex, WeaveSalt) so the whole run reproduces from one number and
+    // server==IG (both sides carry the identical seed). `GlobalSeed` is the scenario-global Engine.Seed the
+    // shared counterflow-interface CenterShift reads. Both default 0 == weave inactive (with HalfWidths null on
+    // the Walk segments, the pose is exactly the centreline, unchanged from pre-weave).
+    public ulong Seed { get; }
+    public ulong GlobalSeed { get; }
+
+    // Fraction of the local half-width the shared moving interface (CenterShift) may sweep. Small -- the
+    // interface breathes, it does not swing the whole corridor.
+    private const double CenterShiftFrac = 0.35;
+
+    public ActivityTimeline(double t0, IReadOnlyList<ActivitySegment> segments, ulong seed = 0, ulong globalSeed = 0)
     {
         if (segments.Count == 0)
         {
@@ -113,6 +131,8 @@ public sealed class ActivityTimeline
 
         T0 = t0;
         Segments = segments;
+        Seed = seed;
+        GlobalSeed = globalSeed;
 
         _startOffset = new double[segments.Count];
         _startPos = new Vec2[segments.Count];
@@ -218,7 +238,7 @@ public sealed class ActivityTimeline
         }
 
         var segElapsed = elapsed - _startOffset[idx];
-        return Evaluate(Segments[idx], _startPos[idx], _startHeading[idx], segElapsed);
+        return Evaluate(Segments[idx], _startPos[idx], _startHeading[idx], segElapsed, now);
     }
 
     // The ped's world velocity at `now` -- the segment direction * speed while Walking, Vec2.Zero while
@@ -254,16 +274,36 @@ public sealed class ActivityTimeline
             : Vec2.Zero;
     }
 
-    private static PoseSample Evaluate(ActivitySegment segment, Vec2 startPos, Vec2 startHeading, double segElapsed)
+    private PoseSample Evaluate(ActivitySegment segment, Vec2 startPos, Vec2 startHeading, double segElapsed, double now)
     {
         switch (segment)
         {
             case WalkSegment w:
-                var pos = PathArcMotion.PositionAt(w.Path, 0.0, w.Speed, segElapsed);
-                var vel = PathArcMotion.VelocityAt(w.Path, 0.0, w.Speed, segElapsed);
-                var normalized = vel.Normalized();
-                var heading = normalized.AbsSq > 0.0 ? normalized : startHeading;
-                return new PoseSample(pos, heading, WalkAnimTag, true);
+                // One shared-evaluator walk gives the centreline point, the unit tangent, and the local
+                // half-width; LateralWeave then places the pose at `centre + tangent.PerpCW * lateral`.
+                var s = w.Speed * (segElapsed < 0.0 ? 0.0 : segElapsed);
+                var centre = PathArcMotion.SampleAt(w.Path, w.HalfWidths, s, out var tangent, out var hw);
+                var heading = tangent.AbsSq > 0.0 ? tangent : startHeading;
+
+                if (w.HalfWidths != null && Seed != 0 && hw > 0.0 && tangent.AbsSq > 0.0)
+                {
+                    var routeLen = PathArcMotion.PathLength(w.Path);
+                    var sClamped = s > routeLen ? routeLen : s;
+                    // Shared, slowly-moving interface between the two travel directions (W1: evaluated on the
+                    // ped's own route arc; the true shared LANE frame + direction sign land in W2 -- see
+                    // docs/PEDESTRIAN-WEAVE-PRODUCTION-DESIGN.md §3 frame caveat). Deterministic in GlobalSeed.
+                    var c = LateralWeave.CenterShift(sClamped, now, routeLen, GlobalSeed, CenterShiftFrac * hw, WeaveParams.Default);
+                    var room = hw - c;
+                    if (room < 0.0)
+                    {
+                        room = 0.0;
+                    }
+
+                    var off = LateralWeave.Offset(sClamped, routeLen, Seed, room, WeaveParams.Default);
+                    centre += tangent.PerpCW * (c + off); // positive == the ped's right side
+                }
+
+                return new PoseSample(centre, heading, WalkAnimTag, true);
 
             case PauseSegment p:
                 return new PoseSample(startPos, startHeading, p.AnimTag, true);

@@ -30,10 +30,13 @@ namespace Sim.Pedestrians.Lod;
 //
 // Format (all integers/doubles little-endian):
 //   double T0
+//   uint64 seed          (W1: per-ped weave seed; 0 == weave off)
+//   uint64 globalSeed    (W1: scenario-global Engine.Seed for CenterShift; 0 == off)
 //   int32  segmentCount
 //   segmentCount * {
 //     byte kind (0 = Walk, 1 = Pause, 2 = Dwell, 3 = Interact)
-//     Walk:     double speed, int32 pointCount, pointCount * (double X, double Y)
+//     Walk:     double speed, int32 pointCount, pointCount * (double X, double Y),
+//               byte hasWidths, hasWidths ? pointCount * double halfWidth
 //     Pause:    double dur, string animTag
 //     Dwell:    double poseX, poseY, headingX, headingY, dur, byte visible, string animTag
 //     Interact: double poseX, poseY, headingX, headingY, dur, int32 partnerId, string animTag
@@ -52,6 +55,8 @@ public static class ActivityTimelineWire
         Span<byte> scratch = stackalloc byte[8];
 
         WriteDouble(buffer, scratch, timeline.T0);
+        WriteUInt64(buffer, scratch, timeline.Seed);
+        WriteUInt64(buffer, scratch, timeline.GlobalSeed);
         WriteInt32(buffer, scratch, timeline.Segments.Count);
 
         foreach (var segment in timeline.Segments)
@@ -66,6 +71,20 @@ public static class ActivityTimelineWire
                     {
                         WriteDouble(buffer, scratch, p.X);
                         WriteDouble(buffer, scratch, p.Y);
+                    }
+
+                    // Per-vertex half-widths (weave clamp), only when present (W1/§2). One flag byte + N doubles.
+                    if (w.HalfWidths is { } widths && widths.Count == w.Path.Count)
+                    {
+                        buffer.WriteByte(1);
+                        foreach (var hw in widths)
+                        {
+                            WriteDouble(buffer, scratch, hw);
+                        }
+                    }
+                    else
+                    {
+                        buffer.WriteByte(0);
                     }
 
                     break;
@@ -110,6 +129,8 @@ public static class ActivityTimelineWire
     {
         var o = 0;
         var t0 = ReadDouble(src, ref o);
+        var seed = ReadUInt64(src, ref o);
+        var globalSeed = ReadUInt64(src, ref o);
         var count = ReadInt32(src, ref o);
         var segments = new ActivitySegment[count];
         for (var i = 0; i < count; i++)
@@ -126,7 +147,7 @@ public static class ActivityTimelineWire
             };
         }
 
-        return new ActivityTimeline(t0, segments);
+        return new ActivityTimeline(t0, segments, seed, globalSeed);
     }
 
     private static WalkSegment ReadWalk(ReadOnlySpan<byte> src, ref int o)
@@ -141,7 +162,19 @@ public static class ActivityTimelineWire
             path[k] = new Vec2(x, y);
         }
 
-        return new WalkSegment(path, speed);
+        var hasWidths = src[o] != 0;
+        o += 1;
+        double[]? widths = null;
+        if (hasWidths)
+        {
+            widths = new double[n];
+            for (var k = 0; k < n; k++)
+            {
+                widths[k] = ReadDouble(src, ref o);
+            }
+        }
+
+        return new WalkSegment(path, speed, widths);
     }
 
     private static PauseSegment ReadPause(ReadOnlySpan<byte> src, ref int o)
@@ -188,6 +221,12 @@ public static class ActivityTimelineWire
         buffer.Write(scratch[..4]);
     }
 
+    private static void WriteUInt64(MemoryStream buffer, Span<byte> scratch, ulong value)
+    {
+        BinaryPrimitives.WriteUInt64LittleEndian(scratch[..8], value);
+        buffer.Write(scratch[..8]);
+    }
+
     private static void WriteString(MemoryStream buffer, Span<byte> scratch, string value)
     {
         var bytes = Encoding.UTF8.GetBytes(value);
@@ -206,6 +245,13 @@ public static class ActivityTimelineWire
     {
         var v = BinaryPrimitives.ReadInt32LittleEndian(src.Slice(o, 4));
         o += 4;
+        return v;
+    }
+
+    private static ulong ReadUInt64(ReadOnlySpan<byte> src, ref int o)
+    {
+        var v = BinaryPrimitives.ReadUInt64LittleEndian(src.Slice(o, 8));
+        o += 8;
         return v;
     }
 

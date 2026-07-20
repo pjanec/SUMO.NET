@@ -225,7 +225,7 @@ Edge-join width smoothing; optional heading-from-offset derivative; the per-ped-
 ("(a)", §10.2-bis). Gated on measured need, not required for the core to ship.
 
 ### Tracker
-- [ ] **W1** evaluator injection + seed (from `Engine.Seed`) + `CenterShift` + server==IG bit-exact unit test
+- [x] **W1** evaluator injection + seed + `CenterShift` + server==IG bit-exact unit test *(DONE: `PathArcMotion.SampleAt`, `ActivityTimeline` weave in `Evaluate`, `WalkSegment.HalfWidths`, `Seed`/`GlobalSeed` + wire; `WeaveEvaluatorTests` 5/5 — weave-off byte-identical, pose==centre+n̂·(c+off), server==IG bit-for-bit, endpoint taper; full gate 649+3, ped 200/200)*
 - [ ] **W2** piecewise per-vertex width threaded from `PedLane` (0.5 fallback); clamp ≤ baked half everywhere
 - [ ] **W3** `HeadlessIg` decodes new fields; reconstruction exact on the weave path
 - [ ] **W4** demote re-anchor `l_r` (project frozen pose → centreline); no-pop seam < 1e-9; D2 assertions ported
