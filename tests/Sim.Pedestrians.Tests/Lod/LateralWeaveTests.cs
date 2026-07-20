@@ -64,6 +64,28 @@ public class LateralWeaveTests
     }
 
     [Fact]
+    public void CenterShift_Deterministic_Bounded_TapersToZero()
+    {
+        // The shared moving-interface field: deterministic (server==IG rests on it), bounded by maxShift, and
+        // 0 at the corridor ends so peds still converge to the true endpoint.
+        const double maxShift = 0.7;
+        Assert.Equal(0.0, LateralWeave.CenterShift(0.0, RouteLen, globalSeed: 777, maxShift, P), precision: 12);
+        Assert.Equal(0.0, LateralWeave.CenterShift(RouteLen, RouteLen, globalSeed: 777, maxShift, P), precision: 12);
+
+        var distinct = new System.Collections.Generic.HashSet<double>();
+        for (var s = 0.0; s <= RouteLen; s += 0.5)
+        {
+            var a = LateralWeave.CenterShift(s, RouteLen, globalSeed: 777, maxShift, P);
+            var b = LateralWeave.CenterShift(s, RouteLen, globalSeed: 777, maxShift, P);
+            Assert.Equal(a, b, precision: 15);                       // deterministic
+            Assert.True(System.Math.Abs(a) <= maxShift + 1e-9, $"interface {a} exceeds maxShift at s={s}");
+            distinct.Add(System.Math.Round(a, 3));
+        }
+
+        Assert.True(distinct.Count > 5, "interface should actually meander along the corridor");
+    }
+
+    [Fact]
     public void DifferentSeeds_DifferentLaneSequences()
     {
         // Two peds fan into a band: their lane sequences differ, so a same-direction flow is not a single line.

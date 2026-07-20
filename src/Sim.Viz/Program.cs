@@ -453,27 +453,50 @@ internal static class Program
         var sb = new System.Text.StringBuilder();
         sb.Append("ped,dir,x,y\n");
 
-        // Eastbound (+x): right-normal (rotate tangent -90 deg) = (0,-1) -> right side is -y.
-        // Westbound (-x): right-normal = (0,+1) -> right side is +y. Opposing streams therefore separate to
-        // -y and +y by travel-direction keep-right, with no coordination.
+        // A SHARED, moving interface c(x) between the two counterflowing streams -- one scenario-global seed,
+        // evaluated at the CORRIDOR position x (so both directions see the same interface at the same x) --
+        // realising the "moving centreline" (docs/PEDESTRIAN-PLANNING-INTENTS.md Section 3 shared field).
+        const ulong globalSeed = 777UL;
+        var maxShift = 0.35 * halfWidth;
+
+        // Eastbound (+x) keeps below the interface (Y in [-halfWidth, c]); westbound (-x) keeps above it
+        // (Y in [c, +halfWidth]). The stream the interface drifts toward is squeezed, the other widens.
         for (var stream = 0; stream < 2; stream++)
         {
             var dir = stream == 0 ? 1 : -1;
-            var rightY = dir == 1 ? -1.0 : 1.0;
             for (var i = 0; i < perStream; i++)
             {
                 var seed = (ulong)((stream * 100_000) + i + 1);
                 var pedId = (stream * perStream) + i;
                 for (var s = 0.0; s <= length + 1e-9; s += ds)
                 {
-                    var cx = dir == 1 ? s : length - s; // centreline x by travel direction
-                    var off = Sim.Pedestrians.Lod.LateralWeave.Offset(s, length, seed, halfWidth, wp);
-                    var y = rightY * off;
+                    var cx = dir == 1 ? s : length - s; // corridor position by travel direction
+                    var c = Sim.Pedestrians.Lod.LateralWeave.CenterShift(cx, length, globalSeed, maxShift, wp);
+                    double room, y;
+                    if (dir == 1)
+                    {
+                        room = c + halfWidth; // room below the interface
+                        y = c - Sim.Pedestrians.Lod.LateralWeave.Offset(s, length, seed, room, wp);
+                    }
+                    else
+                    {
+                        room = halfWidth - c; // room above the interface
+                        y = c + Sim.Pedestrians.Lod.LateralWeave.Offset(s, length, seed, room, wp);
+                    }
+
                     sb.Append(pedId).Append(',').Append(dir).Append(',')
                       .Append(cx.ToString("F3", inv)).Append(',')
                       .Append(y.ToString("F3", inv)).Append('\n');
                 }
             }
+        }
+
+        // Emit the interface itself (dir=0) so the plot can draw the moving centreline.
+        for (var x = 0.0; x <= length + 1e-9; x += ds)
+        {
+            var c = Sim.Pedestrians.Lod.LateralWeave.CenterShift(x, length, globalSeed, maxShift, wp);
+            sb.Append(-1).Append(',').Append(0).Append(',')
+              .Append(x.ToString("F3", inv)).Append(',').Append(c.ToString("F3", inv)).Append('\n');
         }
 
         System.IO.File.WriteAllText(outPath, sb.ToString());

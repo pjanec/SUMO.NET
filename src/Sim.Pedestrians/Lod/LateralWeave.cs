@@ -63,6 +63,8 @@ public static class LateralWeave
     // so they don't collide with the lane-target hashes at small k.
     private const ulong PhaseSalt = 0xA5A5A5A5A5A5A5A5UL;
     private const ulong MicroSalt = 0x5A5A5A5A5A5A5A5AUL;
+    private const ulong MeanderSalt1 = 0x1234567898765432UL;
+    private const ulong MeanderSalt2 = 0x0FEDCBA987654321UL;
 
     // Signed lateral offset (metres, positive = the ped's RIGHT side) at arc-length `s` along a route of total
     // length `routeLength`, for a ped with `seed` on a corridor of half-width `halfWidth`. Pure + deterministic.
@@ -110,6 +112,30 @@ public static class LateralWeave
         // flows always separate) and never past halfWidth. MinFrac (> MicroAmp) keeps the lower clamp positive.
         var clamped = lane < 0.0 ? 0.0 : (lane > halfWidth ? halfWidth : lane);
         return clamped * EndpointTaper(s0, routeLength, p.EndpointTaperMeters);
+    }
+
+    // The SHARED, moving interface between two counterflowing streams (PED-REALISM-1: "the crowd has a moving
+    // centreline -- sometimes more left, sometimes more right"). A low-frequency meander of the dividing line,
+    // signed lateral (metres) in ~[-maxShift, maxShift], computed from a GLOBAL seed shared by every ped -- so
+    // it is a shared DETERMINISTIC FIELD (docs/PEDESTRIAN-PLANNING-INTENTS.md Section 3): both server and IG
+    // compute the identical c(s) from the same scenario-global seed, no per-ped or neighbour state. The caller
+    // gives each stream its own side of c(s): the stream the interface drifts toward is squeezed, the other
+    // widens -- the real emergent-lane breathing. Longer wavelength than the per-ped lane weave so it reads as
+    // the whole interface drifting, not individual jitter. Tapered to 0 at the route ends.
+    public static double CenterShift(double s, double routeLength, ulong globalSeed, double maxShift, in WeaveParams p)
+    {
+        if (maxShift <= 0.0 || routeLength <= 0.0)
+        {
+            return 0.0;
+        }
+
+        const double wl1 = 55.0, wl2 = 33.0; // metres -- both longer than the per-ped lane WavelengthMeters
+        var s0 = s < 0.0 ? 0.0 : (s > routeLength ? routeLength : s);
+        var ph1 = Hash01(globalSeed, MeanderSalt1) * (2.0 * Math.PI);
+        var ph2 = Hash01(globalSeed, MeanderSalt2) * (2.0 * Math.PI);
+        var raw = (0.6 * Math.Sin(((2.0 * Math.PI * s0) / wl1) + ph1))
+                + (0.4 * Math.Sin(((2.0 * Math.PI * s0) / wl2) + ph2)); // in [-1, 1]
+        return maxShift * raw * EndpointTaper(s0, routeLength, p.EndpointTaperMeters);
     }
 
     // The ped's lateral target (metres, right side) for lane segment `k`: a seeded position in
