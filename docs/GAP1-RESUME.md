@@ -136,6 +136,22 @@ dumps per-edge travel-times per interval; vanilla `--device.rerouting.probabilit
 Vanilla control: rerouting ON = 0 tp / 290 arr; rerouting OFF = 10 tp / 289 arr (== SumoSharp) — confirms
 the missing piece is the smooth cross-then-repair, not extra caution.
 
+## 6a. NEW FINDING (2026-07-21, session 2) — vanilla reroutes HEAVILY even at 1×
+Measured `sumo -c scenarios/_repro/synthetic-junction2/scenario.sumocfg --end 2000 --vehroute-output`:
+**773 `<route>` entries for 290 vehicles (~2.7 routes/car)**, still 0 teleports / 290 arrivals. So vanilla
+sends cars off-route routinely AT LOW DENSITY and the periodic device.rerouting repairs them with zero
+teleports. **Implication for the fix:** the 1× churn that killed the earlier "instant dead-lane reroute"
+(dead end #3: −14 arrivals, >5 tp) was NOT caused by crossing off-route per se — vanilla crosses off-route
+constantly at 1× and is fine. It was caused by (a) the car STOPPING at the lane end (speed→0, clamp) before
+crossing, and/or (b) the reactive reroute's ROUTE CHOICE at the lane end (live-weight Dijkstra from the
+dead lane) picking a worse path than vanilla's periodic repair would. So the fix should: cross via the
+actual lane's connection **at speed** (never clamp to 0), and prefer letting the **periodic** reroute
+(already faithful) repair the route rather than making a bespoke reactive route decision. Re-examine whether
+`TryRerouteFromDeadLane`'s at-lane-end Dijkstra is the churn source; a minimal "cross physically via the
+lane's connection, mark off-route, let periodic reroute fix it next cycle" may beat it on both densities.
+NEXT: confirm SumoSharp does NOT clamp speed→0 at the boundary for the dead-lane case (Engine.cs ~L9185),
+and measure a variant that crosses at speed without a bespoke reroute.
+
 ## 7. Success criteria (definition of done for Gap 1)
 1. 2× dense synthetic: teleports ≈ 0 (was 10), halting drains (no permanent stuck), arrivals ≈ vanilla
    (≈290). 1× stays at 5 tp / 287 arr (guard green).
