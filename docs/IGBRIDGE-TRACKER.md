@@ -13,7 +13,11 @@ stated success conditions are verified first-hand (per CLAUDE.md: read the diff,
            IReadOnlySet<int> (per Sim.Ingest/NetworkRouter precedent), Int64-bits double bridge in
            ActivityTimelineWire, manual null-guards for ArgumentNullException.ThrowIfNull. -->
 
-- [ ] **T0.2** Scaffold `Sim.IgBridge` (`netstandard2.1;net6.0;net8.0`) + `Sim.IgBridge.Host` (net8); `Sim.IgBridge` builds for net6
+- [x] **T0.2** Scaffold `Sim.IgBridge` (`netstandard2.1;net6.0;net8.0`) + `Sim.IgBridge.Host` (net8); `Sim.IgBridge` builds for net6
+      <!-- done: producer builds all 3 TFMs (net6 embed proof: consumes ns2.1 deps incl Sim.Pedestrians);
+           Host builds+runs on net8; solution green; dotnet test byte-identical (peds 227, parity 654/4).
+           Polyfill scoped to ns2.1 only (net6 has IsExternalInit); IgSample schema (New/Upd/Del, planar)
+           added. -->
 - [ ] **T0.3** Fixed-10 Hz core loop + per-entity ring buffers + sim clock; determinism test
 
 ## Stage 1 — reconstruct + emit + FakeIg + baseline
