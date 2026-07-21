@@ -35,8 +35,17 @@ hero bbox **`[2055,2055,2895,2895]`** in `SceneGen.BuildLiveCity`.
   ped may step on and clear within one green window, from the static `<tlLogic>`. `ForCrossing(id, program,
   linkIndex)`, `FromNet(netPath, ids, actuated?)`, `IsSignalized`. 5 tests green
   (`tests/Sim.Pedestrians.Tests/Crossing/CrosswalkSignalScheduleTests.cs`).
-- **P2b-T2 — splice the kerb wait into the ped timeline**: NEXT (in progress).
-- **P2b-T3 — gate class-awareness**: TODO.
+- **P2b-T2 — splice the kerb wait into the ped timeline**: DONE (committed). New
+  `src/Sim.Pedestrians/Crossing/CrosswalkSignals.cs` (schedule + signalized-crossing polygons;
+  `TryLocate`, `NextWalkStart(id,tArrive,speed)`, `FromNet(net, bakedPolys)`; maps the baked crossing
+  **lane** id `:c_c0_0` → **edge** id `:c_c0` the net gates by). `PedDemandConfig.CrosswalkSignals`
+  (default null → inert). `PedDemand.BuildLivelyTimeline` post-pass `InsertCrosswalkWaits` /
+  `SplitWalkAtCrossings`: splits a WalkSegment at a signalized-crossing ENTRY (sub-segment midpoint in a
+  crossing poly) and inserts a `PauseSegment(NextWalkStart−tKerb, "wait")` when the ped would arrive on
+  red; no rng. 3 tests green (`tests/…/Crossing/CrosswalkSignalComplianceTests.cs`): signals-ON → **0**
+  on-crossing-during-red samples (vs 3328 with signals OFF), byte-identical double-run.
+- **P2b-T3 — gate class-awareness**: NEXT. `BuildLiveCity` passes only UNSIGNALIZED crossing polys to
+  `CrossingOccupancySource` (filter `signals.IsSignalized(edgeId)`); signalized handled by compliance.
 - **P2b-T4 — wire into BuildLiveCity + verify**: TODO.
 
 ## P2b-T2 plan (resume here) + the code facts already gathered

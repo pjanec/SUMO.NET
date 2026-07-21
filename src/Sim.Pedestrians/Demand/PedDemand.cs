@@ -1,6 +1,7 @@
 using Sim.Core;
 using Sim.Core.Bridge;
 using Sim.Core.Orca;
+using Sim.Pedestrians.Crossing;
 using Sim.Pedestrians.Lod;
 using Sim.Pedestrians.Navigation;
 
@@ -44,6 +45,11 @@ public sealed class PedDemand
     // set -- the null (default) path constructs no stream on it, so it can never perturb existing goldens.
     private const ulong SubareaODSalt = 0x5044_5354_5741_5701UL;   // "PDSTWAW1" ascii-ish, arbitrary distinct constant
     private const ulong WeaveSalt = 0x5044_5354_5745_5601UL;       // "PDSTWEV1" -- the per-ped lateral-weave stream, independent of the others
+
+    // Phase 2b (docs/LIVE-CITY-CROSSWALK-SIGNAL-DESIGN.md): the anim tag a low-power ped plays while
+    // waiting at a signalized crossing's kerb on red. Anything other than ActivityTimeline.WalkAnimTag
+    // renders as a paused disc (SceneGen.BuildLivelyCrowd), so a waiting ped is visibly stopped at the kerb.
+    private const string CrosswalkWaitTag = "wait";
 
     private readonly PedDemandConfig _config;
     private readonly IPedNavigation _navigation;
@@ -240,7 +246,8 @@ public sealed class PedDemand
 
             var timeline = BuildLivelyTimeline(
                 path, now, liveliness, _config.MaxSpeed, ref livelinessRng,
-                _config.EnableWeave, weaveSeed, globalSeed, _navigation.HalfWidthsAlong);
+                _config.EnableWeave, weaveSeed, globalSeed, _navigation.HalfWidthsAlong,
+                _config.CrosswalkSignals);
             _lodManager.AddPedLively(id, timeline, _config.MaxSpeed, _config.Radius, now);
         }
         else
@@ -271,7 +278,8 @@ public sealed class PedDemand
     // order, independent of draw order.
     private static ActivityTimeline BuildLivelyTimeline(
         IReadOnlyList<Vec2> path, double now, PedLivelinessConfig liveliness, double maxSpeed, ref VehicleRng rng,
-        bool weave, ulong seed, ulong globalSeed, Func<IReadOnlyList<Vec2>, IReadOnlyList<double>> halfWidthsAlong)
+        bool weave, ulong seed, ulong globalSeed, Func<IReadOnlyList<Vec2>, IReadOnlyList<double>> halfWidthsAlong,
+        CrosswalkSignals? crosswalkSignals = null)
     {
         // W2: each Walk leg's per-vertex half-width, sampled from the navmesh for that exact (possibly
         // pause-split) sub-path -- so an interpolated split point gets the width of the polygon it lands in.
@@ -351,7 +359,148 @@ public sealed class PedDemand
             segments.Add(MakeWalk(path));
         }
 
+        // Phase 2b: splice a kerb wait before any signalized crossing this route steps onto (opt-in via
+        // PedDemandConfig.CrosswalkSignals; null -> this is skipped entirely -> byte-identical to pre-2b).
+        // The insertion draws NO rng and is a pure function of the (already deterministic) segment
+        // durations, so the ped stays a pure ActivityTimeline (server==IG holds -- W1/W3).
+        if (crosswalkSignals is { } signals)
+        {
+            segments = InsertCrosswalkWaits(segments, now, maxSpeed, signals);
+        }
+
         return new ActivityTimeline(now, segments, seed, globalSeed);
+    }
+
+    // Phase 2b (docs/LIVE-CITY-CROSSWALK-SIGNAL-DESIGN.md §2b): walk the built segments keeping a running
+    // clock `t` (= absolute time the ped reaches the START of the current segment; every ActivitySegment's
+    // Duration is exact, so this matches ActivityTimeline's own timing). For each WalkSegment, detect where
+    // the route ENTERS a signalized crossing and, if the ped would arrive on red (or without room to
+    // clear), split the walk at the kerb and insert a Pause until NextWalkStart. No rng, no promotion.
+    private static List<ActivitySegment> InsertCrosswalkWaits(
+        List<ActivitySegment> segments, double now, double speed, CrosswalkSignals signals)
+    {
+        if (signals.SignalizedCount == 0 || speed <= 0.0)
+        {
+            return segments; // nothing signalized in range -> untouched
+        }
+
+        var result = new List<ActivitySegment>(segments.Count);
+        var t = now;
+        foreach (var seg in segments)
+        {
+            if (seg is WalkSegment w && w.Path.Count >= 2)
+            {
+                SplitWalkAtCrossings(w, ref t, speed, signals, result);
+            }
+            else
+            {
+                result.Add(seg);
+                t += seg.Duration;
+            }
+        }
+
+        return result;
+    }
+
+    // Split one WalkSegment at each signalized-crossing entry, inserting a kerb Pause when the ped would
+    // arrive on red. A sub-segment [path[i], path[i+1]] is "on" a crossing iff its MIDPOINT is inside that
+    // crossing's polygon (midpoints are unambiguously inside one polygon, unlike portal vertices which sit
+    // on a shared boundary edge). ENTRY = a sub-segment on crossing X whose predecessor was not on X; the
+    // kerb is path[i] (the entry vertex). Advances `t` by every emitted sub-walk/pause so downstream
+    // segments keep correct absolute timing.
+    private static void SplitWalkAtCrossings(
+        WalkSegment w, ref double t, double speed, CrosswalkSignals signals, List<ActivitySegment> result)
+    {
+        var path = w.Path;
+        var n = path.Count;
+
+        // Classify each sub-segment by the signalized crossing (if any) its midpoint lies on.
+        var segCross = new string?[n - 1];
+        var anyOnCrossing = false;
+        for (var i = 0; i + 1 < n; i++)
+        {
+            var mid = (path[i] + path[i + 1]) * 0.5;
+            segCross[i] = signals.TryLocate(mid, out var id) ? id : null;
+            anyOnCrossing |= segCross[i] != null;
+        }
+
+        if (!anyOnCrossing)
+        {
+            result.Add(w); // this walk never touches a signalized crossing -> pass through untouched
+            t += w.Duration;
+            return;
+        }
+
+        var segStart = 0;
+        for (var i = 0; i + 1 < n; i++)
+        {
+            var here = segCross[i];
+            var prev = i == 0 ? null : segCross[i - 1];
+            var isEntry = here != null && !string.Equals(here, prev, StringComparison.Ordinal);
+            if (!isEntry)
+            {
+                continue;
+            }
+
+            // Absolute time the ped reaches the kerb (path[i]) if it walks segStart..i at `speed`.
+            var kerbTime = t + (SubPathLength(path, segStart, i) / speed);
+            var stepOn = signals.NextWalkStart(here!, kerbTime, speed);
+            var wait = stepOn - kerbTime;
+            if (wait <= 1e-6)
+            {
+                continue; // arrives on green with room -> cross continuously, no split
+            }
+
+            if (i > segStart)
+            {
+                var pre = SubWalk(w, segStart, i);
+                result.Add(pre);
+                t += pre.Duration;
+            }
+
+            result.Add(new PauseSegment(wait, CrosswalkWaitTag));
+            t += wait;
+            segStart = i;
+        }
+
+        if (segStart == 0)
+        {
+            result.Add(w); // an entry was found but every arrival was already on green -> untouched
+            t += w.Duration;
+        }
+        else
+        {
+            var tail = SubWalk(w, segStart, n - 1);
+            result.Add(tail);
+            t += tail.Duration;
+        }
+    }
+
+    // Arc length of path[from..to] (inclusive vertices), i.e. the walk distance from vertex `from` to `to`.
+    private static double SubPathLength(IReadOnlyList<Vec2> path, int from, int to)
+    {
+        var len = 0.0;
+        for (var k = from; k < to; k++)
+        {
+            len += (path[k + 1] - path[k]).Abs;
+        }
+
+        return len;
+    }
+
+    // A WalkSegment over path[from..to] (inclusive), slicing the parallel per-vertex half-widths so the
+    // weave (if any) uses the same widths this sub-path had in the original segment.
+    private static WalkSegment SubWalk(WalkSegment w, int from, int to)
+    {
+        var pts = new List<Vec2>(to - from + 1);
+        List<double>? widths = w.HalfWidths != null ? new List<double>(to - from + 1) : null;
+        for (var k = from; k <= to; k++)
+        {
+            pts.Add(w.Path[k]);
+            widths?.Add(w.HalfWidths![k]);
+        }
+
+        return widths != null ? new WalkSegment(pts, w.Speed, widths) : new WalkSegment(pts, w.Speed);
     }
 
     // Interpolated point at `fraction` (0..1) of `path`'s own arc length, plus the index `i` such that
@@ -495,6 +644,14 @@ public sealed class PedDemandConfig
     /// endpoint weight) instead; every endpoint is a fringe or POI edge, so both ends are appearance-
     /// legitimate by construction. `Origins`/`Destinations` may be empty when this is set.
     public SubareaDemand? WeightedEndpoints { get; init; }
+
+    /// Phase 2b (docs/LIVE-CITY-CROSSWALK-SIGNAL-DESIGN.md): ADDITIVE, optional. Null (the default) =>
+    /// lively timelines are built exactly as before -- byte-identical to pre-2b `PedDemand` (no crossing
+    /// lookup runs). When set (only meaningful together with `Liveliness`), each lively route is
+    /// post-processed so that wherever it steps onto a SIGNALIZED crossing the ped first waits at the kerb
+    /// until the analytic walk window (from the static `<tlLogic>`), then crosses. The wait is a pure
+    /// function of time (no rng, no runtime signal polling), so server==IG and two runs stay byte-identical.
+    public CrosswalkSignals? CrosswalkSignals { get; init; }
 }
 
 /// LIVE-PROD-1b (docs/PEDESTRIAN-LIVELINESS-DESIGN.md §4): per-trip liveliness knobs. Deliberately
