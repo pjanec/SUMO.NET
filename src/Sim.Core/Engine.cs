@@ -2322,7 +2322,7 @@ public sealed partial class Engine : IEngine
     // Pending state; SUMO-parity queued insertion (InsertDepartingVehicles) places it on the road at the
     // next Step() when a safe gap exists at `departPos`. Poll GetLifecycle for Pending -> Active.
     public VehicleHandle SpawnVehicle(VTypeHandle type, IReadOnlyList<string> routeEdges,
-        double departPos = 0.0, double departSpeed = 0.0, int departLane = 0)
+        double departPos = 0.0, double departSpeed = 0.0, int departLane = 0, bool departBestLane = false)
     {
         if (_network is null || _config is null)
         {
@@ -2352,7 +2352,10 @@ public sealed partial class Engine : IEngine
             // types existed.
             DepartPos: DepartPosValue.Given(departPos),
             DepartSpeed: DepartSpeedValue.Given(departSpeed),
-            DepartLaneIndex: DepartLaneValue.Given(departLane));
+            // departBestLane -> SUMO's departLane="best" (ResolveBestDepartLane): the vehicle enters on
+            // the lane that best continues its route, so it isn't forced to cross lanes near a junction.
+            // Default false keeps the historical Given(departLane) -> byte-identical for every caller.
+            DepartLaneIndex: departBestLane ? DepartLaneValue.Best : DepartLaneValue.Given(departLane));
 
         // §9: reuse a freed slot when available, else append. Capacity for the (possibly new) slot is
         // ensured afterwards; a recycled slot's generation is already the post-Despawn bumped value.
@@ -2364,11 +2367,11 @@ public sealed partial class Engine : IEngine
     // Spawn a vehicle routed from `fromEdge` to `toEdge` via the engine's shortest-path router. Throws if
     // no route exists (mirrors SUMO refusing an unroutable vehicle).
     public VehicleHandle SpawnVehicle(VTypeHandle type, string fromEdge, string toEdge,
-        double departPos = 0.0, double departSpeed = 0.0, int departLane = 0)
+        double departPos = 0.0, double departSpeed = 0.0, int departLane = 0, bool departBestLane = false)
     {
         var edges = Router().Route(fromEdge, toEdge)
             ?? throw new InvalidOperationException($"no route from edge '{fromEdge}' to '{toEdge}'.");
-        return SpawnVehicle(type, edges, departPos, departSpeed, departLane);
+        return SpawnVehicle(type, edges, departPos, departSpeed, departLane, departBestLane);
     }
 
     // Dense-edge-handle overloads (SUMOSHARP-API.md §9): identical semantics to the string overloads,
@@ -9811,8 +9814,24 @@ public sealed partial class Engine : IEngine
     // slides over LaneChangeSteps() steps (Engine.AdvanceLaneChanges). Both go through the command
     // buffer, so the decision phase (DecideSpeedGainChanges / its TryStrategicLaneChange) still only
     // records; nothing mutates mid-scan.
+    // Realism knob (NOT a SUMO default; 0 = off = byte-identical to every golden, so parity is untouched).
+    // When > 0, a vehicle may not INITIATE a discrete lane change while its speed is below this value --
+    // i.e. it does not snap sideways a full lane width while essentially stopped in a queue; it sorts into
+    // its lane while moving instead. This mirrors the effect of SUMO's sublane `maxSpeedLatStanding=0`
+    // (no lateral movement at standstill) without porting the whole sublane model. Set by the live-city
+    // demo; every parity scenario leaves it 0.
+    public double LaneChangeMinSpeed { get; set; }
+
     private void CommitLaneChange(VehicleRuntime v, int targetHandle, string targetId)
     {
+        // Below the realism threshold (default 0 -> never triggers), suppress the change: a barely-moving
+        // car keeps its lane this step and re-evaluates once it is actually moving. Deadlock-safe at a low
+        // threshold because any forward creep (queue advancing, light turning green) clears the gate.
+        if (LaneChangeMinSpeed > 0.0 && v.Kinematics.Speed < LaneChangeMinSpeed)
+        {
+            return;
+        }
+
         var steps = LaneChangeSteps();
         if (steps <= 1)
         {
@@ -9835,6 +9854,14 @@ public sealed partial class Engine : IEngine
         foreach (var v in ActiveVehicles())
         {
             if (v.LcTargetHandle < 0)
+            {
+                continue;
+            }
+
+            // Realism (LaneChangeMinSpeed > 0, demo-only; 0 = off = byte-identical): HOLD an in-progress
+            // maneuver while the car is essentially stopped, so the lateral centre-to-centre flip (and its
+            // on-screen sideways step) never happens at a standstill -- it resumes once the car moves.
+            if (LaneChangeMinSpeed > 0.0 && v.Kinematics.Speed < LaneChangeMinSpeed)
             {
                 continue;
             }

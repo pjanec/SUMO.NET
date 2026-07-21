@@ -62,6 +62,8 @@ internal static class SceneGen
     // car crossing a legitimately-walking ped (that shows up only in the co-occupancy metric).
     internal static int LastLowPowerPedOnSignalizedDuringRed;
     internal static int LastLowPowerPedOnSignalizedSamples;
+    internal static int LastLateralLaneChanges;
+    internal static int LastLateralLaneChangesStopped;
 
     // ---------------------------------------------------------------------------------------
     // Scene C -- "Car avoids a pedestrian": the cross-regime bridge. A laneless-RVO lane vehicle
@@ -1999,6 +2001,10 @@ internal static class SceneGen
             "<configuration><time><begin value=\"0\"/><end value=\"1000000000\"/><step-length value=\"0.5\"/></time>"
             + "<processing><lanechange.duration value=\"2.0\"/><default.speeddev value=\"0.0\"/></processing></configuration>");
         engine.LoadNetwork(netPath, engineConfig);
+        // Realism: a queued car must not snap sideways a full lane while essentially stopped -- it sorts
+        // into its lane while moving. 1.0 m/s (a slow crawl) keeps this deadlock-safe (any forward creep
+        // clears it) while removing the dead-stop lateral teleport that reads as deeply unrealistic.
+        engine.LaneChangeMinSpeed = 1.0;
         var vtype = engine.DefineVType(new VTypeParams { VClass = "passenger", Sigma = 0.0 });
 
         // W-B: cars yield to BOTH promoted (high-power ORCA) peds AND low-power peds on a crosswalk, via
@@ -2052,6 +2058,13 @@ internal static class SceneGen
         var pedOnSignalizedRed = 0;
         var pedOnSignalizedSamples = 0;
 
+        // Realism metric: count LATERAL lane changes (same edge, different lane index) and how many happen
+        // while the car is essentially stopped (< 0.1 m/s) -- the unrealistic "snap sideways while stopped".
+        // Compared against vanilla SUMO on the same net (measured: ~12% of its lane changes at <0.1 m/s).
+        var prevLaneByVeh = new Dictionary<uint, string>();
+        var latChanges = 0;
+        var latChangesStopped = 0;
+
         var now = 0.0;
         for (var step = 0; step < steps; step++)
         {
@@ -2065,7 +2078,10 @@ internal static class SceneGen
                     if (fromId == toId) continue;
                     try
                     {
-                        engine.SpawnVehicle(vtype, fromId, toId, departPos: 5.0, departSpeed: 0.0, departLane: fromLane);
+                        // departBestLane: enter on the lane that best continues the route (SUMO
+                        // departLane="best"), so cars aren't forced to cross lanes near a junction --
+                        // the dominant cause of the demo's excess stopped lane-changes vs vanilla SUMO.
+                        engine.SpawnVehicle(vtype, fromId, toId, departPos: 5.0, departSpeed: 0.0, departBestLane: true);
                         live++;
                     }
                     catch (InvalidOperationException)
@@ -2104,6 +2120,29 @@ internal static class SceneGen
             engine.Step();
             engineStepSw.Stop();
             now = tNext;
+
+            // Lateral-lane-change realism tally (same edge, different lane index, vs the car's speed).
+            {
+                var lns = engine.LaneIds;
+                var spds = engine.Speed;
+                var hs = engine.VehicleHandles;
+                for (var i = 0; i < hs.Length; i++)
+                {
+                    var lane = i < lns.Length ? lns[i] : string.Empty;
+                    if (prevLaneByVeh.TryGetValue(hs[i].Index, out var prev) && prev.Length > 0 && lane.Length > 0 && prev != lane)
+                    {
+                        var pu = prev.LastIndexOf('_');
+                        var cu = lane.LastIndexOf('_');
+                        if (pu > 0 && cu > 0 && string.CompareOrdinal(prev, 0, lane, 0, pu) == 0 && pu == cu)
+                        {
+                            latChanges++;
+                            if (spds[i] < 0.1) latChangesStopped++;
+                        }
+                    }
+
+                    prevLaneByVeh[hs[i].Index] = lane;
+                }
+            }
 
             // Phase 2b verification, measured AFTER the timed engine step (never inside engineStepSw so it
             // can't perturb perf). Peds don't move during engine.Step (it advances only cars), so the
@@ -2226,6 +2265,8 @@ internal static class SceneGen
         LastCarPedCoOccupancyOnSignalizedDuringRed = coOccSignalizedRed;
         LastLowPowerPedOnSignalizedDuringRed = pedOnSignalizedRed;
         LastLowPowerPedOnSignalizedSamples = pedOnSignalizedSamples;
+        LastLateralLaneChanges = latChanges;
+        LastLateralLaneChangesStopped = latChangesStopped;
 
         var cropNet = CropNetwork(fullNet, pedNetwork, netPath, x0, y0, x1, y1);
 

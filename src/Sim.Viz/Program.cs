@@ -393,6 +393,10 @@ internal static class Program
         Console.WriteLine(
             $"  ped compliance: low-power-ped-on-signalized samples={SceneGen.LastLowPowerPedOnSignalizedSamples}, "
             + $"of which during RED={SceneGen.LastLowPowerPedOnSignalizedDuringRed} (should be 0)");
+        Console.WriteLine(
+            $"  lane-change realism: {SceneGen.LastLateralLaneChanges} lateral lane-changes, "
+            + $"of which {SceneGen.LastLateralLaneChangesStopped} while STOPPED (<0.1 m/s) "
+            + $"(vanilla SUMO on this net: ~12% at <0.1 m/s)");
         return 0;
     }
 
