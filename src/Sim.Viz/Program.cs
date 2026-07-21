@@ -381,6 +381,18 @@ internal static class Program
             $"  vehicle cost: engineStepTotal={SceneGen.LastEngineStepMillis:F0} ms over {scene.Frames.Length} steps "
             + $"(~{SceneGen.LastEngineStepMillis / Math.Max(1, scene.Frames.Length):F2} ms/step); "
             + $"crossingOccupancyUpdate(ped-side)={SceneGen.LastCrossingUpdateMillis:F0} ms; peakOccupiedCrossings={SceneGen.LastPeakOccupiedCrossings}");
+        // Phase-2b signal-compliance evidence: crop crossings signalized vs not, and a near-collision
+        // metric (a car within 2.5 m of a WALKING ped on a signalized crossing). The ped-on-RED subset is
+        // the reported bug (a ped jaywalking into a car on the car's green); ped compliance drives it ~0.
+        // The remaining (ped-on-green) near-collisions are turning cars on a permissive movement / the
+        // coarse-tick tunneling the deferred stop-line addresses -- pre-existing, not introduced here.
+        Console.WriteLine(
+            $"  crossing classes: signalized={SceneGen.LastSignalizedCrossingCount} unsignalized={SceneGen.LastUnsignalizedCrossingCount}; "
+            + $"near-collision(car within 2.5m of a walking ped on a signalized crossing)={SceneGen.LastCarPedCoOccupancyOnSignalized} "
+            + $"(of which ped-on-RED={SceneGen.LastCarPedCoOccupancyOnSignalizedDuringRed})");
+        Console.WriteLine(
+            $"  ped compliance: low-power-ped-on-signalized samples={SceneGen.LastLowPowerPedOnSignalizedSamples}, "
+            + $"of which during RED={SceneGen.LastLowPowerPedOnSignalizedDuringRed} (should be 0)");
         return 0;
     }
 

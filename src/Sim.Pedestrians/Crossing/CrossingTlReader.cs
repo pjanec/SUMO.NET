@@ -57,6 +57,30 @@ public static class CrossingTlReader
         return result;
     }
 
+    // All tl-controlled crossing-entry links in the net, keyed by crossing edge id -- one pass over the
+    // file (each signalized crossing edge receives exactly one tl connection; see the type remarks). Use
+    // this instead of calling FindCrossingLink in a loop when classifying many crossings (e.g. a whole
+    // crop), so a large net is parsed ONCE rather than once per crossing.
+    public static IReadOnlyDictionary<string, CrossingLink> LoadCrossingLinks(string netPath)
+    {
+        var root = LoadRoot(netPath);
+        var result = new Dictionary<string, CrossingLink>(StringComparer.Ordinal);
+        foreach (var connection in root.Elements("connection"))
+        {
+            var to = (string?)connection.Attribute("to");
+            var tl = (string?)connection.Attribute("tl");
+            var linkIndexAttr = (string?)connection.Attribute("linkIndex");
+            if (to is null || tl is null || linkIndexAttr is null || result.ContainsKey(to))
+            {
+                continue;
+            }
+
+            result[to] = new CrossingLink(to, tl, int.Parse(linkIndexAttr, CultureInfo.InvariantCulture));
+        }
+
+        return result;
+    }
+
     // The tl-controlled entry link for the crossing edge `crossingEdgeId` (e.g. ":c_c0"), or null when
     // the crossing has no signalized entry connection (an unsignalized crossing, or a malformed net).
     public static CrossingLink? FindCrossingLink(string netPath, string crossingEdgeId)

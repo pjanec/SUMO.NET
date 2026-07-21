@@ -47,6 +47,22 @@ internal static class SceneGen
     internal static double LastCrossingUpdateMillis;
     internal static int LastPeakOccupiedCrossings;
 
+    // Phase 2b verification (docs/LIVE-CITY-CROSSWALK-SIGNAL-DESIGN.md §5 conditions 2-3). Split of the
+    // crop crossings, and the drive-through metric: how many (step, crossing) pairs had a CAR and a
+    // low-power PED simultaneously inside the SAME crossing polygon -- the "car drove over a ped" artifact
+    // the ped signal-compliance is meant to eliminate on signalized crossings.
+    internal static int LastSignalizedCrossingCount;
+    internal static int LastUnsignalizedCrossingCount;
+    internal static int LastCarPedCoOccupancyOnSignalized;
+    internal static int LastCarPedCoOccupancyOnSignalizedDuringRed;
+
+    // The direct compliance metric: (step, ped) samples where a LOW-POWER ped is on a signalized crossing
+    // while that crossing shows RED (don't-walk). Signal compliance should drive this to ~0 -- a non-zero
+    // value means peds are jaywalking (the wait insertion didn't fire), which is distinct from a turning
+    // car crossing a legitimately-walking ped (that shows up only in the co-occupancy metric).
+    internal static int LastLowPowerPedOnSignalizedDuringRed;
+    internal static int LastLowPowerPedOnSignalizedSamples;
+
     // ---------------------------------------------------------------------------------------
     // Scene C -- "Car avoids a pedestrian": the cross-regime bridge. A laneless-RVO lane vehicle
     // swerves around a person crossing the bridge lane. Driven end-to-end through the real Engine
@@ -1854,6 +1870,43 @@ internal static class SceneGen
             for (var k = 0; k < MaxEndpoints; k++) odPoints.Add(allEndpoints[(int)(k * stride)]);
         }
 
+        // Crop crossings, split by whether the net signalizes them. Phase 2b: SIGNALIZED crossings are
+        // handled by pedestrian compliance (a low-power ped waits at the kerb on red and only steps on
+        // during the walk phase), so cars are already stopped by their own TL -- gating those on the car
+        // side would be a phantom stop. UNSIGNALIZED crossings keep the always-yield occupancy gate.
+        var cropCrossingPolys = new List<BakedPolygon>();
+        foreach (var poly in polygons)
+        {
+            if (poly.Kind == BakedPolygonKind.Crossing && InV(poly.Centroid)) cropCrossingPolys.Add(poly);
+        }
+
+        var crosswalkSignals = Sim.Pedestrians.Crossing.CrosswalkSignals.FromNet(netPath, cropCrossingPolys);
+        var signalizedCrossingPolys = cropCrossingPolys
+            .Where(p => crosswalkSignals.IsSignalizedLane(p.Id)).ToList();
+        var unsignalizedCrossingPolys = cropCrossingPolys
+            .Where(p => !crosswalkSignals.IsSignalizedLane(p.Id)).ToList();
+        LastSignalizedCrossingCount = signalizedCrossingPolys.Count;
+        LastUnsignalizedCrossingCount = unsignalizedCrossingPolys.Count;
+
+        // A/B switch for the metrics: default full crossing-yield; LIVECITY_YIELD=0 = baseline (no gate,
+        // no ped signal compliance) so the improvement can be quantified against the same demand/seed.
+        var yieldEnabled = Environment.GetEnvironmentVariable("LIVECITY_YIELD") != "0";
+
+        // Ground-truth signal state per signalized crop crossing (independent of the demand-side signals):
+        // (polygon vertices, TL program, controlling linkIndex) so the loop can assert peds only occupy a
+        // signalized crossing during its walk phase. Same one-load readers CrosswalkSignals uses.
+        var tlPrograms = Sim.Pedestrians.Crossing.CrossingTlReader.LoadPrograms(netPath);
+        var tlLinks = Sim.Pedestrians.Crossing.CrossingTlReader.LoadCrossingLinks(netPath);
+        var signalGroundTruth = new List<(IReadOnlyList<Vec2> Verts, Sim.Pedestrians.Crossing.TlProgramSpec Prog, int LinkIndex)>();
+        foreach (var poly in signalizedCrossingPolys)
+        {
+            var edgeId = LaneToEdgeId(poly.Id);
+            if (tlLinks.TryGetValue(edgeId, out var link) && tlPrograms.TryGetValue(link.TlId, out var prog))
+            {
+                signalGroundTruth.Add((poly.Vertices, prog, link.LinkIndex));
+            }
+        }
+
         var config = new Sim.Pedestrians.Demand.PedDemandConfig
         {
             Origins = odPoints,
@@ -1873,21 +1926,15 @@ internal static class SceneGen
                 PauseAnimTag = "idle",
             },
             EnableWeave = true,
+            // Phase 2b: low-power peds wait at signalized crossing kerbs on red (opt-in; analytic, no rng).
+            // `LIVECITY_YIELD=0` turns this (and the car-side gate below) off for an A/B baseline.
+            CrosswalkSignals = yieldEnabled ? crosswalkSignals : null,
         };
 
         var publisher = new PedPublisher();
         var manager = new PedLodManager(nav, publisher, arriveRadius: 0.3, dwellSeconds: 1.0);
         var demand = new Sim.Pedestrians.Demand.PedDemand(config, nav, manager, startTime: 0.0);
         var noEntities = Array.Empty<WorldDisc>();
-
-        // Phase 2 crossing-yield: a cheap deterministic occupancy source over the crop's crossings. Each
-        // tick Update() (ped side) turns any low-power ped standing on a crosswalk into a virtual gate
-        // disc; the vehicle only ever pays a small QueryNear with an empty fast-path.
-        var cropCrossingPolys = new List<BakedPolygon>();
-        foreach (var poly in polygons)
-        {
-            if (poly.Kind == BakedPolygonKind.Crossing && InV(poly.Centroid)) cropCrossingPolys.Add(poly);
-        }
 
         // ---- W-A (Phase 2): promotion happens ONLY in the high-realism pocket, for realism -- NOT at
         // crossings. Crossing-yield is handled by the CrossingOccupancySource, so a ped on a crosswalk
@@ -1907,6 +1954,15 @@ internal static class SceneGen
         var field = new InterestField();
         field.Register(new InterestSource(pocketCentre, promoteRadius: 70.0, demoteRadius: 100.0));
 
+        // Phase 2 crossing-yield gate over ALL crop crossings, fed each tick with the WALKING low-power
+        // peds (built below). Two complementary mechanisms now cover a signalized crossing: (1) ped
+        // compliance keeps peds OFF it during red, so cars flow on green without phantom stops; (2) this
+        // gate stops any car -- including a TURNING car on a permissive green the TL does NOT stop -- for a
+        // ped actually WALKING across (also covering the clearance interval: a car whose light just went
+        // green still waits for a ped finishing the crossing). Gating on WALKING (not merely present) peds
+        // is what makes (1) and (2) coexist: a ped WAITING at the kerb (paused, standing just inside the
+        // buffered polygon's edge) does NOT raise a gate, so waiting peds never phantom-stop cars. Each
+        // Update() is O(walking peds); the vehicle only pays a small QueryNear with an empty fast-path.
         var crossingOccupancy = new Sim.Pedestrians.Crossing.CrossingOccupancySource(cropCrossingPolys, pedRadius: 0.3);
 
         // ---- cars: real Engine on the full net; a dense LOCAL flow on the crop's drivable edges ----
@@ -1915,8 +1971,11 @@ internal static class SceneGen
         var vtype = engine.DefineVType(new VTypeParams { VClass = "passenger", Sigma = 0.0 });
 
         // W-B: cars yield to BOTH promoted (high-power ORCA) peds AND low-power peds on a crosswalk, via
-        // one CrowdSource composed of the two footprint sources.
-        engine.CrowdSource = new CompositeFootprintSource(manager.HighPowerFootprints, crossingOccupancy);
+        // one CrowdSource composed of the two footprint sources. When `LIVECITY_YIELD=0` (A/B baseline) the
+        // Phase-2/2b crossing-yield path is off: no occupancy gate and no ped signal compliance.
+        engine.CrowdSource = yieldEnabled
+            ? new CompositeFootprintSource(manager.HighPowerFootprints, crossingOccupancy)
+            : manager.HighPowerFootprints;
 
         var routeEdges = ReadDrivableEdges(Path.Combine(boxDir, "scenario.rou.xml"));
         var cropEdges = new List<(string Id, int Lane)>();
@@ -1948,7 +2007,7 @@ internal static class SceneGen
         var slotByHandle = new Dictionary<uint, int>();
         var frames = new List<FramePayload>();
         var discsKeyedPerFrame = new List<List<(string Key, double[] Disc)>>();
-        var lowPowerPositions = new List<Vec2>(config.PopulationCap);
+        var movingLowPowerPositions = new List<Vec2>(config.PopulationCap); // walking (non-paused) low-power peds
 
         // Timing: prove Phase 2 doesn't slow the vehicle sim. `engineStepSw` sums ONLY engine.Step() (the
         // vehicle work that now queries the composite CrowdSource); `crossingSw` sums the ped-side
@@ -1957,6 +2016,10 @@ internal static class SceneGen
         var engineStepSw = new System.Diagnostics.Stopwatch();
         var crossingSw = new System.Diagnostics.Stopwatch();
         var peakOccupied = 0;
+        var coOccSignalized = 0;
+        var coOccSignalizedRed = 0;
+        var pedOnSignalizedRed = 0;
+        var pedOnSignalizedSamples = 0;
 
         var now = 0.0;
         for (var step = 0; step < steps; step++)
@@ -1987,19 +2050,22 @@ internal static class SceneGen
             var tNext = now + Dt;
 
             crossingSw.Start();
-            lowPowerPositions.Clear();
+            movingLowPowerPositions.Clear();
             foreach (var id in demand.LiveIds)
             {
                 // Any ped NOT in the high-power ORCA crowd is low-power (PathArc or ActivityTimeline/weave)
                 // -- the engine can't otherwise see it, so it's the one we gate crossings on. High-power
-                // peds are already in HighPowerFootprints (the other composite child).
-                if (manager.ModelOf(id) != PedDrModel.FreeKinematic)
+                // peds are already in HighPowerFootprints (the other composite child). Gate only on peds
+                // actually WALKING: a ped WAITING at the kerb is paused (anim != "walk") and stands just
+                // inside the buffered crossing polygon's edge, so including it would phantom-stop cars.
+                if (manager.ModelOf(id) != PedDrModel.FreeKinematic
+                    && manager.AnimTagOf(id, tNext) == ActivityTimeline.WalkAnimTag)
                 {
-                    lowPowerPositions.Add(manager.PositionOf(id, tNext));
+                    movingLowPowerPositions.Add(manager.PositionOf(id, tNext));
                 }
             }
 
-            crossingOccupancy.Update(lowPowerPositions);
+            crossingOccupancy.Update(movingLowPowerPositions);
             crossingSw.Stop();
             if (crossingOccupancy.OccupiedCount > peakOccupied) peakOccupied = crossingOccupancy.OccupiedCount;
 
@@ -2007,6 +2073,51 @@ internal static class SceneGen
             engine.Step();
             engineStepSw.Stop();
             now = tNext;
+
+            // Phase 2b verification, measured AFTER the timed engine step (never inside engineStepSw so it
+            // can't perturb perf). Peds don't move during engine.Step (it advances only cars), so the
+            // tNext ped poses gathered above are still current. For each WALKING low-power ped that is on a
+            // signalized crossing: (a) compliance -- is the crossing RED? (should be ~0: peds wait on red);
+            // (b) drive-through -- is a CAR within CollisionDist of the ped? A near-collision, the real "car
+            // over ped" proxy (the crossing polygon is up to ~13 m long, so mere same-polygon presence
+            // over-counts a car braking at the far edge). Split by red (jaywalk-into-car, a compliance gap)
+            // vs green (a turning car on a permissive movement crossing a legitimately-walking ped).
+            {
+                const double CollisionDist = 2.5; // ~car half-length: a car centre this close overlaps the ped
+                var cpx = engine.PosX;
+                var cpy = engine.PosY;
+                var carN = engine.VehicleHandles.Length;
+                for (var pi = 0; pi < movingLowPowerPositions.Count; pi++)
+                {
+                    var pp = movingLowPowerPositions[pi];
+                    var onSignalized = false;
+                    var isWalk = false;
+                    for (var gi = 0; gi < signalGroundTruth.Count; gi++)
+                    {
+                        var g = signalGroundTruth[gi];
+                        if (!PointInBakedPolygon(pp, g.Verts)) continue;
+                        onSignalized = true;
+                        isWalk = SignalIsWalk(g.Prog, g.LinkIndex, tNext);
+                        break; // a ped is on at most one crossing
+                    }
+
+                    if (!onSignalized) continue;
+                    pedOnSignalizedSamples++;
+                    if (!isWalk) pedOnSignalizedRed++;
+
+                    var near = false;
+                    for (var i = 0; i < carN; i++)
+                    {
+                        var dx = cpx[i] - pp.X;
+                        var dy = cpy[i] - pp.Y;
+                        if ((dx * dx) + (dy * dy) <= CollisionDist * CollisionDist) { near = true; break; }
+                    }
+
+                    if (!near) continue;
+                    coOccSignalized++;
+                    if (!isWalk) coOccSignalizedRed++;
+                }
+            }
 
             if (step % Decimate != 0) continue;
 
@@ -2056,6 +2167,10 @@ internal static class SceneGen
         LastEngineStepMillis = engineStepSw.Elapsed.TotalMilliseconds;
         LastCrossingUpdateMillis = crossingSw.Elapsed.TotalMilliseconds;
         LastPeakOccupiedCrossings = peakOccupied;
+        LastCarPedCoOccupancyOnSignalized = coOccSignalized;
+        LastCarPedCoOccupancyOnSignalizedDuringRed = coOccSignalizedRed;
+        LastLowPowerPedOnSignalizedDuringRed = pedOnSignalizedRed;
+        LastLowPowerPedOnSignalizedSamples = pedOnSignalizedSamples;
 
         var cropNet = CropNetwork(fullNet, pedNetwork, netPath, x0, y0, x1, y1);
 
@@ -2075,6 +2190,56 @@ internal static class SceneGen
             new double[] { 5.0, 1.8 },
             Dt * Decimate,
             frames.ToArray());
+    }
+
+    // SUMO lane id "<edge>_<laneIndex>" -> edge id (mirrors CrosswalkSignals.LaneToEdgeId).
+    private static string LaneToEdgeId(string laneId)
+    {
+        var us = laneId.LastIndexOf('_');
+        if (us <= 0 || us == laneId.Length - 1) return laneId;
+        for (var i = us + 1; i < laneId.Length; i++)
+        {
+            if (!char.IsDigit(laneId[i])) return laneId;
+        }
+
+        return laneId[..us];
+    }
+
+    // Does `linkIndex` show walk ('G'/'g') in `prog` at absolute time `t`? (static periodic program.)
+    private static bool SignalIsWalk(Sim.Pedestrians.Crossing.TlProgramSpec prog, int linkIndex, double t)
+    {
+        var cycle = prog.CycleLength;
+        if (cycle <= 0.0) return false;
+        var local = ((t - prog.Offset) % cycle + cycle) % cycle;
+        var acc = 0.0;
+        foreach (var phase in prog.Phases)
+        {
+            if (local < acc + phase.Duration)
+            {
+                if (linkIndex < 0 || linkIndex >= phase.State.Length) return false;
+                var c = phase.State[linkIndex];
+                return c == 'G' || c == 'g';
+            }
+
+            acc += phase.Duration;
+        }
+
+        return false;
+    }
+
+    private static bool PointInBakedPolygon(Vec2 p, IReadOnlyList<Vec2> v)
+    {
+        var inside = false;
+        for (int i = 0, j = v.Count - 1; i < v.Count; j = i++)
+        {
+            if (((v[i].Y > p.Y) != (v[j].Y > p.Y)) &&
+                (p.X < (v[j].X - v[i].X) * (p.Y - v[i].Y) / (v[j].Y - v[i].Y) + v[i].X))
+            {
+                inside = !inside;
+            }
+        }
+
+        return inside;
     }
 
     // Read the union of drivable edge ids from a committed car route file (every `edges="..."` token).

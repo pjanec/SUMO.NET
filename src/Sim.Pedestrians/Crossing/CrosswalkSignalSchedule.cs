@@ -46,12 +46,12 @@ public sealed class CrosswalkSignalSchedule
         string netPath, IEnumerable<string> crossingEdgeIds, ISet<string>? actuatedTlIds = null)
     {
         var programs = CrossingTlReader.LoadPrograms(netPath);
+        var links = CrossingTlReader.LoadCrossingLinks(netPath); // one pass, not one-per-crossing
         var map = new Dictionary<string, Signal>(StringComparer.Ordinal);
 
         foreach (var edgeId in crossingEdgeIds)
         {
-            var link = CrossingTlReader.FindCrossingLink(netPath, edgeId);
-            if (link is null || (actuatedTlIds?.Contains(link.TlId) ?? false))
+            if (!links.TryGetValue(edgeId, out var link) || (actuatedTlIds?.Contains(link.TlId) ?? false))
             {
                 continue; // unsignalized, or a non-deterministic (actuated) TL -> gate handles it
             }

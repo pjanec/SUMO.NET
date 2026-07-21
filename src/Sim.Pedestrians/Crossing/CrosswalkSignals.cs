@@ -69,6 +69,12 @@ public sealed class CrosswalkSignals
 
     public bool IsSignalized(string crossingEdgeId) => _schedule.IsSignalized(crossingEdgeId);
 
+    // Convenience for callers holding a baked crossing polygon's LANE id (":c_c0_0"): maps it to the
+    // edge id and reports whether that crossing is signalized. Used by the car-side gate to EXCLUDE
+    // signalized crossings (peds only occupy those during walk = car red, so gating them would be a
+    // phantom stop); the gate keeps the unsignalized crossings as its safety net.
+    public bool IsSignalizedLane(string crossingLaneId) => _schedule.IsSignalized(LaneToEdgeId(crossingLaneId));
+
     // Build from a net + the baked crossing polygons (typically a crop's Crossing polygons). A polygon is
     // kept iff its Id is a signalized crossing in the schedule read from `netPath`. `actuatedTlIds`
     // (optional) is forwarded to the schedule so detector-driven TLs are excluded (they fall back to the
