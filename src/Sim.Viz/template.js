@@ -422,15 +422,36 @@
       var p1 = [a[0], a[1]], p2 = [b[0], b[1]];
       var pv = fp[i] || a, pn = fn[i] || b;
       var p0 = [pv[0], pv[1]], p3 = [pn[0], pn[1]];
-      var pos = catmullRom(p0, p1, p2, p3, frac);
+
+      // Clamp the (centripetal) Catmull-Rom output to the bounding box of THIS segment's own two real
+      // endpoints. The endpoints are engine poses on lane centres, so this keeps the drawn vehicle
+      // strictly between them and removes spline overshoot: a lane-change snap (the engine emits the
+      // new lane's centre in one step -- no sublane lateral) can no longer swing the car past the
+      // target lane onto the sidewalk, and a junction turn can't bulge wide. For straight cruising the
+      // endpoints are collinear so the clamp is a no-op; for dense crowd discs a separate path is used.
+      var loX = Math.min(p1[0], p2[0]), hiX = Math.max(p1[0], p2[0]);
+      var loY = Math.min(p1[1], p2[1]), hiY = Math.max(p1[1], p2[1]);
+      function clampBox(q) { return [Math.max(loX, Math.min(hiX, q[0])), Math.max(loY, Math.min(hiY, q[1]))]; }
+      var pos = clampBox(catmullRom(p0, p1, p2, p3, frac));
 
       var df = 0.06;
       var forward = frac + df <= 1;
-      var probe = forward ? catmullRom(p0, p1, p2, p3, frac + df) : catmullRom(p0, p1, p2, p3, frac - df);
+      var probe = clampBox(forward ? catmullRom(p0, p1, p2, p3, frac + df) : catmullRom(p0, p1, p2, p3, frac - df));
       var dx = forward ? probe[0] - pos[0] : pos[0] - probe[0];
       var dy = forward ? probe[1] - pos[1] : pos[1] - probe[1];
       var moving = dx * dx + dy * dy > 1e-4;
-      var angle = moving ? headingFromDelta(dx, dy) : shortestArcDeg(a[2], b[2]);
+      // Lane-change guard: if this step's displacement is mostly PERPENDICULAR to the car's own
+      // reported heading (a lateral lane-change snap -- the engine slides it to the new lane centre
+      // without yawing it), keep the reported FCD heading instead of pointing the box along the
+      // sideways slide. Normal driving/turns are along-heading, so they still use the smooth path
+      // tangent; crowd peds (goal-directed, along-heading) are unaffected.
+      var segDx = p2[0] - p1[0], segDy = p2[1] - p1[1];
+      var hdgRad = (90 - a[2]) * Math.PI / 180;
+      var fwdX = Math.cos(hdgRad), fwdY = Math.sin(hdgRad);
+      var along = Math.abs(segDx * fwdX + segDy * fwdY);
+      var lateral = Math.abs(segDx * -fwdY + segDy * fwdX);
+      var lateralSnap = lateral > along + 1e-6;
+      var angle = (moving && !lateralSnap) ? headingFromDelta(dx, dy) : shortestArcDeg(a[2], b[2]);
 
       // Speed (m/s) derived from step displacement -- drives the optional speed heatmap.
       var segDx = p2[0] - p1[0], segDy = p2[1] - p1[1];

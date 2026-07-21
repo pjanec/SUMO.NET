@@ -1369,11 +1369,18 @@ public sealed partial class Engine : IEngine
     // a deterministic default is synthesized (Euler, teleport off, step 1s, sigma-neutral). The host then
     // DefineVType()s and SpawnVehicle()s. Equivalent to LoadScenario with an empty rou.xml.
     public void LoadNetwork(string netXmlPath, string? sumocfgPath = null)
+        => LoadNetwork(netXmlPath, sumocfgPath is null ? DefaultNetworkConfig() : ScenarioConfigParser.Parse(sumocfgPath));
+
+    // Demand-less network load with an explicit config -- lets a caller (e.g. a demo/tool) pick the
+    // step length, lane-change duration, etc. without a .sumocfg file on disk (build one with
+    // ScenarioConfigParser.ParseXml). Additive: every golden loads via LoadScenario / the string overload
+    // above, so this path is parity-inert.
+    public void LoadNetwork(string netXmlPath, ScenarioConfig config)
     {
         _network = NetworkParser.Parse(netXmlPath);
         _lanesByHandle = _network.LanesByHandle as Lane[] ?? System.Linq.Enumerable.ToArray(_network.LanesByHandle);
         _demand = EmptyDemand();
-        _config = sumocfgPath is null ? DefaultNetworkConfig() : ScenarioConfigParser.Parse(sumocfgPath);
+        _config = config;
         InitializeLoaded();
     }
 

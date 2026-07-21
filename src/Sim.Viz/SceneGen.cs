@@ -1986,8 +1986,19 @@ internal static class SceneGen
         var crossingOccupancy = new Sim.Pedestrians.Crossing.CrossingOccupancySource(cropCrossingPolys, pedRadius: 0.3);
 
         // ---- cars: real Engine on the full net; a dense LOCAL flow on the crop's drivable edges ----
+        // Config (vs the demand-less default of step-length 1.0 / lanechange.duration 0):
+        //  * step-length 0.5 == the demo's ped/frame Dt, so cars advance the SAME sim-time per frame as
+        //    pedestrians (the default 1.0 s made cars render ~2x too fast and doubled the spline-sample
+        //    spacing the viewer interpolates across, exaggerating turns/lane-changes).
+        //  * lanechange.duration 2.0 s -> a queued car sorting into its turn lane slides over ~4 steps
+        //    instead of teleporting a full lane width in ONE step (that instant lateral snap, amplified by
+        //    the viewer's Catmull-Rom interpolation, is the "car changes lane while stopped / drifts onto
+        //    the sidewalk" artifact). speeddev 0 keeps the flow uniform & deterministic.
         var engine = new Engine();
-        engine.LoadNetwork(netPath);
+        var engineConfig = Sim.Ingest.ScenarioConfigParser.ParseXml(
+            "<configuration><time><begin value=\"0\"/><end value=\"1000000000\"/><step-length value=\"0.5\"/></time>"
+            + "<processing><lanechange.duration value=\"2.0\"/><default.speeddev value=\"0.0\"/></processing></configuration>");
+        engine.LoadNetwork(netPath, engineConfig);
         var vtype = engine.DefineVType(new VTypeParams { VClass = "passenger", Sigma = 0.0 });
 
         // W-B: cars yield to BOTH promoted (high-power ORCA) peds AND low-power peds on a crosswalk, via
@@ -2157,7 +2168,7 @@ internal static class SceneGen
                     var near = (ddx * ddx) + (ddy * ddy) <= 45.0 * 45.0;
                     if (!near && !onPed) continue;
                     Console.WriteLine(
-                        $"[DUMP step={step} carT={(step + 1) * 1.0:F1}s] veh{hh[i].Index} lane={lane}"
+                        $"[DUMP step={step} t={(step + 1) * Dt:F1}s] veh{hh[i].Index} lane={lane}"
                         + $"{(onPed ? " **PED-LANE**" : "")} pos=({dpx[i]:F1},{dpy[i]:F1}) ang={dpa[i]:F0} spd={spd[i]:F1}"
                         + $"{(near ? "" : " [far]")}");
                 }
