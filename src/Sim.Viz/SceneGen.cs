@@ -2041,10 +2041,10 @@ internal static class SceneGen
         const double Dt = 0.5;
         const int steps = 240;
         const int Decimate = 1;
-        // Default dialed down from 110 to a MODERATE density: the dense multi-lane car-overlap bug
-        // (docs/LANE-CHANGE-OVERLAP-SPEC.md) scales with saturation, so a lighter, free-flowing car load
-        // keeps the demo presentable until the cooperative-lane-change fix lands. Override with LIVECITY_CARS.
-        var CarTargetConcurrent = int.TryParse(Environment.GetEnvironmentVariable("LIVECITY_CARS"), out var ct) ? ct : 10;
+        // High density restored: the dense multi-lane car-overlap bug (docs/LANE-CHANGE-OVERLAP-*) is
+        // fixed on main, so 110 concurrent cars now run clean (validated: same-lane overlaps 3493 -> 1,
+        // both-stopped 3243 -> 0, no throughput regression). Override with LIVECITY_CARS.
+        var CarTargetConcurrent = int.TryParse(Environment.GetEnvironmentVariable("LIVECITY_CARS"), out var ct) ? ct : 110;
         const int CarSpawnPerStep = 5;
 
         var slotByHandle = new Dictionary<uint, int>();
