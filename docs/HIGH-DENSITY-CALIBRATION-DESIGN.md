@@ -166,6 +166,39 @@ Candidate 1 (reroute-on-dead-lane) was fully implemented and measured on the 2×
   cascades 1× / fails the guard — the two cannot be reconciled by tuning the reroute alone). Full drainage
   needs the ROOT fix below.
 
+### 2.3.3 MEASURED pass 5 (2026-07-21, branch `gap1-lane-completion`, discarded): the wall is quantified
+Went straight into the "root" fix on a throwaway branch. Result: the reroute genuinely cannot reconcile
+1× and 2×, and the obvious root fix is contraindicated. Evidence:
+- **Cooperative LC (`informFollower`) is a DEAD END here.** `HIGH-DENSITY-P2G2-COOPERATIVE-LC-DESIGN.md`
+  records it was RETIRED: its only benefit (saturated-grid rescue) was obsoleted by the P2-G junction
+  fixes, and it *degrades* organic flow (+perf cost too). Re-adding it would most likely hurt, not help.
+- **Minimal-deviation reroute is not what vanilla does.** Traced vanilla veh 295's full path: it diverges
+  at 30 onto a COMPLETELY different corridor (`44 55 69 109 173 -1119 -508 506`) and rejoins the original
+  route only much later at `828`. So vanilla reroutes FULLY (live-weight optimal), not minimally — yet it
+  does not cascade, because it reroutes SMOOTHLY (the car crosses `30_1→44` while still moving; it never
+  stops on edge 30). SumoSharp holds the car until it stops (queue blocks), then reroutes.
+- **The 1× churn is a real, quantified cascade (net −14 arrivals).** With an INSTANT reroute at 1×, vs the
+  no-reroute baseline (287 arr): the reroute SAVES 3 genuine strands (152/262/317) but LOSES 17 previously-
+  fine cars (58/76/87/89/102/109/122/146/147/156/170/174/220/232/234/238/246) → **273 arr, a net loss.**
+  The lost cars arrive fine WITHOUT the reroute; rerouting the ~3 genuine strands perturbs SumoSharp's
+  fragile substrate into ~87 dead-lane hits, most harmful churn. vanilla perturbs just as much (full
+  alternate paths) but does NOT churn because its cars complete their LCs robustly.
+- **No gate value threads the needle.** Sweep: instant (0 s) churns 1× (−14 arr); any gate ≥1 step gives a
+  clean 1× (baseline) but the 2× jam persists (the gated front car unsticks ~1 car/s — slower than dense
+  arrivals — so the queue never clears). Instant is required to drain 2×; a gate is required to keep 1×;
+  they are mutually exclusive **for the reroute alone**.
+
+**Conclusion:** Gap 1's clean finish is NOT reachable by the dead-lane reroute (the landed gated version is
+the safe optimum of that lever) NOR by re-adding cooperative LC. It needs a genuinely different attack on
+the *substrate fragility* — why a small perturbation tips SumoSharp cars into dead lanes when vanilla's
+don't. Candidates for a future focused pass, none cheap: (a) a smarter genuine-strand detector that fires
+the INSTANT reroute for only the truly-stuck front cars (not the transient churn) — the WaitingTime proxy
+is too slow; (b) make the exit-lane change actually complete on short approaches (best-lanes lookahead so
+the change starts on the PRIOR edge, since the forced-entry lanes like `30_1`/`109_1` give only ~10–24 m);
+(c) let a dead-lane car cross via its lane's connection WHILE MOVING (never hold it at the stop line), so
+no queue forms — requires intercepting the junction "no-valid-link" brake, parity-sensitive. Each is a
+multi-session, golden-risk effort; the gated reroute stands as the safe, non-regressing partial.
+
 **Next pass (candidate 2/3) — the root, not the symptom.** SumoSharp's substrate is *fragile*: cars that
 should complete their exit-lane change under density don't, so they strand, and any reroute of them
 cascades. Fix the completion itself: (a) start the strategic exit-lane change earlier (best-lanes
