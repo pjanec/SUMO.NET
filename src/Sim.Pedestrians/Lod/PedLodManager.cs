@@ -90,6 +90,13 @@ public sealed class PedLodManager
     // Persistent for the manager's whole lifetime (P0-3) -- see class remarks. Never replaced.
     private readonly OrcaCrowd _highCrowd;
     private readonly PedRouteController _highController;
+
+    // The high-power crowd's footprints, exposed read-only so a car/pedestrian coupling can wire it into
+    // `Engine.CrowdSource` (the live-city demo: cars yield to promoted peds -- e.g. peds promoted onto a
+    // crossing). This is the SAME persistent `_highCrowd` the manager owns (`OrcaCrowd : ICrowdFootprintSource`),
+    // so only currently-promoted (FreeKinematic) peds are visible to the engine -- low-power/weave peds are
+    // never in it, by design. Inert for every existing consumer (nothing reads this unless it opts in).
+    public Sim.Core.Bridge.ICrowdFootprintSource HighPowerFootprints => _highCrowd;
     private bool _useParallelHighCrowd;
     private bool _useRegionDecompHighCrowd;
 

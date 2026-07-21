@@ -102,19 +102,27 @@ orange as it enters the zone / steps onto a crossing.
 5. **Parity untouched:** full `dotnet test` + ped suite green; hash unmoved.
 
 ## 5. Task list & tracker (Phase 1)
-- [ ] **T1 — `HighPowerFootprints` accessor** on `PedLodManager` (+ a trivial test that it returns the
-      live high-power crowd). *Done when:* accessor compiles, inert for existing consumers, ped suite green.
-- [ ] **T2 — crossing enumerator:** parse the crop's `function="crossing"` internal lanes → centroids (+
-      `crossingEdges` for later Phase 2). *Done when:* returns the expected crossing count for the fallback crop.
-- [ ] **T3 — `BuildLiveCity` scene:** copy `BuildDenseCity`; pin the fallback crop; W-A (per-crossing +
-      zone sources); W-B (`engine.CrowdSource = manager.HighPowerFootprints`, ped-before-engine step order);
-      W-C (regime colouring). *Done when:* renders, payload has kind 9 **and** 10.
-- [ ] **T4 — `--live-city` mode + diagnostics** (peak cars/peds/high-power, min-car-speed-on-crossing).
-      *Done when:* the run prints numbers that satisfy §4.1–§4.3.
-- [ ] **T5 — verify acceptance:** screenshot a car stopped at an occupied crosswalk + the grey/orange LOD
-      split; confirm determinism (two runs, identical bytes); confirm `dotnet test` + ped suite green.
-- [ ] **T6 — (deferred to hero-crop landing)** register in `gen-demos.sh`; swap the crop constant to
-      SumoData's downtown hero bbox; re-verify.
+- [x] **T1 — `HighPowerFootprints` accessor** on `PedLodManager` (`ICrowdFootprintSource HighPowerFootprints
+      => _highCrowd`). Meaningful test `HighPowerFootprints_ExposesPromotedPed_ButNotLowPowerOrFarAway`
+      (a promoted ped is visible at its own position, a low-power ped and far queries are not). Inert for
+      existing consumers; full parity + ped suite green (649+3 / 215).
+- [x] **T2 — crossing enumerator:** folded into T3 — the baked `BakedPolygonKind.Crossing` polygons already
+      carry `Centroid` + `HalfWidth`, so per-crossing sources come straight from the navmesh (21 crossings
+      in the fallback crop). No net re-parse.
+- [x] **T3 — `BuildLiveCity` scene:** pinned fallback crop `[3100,1900,3900,2700]`; W-A (per-crossing
+      sources at `HalfWidth+15`/`2×` + a central `100/140` ORCA pocket); W-B (`engine.CrowdSource =
+      manager.HighPowerFootprints`, ped-before-engine step order); W-C (regime colouring 9/10/14).
+- [x] **T4 — `--live-city` mode + diagnostics** (`RunLiveCity`): peak cars/peds/high-power + a payload-only
+      yield signal (car <0.5 m/s next to a ped-occupied crossing, and the min such speed).
+- [x] **T5 — acceptance verified:** LOD split present (kind 9 **and** 10; peak high-power 116). Cars yield:
+      `carYieldObservations=20`, `minCarSpeedNearOccupiedCrossing=0.00 m/s`. Density: 105 cars + 160 peds.
+      Determinism: two runs byte-identical. Parity untouched: full `dotnet test` green (`CrowdSource` null
+      for every golden; hash unmoved).
+- [ ] **T6 — (deferred to hero-crop landing)** register in `gen-demos.sh`; swap the pinned crop constant to
+      SumoData's downtown hero bbox; re-verify. Held so the public gallery isn't fed the sparser
+      dining-district crop.
+
+**Phase 1 status: COMPLETE** (T1–T5); T6 waits on SumoData's regen.
 
 ## 6. Explicitly out of scope for Phase 1
 - The Option-B **deterministic low-power occupancy** (cars yield to un-promoted peds cheaply) — that's

@@ -1792,6 +1792,233 @@ internal static class SceneGen
             frames.ToArray());
     }
 
+    // ---------------------------------------------------------------------------------------
+    // Scene -- "Live city: cars yield to crossing pedestrians" (Phase 1, docs/LIVE-CITY-2D-BUILDER-DESIGN.md):
+    // the combined demo. Same dense-city substrate as BuildDenseCity (demo-city box, dense local car flow,
+    // weaving O-D crowd), but coupled: an InterestField promotes peds (a) onto every crossing in the crop
+    // and (b) throughout a high-realism ORCA pocket, and the manager's high-power crowd is wired into the
+    // real Engine (`Engine.CrowdSource`) so cars brake for a promoted ped on a crosswalk -- the same seam
+    // BuildCrossingGate proves (car 13.9->0, emergent). Peds are coloured by LOD regime: grey = low-power
+    // weave, orange = promoted full-ORCA, yellow = paused. This yields cars-stop-for-crossing-peds via the
+    // EXISTING promotion seam (Phase 1); the deterministic low-power occupancy (Phase 2) is a later perf/
+    // robustness enhancement on the same seam. Parity-inert: `Engine.CrowdSource` is null for every golden.
+    // ---------------------------------------------------------------------------------------
+    internal static ScenePayload BuildLiveCity(string boxDir)
+    {
+        var netPath = Path.Combine(boxDir, "net.xml");
+        var model = NetworkParser.Parse(netPath);
+        var fullNet = BuildNetwork(model);
+
+        var pedNetwork = PedNetworkParser.Load(netPath);
+        var polygons = WalkablePolygonBaker.Bake(pedNetwork);
+        var nav = new SumoNavMesh(polygons, new SumoWalkableSpace(polygons), pedNetwork.PedConnections);
+
+        // PINNED crop = SumoData's dining-district fallback bbox (SUMOSHARP-LIVE-CITY-DECISIONS.md Q7); swap
+        // to the co-located downtown hero bbox when their regen lands. (Not the auto-densest pick -- we need
+        // the block that has the hero venues + signalized crossings, not just the most sidewalk.)
+        const double x0 = 3100, y0 = 1900, x1 = 3900, y1 = 2700;
+        var cx = (x0 + x1) / 2.0;
+        var cy = (y0 + y1) / 2.0;
+        bool In(double x, double y) => x >= x0 && x <= x1 && y >= y0 && y <= y1;
+        bool InV(Vec2 p) => In(p.X, p.Y);
+
+        // ---- pedestrian O-D endpoints = sidewalk spine midpoints inside the crop (as BuildDenseCity) ----
+        var allEndpoints = new List<Vec2>();
+        foreach (var poly in polygons)
+        {
+            if (poly.Kind != BakedPolygonKind.SidewalkSegment) continue;
+            if (!InV(poly.Centroid)) continue;
+            var spine = poly.Spine;
+            var pt = spine is { Count: > 0 } ? spine[spine.Count / 2] : poly.Centroid;
+            if (InV(pt)) allEndpoints.Add(pt);
+        }
+
+        const int MaxEndpoints = 90;
+        var odPoints = new List<Vec2>();
+        if (allEndpoints.Count <= MaxEndpoints)
+        {
+            odPoints.AddRange(allEndpoints);
+        }
+        else
+        {
+            var stride = (double)allEndpoints.Count / MaxEndpoints;
+            for (var k = 0; k < MaxEndpoints; k++) odPoints.Add(allEndpoints[(int)(k * stride)]);
+        }
+
+        var config = new Sim.Pedestrians.Demand.PedDemandConfig
+        {
+            Origins = odPoints,
+            Destinations = odPoints,
+            SpawnRatePerSecond = 8.0,
+            PopulationCap = 160,
+            Seed = 20260721UL,
+            MaxSpeed = 1.3,
+            Radius = 0.3,
+            ArrivalRadius = 0.6,
+            Liveliness = new Sim.Pedestrians.Demand.PedLivelinessConfig
+            {
+                PauseProbability = 0.15,
+                MinPauseSeconds = 2.0,
+                MaxPauseSeconds = 5.0,
+                MaxPausesPerTrip = 1,
+                PauseAnimTag = "idle",
+            },
+            EnableWeave = true,
+        };
+
+        var publisher = new PedPublisher();
+        var manager = new PedLodManager(nav, publisher, arriveRadius: 0.3, dwellSeconds: 1.0);
+        var demand = new Sim.Pedestrians.Demand.PedDemand(config, nav, manager, startTime: 0.0);
+        var noEntities = Array.Empty<WorldDisc>();
+
+        // ---- W-A: seed the InterestField so peds promote to high-power ORCA (static sources, once) ----
+        var field = new InterestField();
+        // (i) per-crossing: any ped stepping onto a crosswalk promotes -> visible to cars -> car yields.
+        var cropCrossings = new List<Vec2>();
+        foreach (var poly in polygons)
+        {
+            if (poly.Kind != BakedPolygonKind.Crossing) continue;
+            if (!InV(poly.Centroid)) continue;
+            cropCrossings.Add(poly.Centroid);
+            var promote = poly.HalfWidth + 15.0;
+            field.Register(new InterestSource(poly.Centroid, promote, 2.0 * promote));
+        }
+
+        // (ii) high-realism pocket: one large source at the crop centre -> a visible ORCA district amid the
+        // low-power weave (the LOD contrast).
+        field.Register(new InterestSource(new Vec2(cx, cy), promoteRadius: 100.0, demoteRadius: 140.0));
+
+        // ---- cars: real Engine on the full net; a dense LOCAL flow on the crop's drivable edges ----
+        var engine = new Engine();
+        engine.LoadNetwork(netPath);
+        var vtype = engine.DefineVType(new VTypeParams { VClass = "passenger", Sigma = 0.0 });
+
+        // W-B: cars yield to the manager's promoted (high-power) peds via the existing CrowdSource seam.
+        engine.CrowdSource = manager.HighPowerFootprints;
+
+        var routeEdges = ReadDrivableEdges(Path.Combine(boxDir, "scenario.rou.xml"));
+        var cropEdges = new List<(string Id, int Lane)>();
+        foreach (var eid in routeEdges)
+        {
+            if (!model.EdgesById.TryGetValue(eid, out var edge) || edge.Lanes.Count == 0) continue;
+            var carLane = edge.Lanes[^1];
+            if (carLane.Shape.Count == 0) continue;
+            var mid = carLane.Shape[carLane.Shape.Count / 2];
+            if (In(mid.X, mid.Y)) cropEdges.Add((eid, carLane.Index));
+        }
+
+        var rng = 0x243F6A8885A308D3UL;
+        uint NextRng()
+        {
+            rng += 0x9E3779B97F4A7C15UL;
+            var z = rng;
+            z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9UL;
+            z = (z ^ (z >> 27)) * 0x94D049BB133111EBUL;
+            return (uint)(z ^ (z >> 31));
+        }
+
+        const double Dt = 0.5;
+        const int steps = 240;
+        const int Decimate = 1;
+        const int CarTargetConcurrent = 110;
+        const int CarSpawnPerStep = 5;
+
+        var slotByHandle = new Dictionary<uint, int>();
+        var frames = new List<FramePayload>();
+        var discsKeyedPerFrame = new List<List<(string Key, double[] Disc)>>();
+
+        var now = 0.0;
+        for (var step = 0; step < steps; step++)
+        {
+            if (cropEdges.Count >= 2)
+            {
+                var live = engine.VehicleHandles.Length;
+                for (var s = 0; s < CarSpawnPerStep && live < CarTargetConcurrent; s++)
+                {
+                    var (fromId, fromLane) = cropEdges[(int)(NextRng() % (uint)cropEdges.Count)];
+                    var (toId, _) = cropEdges[(int)(NextRng() % (uint)cropEdges.Count)];
+                    if (fromId == toId) continue;
+                    try
+                    {
+                        engine.SpawnVehicle(vtype, fromId, toId, departPos: 5.0, departSpeed: 0.0, departLane: fromLane);
+                        live++;
+                    }
+                    catch (InvalidOperationException)
+                    {
+                    }
+                }
+            }
+
+            // Step ORDER (CrossRegimeCoupling discipline): advance the ped crowd FIRST so the promoted-ped
+            // footprints in `_highCrowd` are current when the engine reads `CrowdSource` this tick.
+            demand.Step(now, Dt, field, noEntities);
+            engine.Step();
+            now += Dt;
+
+            if (step % Decimate != 0) continue;
+
+            var handles = engine.VehicleHandles;
+            var px = engine.PosX;
+            var py = engine.PosY;
+            var pa = engine.Angle;
+            for (var i = 0; i < handles.Length; i++)
+            {
+                if (!In(px[i], py[i])) continue;
+                if (!slotByHandle.ContainsKey(handles[i].Index))
+                {
+                    slotByHandle[handles[i].Index] = slotByHandle.Count;
+                }
+            }
+
+            var v = new double[slotByHandle.Count][];
+            for (var i = 0; i < handles.Length; i++)
+            {
+                if (!In(px[i], py[i])) continue;
+                v[slotByHandle[handles[i].Index]] = new[] { R(px[i]), R(py[i]), R(pa[i]) };
+            }
+
+            // W-C: colour by LOD regime. High-power (FreeKinematic) = orange; low-power walking = grey
+            // (weave); paused/dwell = yellow. PositionOf returns the ORCA pose for high-power peds and the
+            // woven low-power pose otherwise.
+            var discs = new List<(string, double[])>(demand.LiveIds.Count);
+            foreach (var id in demand.LiveIds)
+            {
+                var pos = manager.PositionOf(id, now);
+                if (!InV(pos)) continue;
+                var model2 = manager.ModelOf(id);
+                var animTag = manager.AnimTagOf(id, now);
+                var kind = model2 == PedDrModel.FreeKinematic ? KindPedHighPower
+                    : animTag == ActivityTimeline.WalkAnimTag ? KindPedLowPower
+                    : KindPedPaused;
+                discs.Add(($"ped{id}", new[] { R(pos.X), R(pos.Y), 0.3, (double)kind }));
+            }
+
+            frames.Add(new FramePayload(v, Array.Empty<double[]?>()));
+            discsKeyedPerFrame.Add(discs);
+        }
+
+        NormalizeVehicleSlots(frames, slotByHandle.Count);
+        AssignStableDiscSlots(frames, discsKeyedPerFrame);
+
+        var cropNet = CropNetwork(fullNet, pedNetwork, netPath, x0, y0, x1, y1);
+
+        return new ScenePayload(
+            "Live city: cars yield to crossing pedestrians",
+            "A block of the synthetic demo-city with dense car traffic AND a large weaving pedestrian "
+            + "crowd, coupled: pedestrians promote to reactive full-ORCA agents on every crosswalk and "
+            + "throughout a high-realism pocket, and the cars (real Engine + Krauss) brake for them via the "
+            + "same emergent avoidance seam the crossing-gate demo proves -- so a car visibly STOPS for a "
+            + "pedestrian on a crossing and resumes once it clears. Grey = low-power weaving ped (O(1), "
+            + "server==IG), orange = promoted full-ORCA ped, yellow = paused; boxes = cars. The weave keeps "
+            + "the ambient crowd from passing through itself; the LOD promotion is where cars and people "
+            + "actually negotiate.",
+            new double[] { R(x0), R(y0), R(x1), R(y1) },
+            cropNet,
+            new double[] { 5.0, 1.8 },
+            Dt * Decimate,
+            frames.ToArray());
+    }
+
     // Read the union of drivable edge ids from a committed car route file (every `edges="..."` token).
     // These are exactly the edges the demo-city's own SUMO demand routes over, so each is a real,
     // routable road edge -- a safe universe to synthesize a local car flow from without re-deriving

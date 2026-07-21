@@ -217,6 +217,50 @@ public class PedLodManagerTests
             "expected a fresh PathArcRecord on demotion");
     }
 
+    // ---- Live-city coupling: HighPowerFootprints exposes exactly the promoted crowd ---------------
+    // The live-city demo wires `Engine.CrowdSource = manager.HighPowerFootprints` so cars yield to
+    // promoted peds. This asserts the accessor exposes the LIVE high-power crowd (not a vacuous non-null):
+    // a promoted ped is visible in the footprints at its own position, a query far away sees nothing, and a
+    // low-power ped is NOT visible (only promoted peds are ever in the crowd).
+    [Fact]
+    public void HighPowerFootprints_ExposesPromotedPed_ButNotLowPowerOrFarAway()
+    {
+        var nav = BuildNav();
+        var path = nav.FindPath(WestNorthArm, EastNorthArm);
+        Assert.NotNull(path);
+
+        var publisher = new PedPublisher();
+        var manager = new PedLodManager(nav, publisher, ArriveRadius, DwellSeconds);
+        manager.AddPed(id: 1, path!, MaxSpeed, Radius, now: 0.0);
+
+        var field = new InterestField();
+        // Broad source over the route so the ped promotes as it walks through it.
+        var source = new InterestSource(new Vec2(120.0, 140.0), promoteRadius: 30.0, demoteRadius: 60.0);
+        field.Register(source, InterestSourceKind.EntityAttached);
+        var noEntities = Array.Empty<WorldDisc>();
+        var into = new WorldDisc[8];
+
+        // Before any promotion, the low-power ped is NOT in the high-power footprints.
+        Assert.Equal(PedDrModel.PathArc, manager.ModelOf(1));
+        var pos0 = manager.PositionOf(1, 0.0);
+        Assert.Equal(0, manager.HighPowerFootprints.QueryNear(pos0.X, pos0.Y, 5.0, into));
+
+        var now = 0.0;
+        while (manager.ModelOf(1) != PedDrModel.FreeKinematic && now < 30.0)
+        {
+            manager.Step(now, Dt, field, noEntities);
+            now += Dt;
+        }
+
+        Assert.Equal(PedDrModel.FreeKinematic, manager.ModelOf(1));
+
+        // Now promoted: the ped IS in the footprints at its own position, and NOT out in the weeds.
+        var pos = manager.PositionOf(1, now);
+        Assert.True(manager.HighPowerFootprints.QueryNear(pos.X, pos.Y, 2.0, into) >= 1,
+            "promoted ped should be visible in HighPowerFootprints at its own position");
+        Assert.Equal(0, manager.HighPowerFootprints.QueryNear(pos.X + 10_000, pos.Y, 2.0, into));
+    }
+
     // ---- Success condition 3b: no flapping when the stimulus hovers at the demote boundary ------
 
     [Fact]
