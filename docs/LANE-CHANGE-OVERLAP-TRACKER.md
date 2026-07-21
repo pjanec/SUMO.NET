@@ -18,6 +18,15 @@ See `docs/LANE-CHANGE-OVERLAP-TASKS.md` for success conditions, `-DESIGN.md` for
       frozen-snapshot/deferred-placement artifacts SUMO avoids via strict serial per-vehicle processing.
       Faithful car-following fixes cannot fully close them; exact-0 needs an ECS-forced deviation
       (deterministic post-settle overlap resolver, byte-identical on goldens) OR is accepted as the
-      structural residual. **DECISION PENDING (owner).**
-- [ ] **Stage 4** — unskip `LaneChangeOverlapDiagTests` (==0) once Stage 3's decision lands; determinism
-      byte-identical ✅ (verified two-run identical); live-city coordinated-mode overlaps 258 → 3.
+      structural residual.
+      **OWNER DECISION (2026-07-21): (C) ACCEPT 2 for now.** Rationale: the reported bug (unrealistic
+      stopped/near-stopped lane-change-into-occupied-slot) is 100% fixed; the 2 residual are transient
+      MOVING junction merges, not the stopped-car behaviour; and high-density capacity must NOT be
+      degraded (verified: throughput unchanged, see below). The full Stage-3 fix (Option A: port SUMO's
+      internal-junction foe/merge logic) is a possible follow-up, not yet decided. See
+      `docs/LANE-CHANGE-OVERLAP-STATUS.md` for the full standing + resume plan.
+- [ ] **Stage 4** — DEFERRED with Stage 3. `LaneChangeOverlapDiagTests` stays `[Fact(Skip)]` (reads 2,
+      not 0) with an honest skip note; do NOT loosen the 5.5 m threshold. Already verified this session:
+      determinism byte-identical (two-run identical); all goldens byte-identical; full `dotnet test`
+      green; **high-density throughput preserved** (saturated grid drains all 412 veh, stuck 0, active@300
+      129→127, fully drained by t=600 both pre- and post-fix).
