@@ -195,6 +195,24 @@ public sealed partial class Engine : IEngine
     private readonly Dictionary<string, ParkingArea> _parkingAreasById = new(StringComparer.Ordinal);
     private readonly Dictionary<string, bool[]> _parkingLotOccupied = new(StringComparer.Ordinal);
 
+    // GAP-1 (docs/HIGH-DENSITY-CALIBRATION-DESIGN.md §2): per-vehicle count of dead-lane reroutes, a
+    // hard bound so a vehicle whose every route to its destination loops back through the lane it is
+    // stuck on cannot reroute forever (measured: veh 58 looped 300+ times). After the cap it clamps
+    // once (same as pre-GAP-1) rather than spinning. Keyed by EntityIndex; only ever written in the
+    // Execute phase (single writer per vehicle), read under the same pool lock as the reroute splice.
+    private readonly Dictionary<int, int> _deadLaneRerouteCount = new();
+    private const int MaxDeadLaneReroutes = 2;
+
+    // GAP-1: the dead-lane reroute is a LAST RESORT, not a first response. A car only reroutes off a
+    // dead lane after it has actually been stuck (clamped, blocking) for this long -- like vanilla's
+    // periodic (30 s) device.rerouting cadence, not instantly at the first touch of the lane end.
+    // This keeps the reroute from perturbing the low-density case (where the ~8 genuinely stranded
+    // cars are few and momentary wrong-lane arrivals resolve on their own) and the cascade that an
+    // eager reroute triggers, while still rescuing a persistently-gridlocked car well before it would
+    // reach time-to-teleport (120 s). Below the threshold the car clamps and accumulates WaitingTime;
+    // once over it, it reroutes.
+    private const double DeadLaneRerouteWaitSeconds = 5.0;
+
     // P1F-2 (HIGH-DENSITY-P1F-DESIGN.md §1C, §2, §5): the persistent teleport transfer queue --
     // the MSVehicleTransfer::myVehicles analog. A vehicle picked for a jam-teleport is lifted off
     // its lane (InTransfer=true) and appended here with the route-edge index of the edge it has
@@ -1209,6 +1227,7 @@ public sealed partial class Engine : IEngine
         // the same Engine instance starts fresh.
         _parkingAreasById.Clear();
         _parkingLotOccupied.Clear();
+        _deadLaneRerouteCount.Clear();   // GAP-1: fresh dead-lane reroute budget per load
         foreach (var (id, pa) in parkingAreas)
         {
             _parkingAreasById[id] = pa;
@@ -9233,10 +9252,18 @@ public sealed partial class Engine : IEngine
             return false;
         }
 
-        // Genuine drop lane: the actual lane has no connection to the next route edge -> clamp.
+        // GAP-1: the actual lane has no connection to the NEXT ROUTE edge (a drop lane FOR THIS
+        // ROUTE). Pre-GAP-1 this clamped the vehicle dead at the lane end forever -- the dense-flow
+        // gridlock driver (a car that could not complete its strategic change into the one exit lane
+        // its route needs strands the whole approach queue; measured: veh 295 stuck on 30_1 needing
+        // 30->124, which leaves only from 30_0, sits at speed 0 from t=428..699). Vanilla does NOT
+        // clamp it: with device.rerouting on it takes the connection its actual lane HAS and reroutes
+        // to the destination (vanilla's veh 295 leaves 30_1 via 30_1's own connection and arrives at
+        // t=412). Mirror that -- reroute via a connection this lane has. Only clamp when even that
+        // fails (a true dead end / the reroute cap is spent).
         if (!_network!.ConnectionsByFromLaneTo.ContainsKey((currentLane.EdgeId, currentLane.Index, remaining[1])))
         {
-            return false;
+            return TryRerouteFromDeadLane(v, currentLane, remaining);
         }
 
         // Re-resolve from the actual lane (pinning this edge's exit to it) and splice a fresh slice
@@ -9277,6 +9304,177 @@ public sealed partial class Engine : IEngine
         // stale even on the same lane (same reasoning as CommandBuffer.ReplaceRoute's own reset).
         v.KeepRightStayCacheLane = -1;
         return true;
+    }
+
+    // GAP-1 (docs/HIGH-DENSITY-CALIBRATION-DESIGN.md §2): the vehicle reached this lane end on a lane
+    // whose connections do NOT include the next ROUTE edge (TryReResolveFromActualLane established the
+    // drop-lane case). Reroute to the destination via a connection this lane DOES have -- what vanilla
+    // does with device.rerouting + ignore-route-errors. `remaining` is the current remaining route
+    // (remaining[0] == currentLane's edge, remaining[^1] == destination). Returns true and splices a
+    // fresh pool (so the caller crosses the junction this step); returns false (caller clamps) for a
+    // true dead end, when no candidate reaches the destination, or when this vehicle has already spent
+    // its reroute cap (anti-loop). INERT for every committed golden: they never strand, so this is
+    // never reached (verified by the full suite staying byte-identical).
+    private bool TryRerouteFromDeadLane(VehicleRuntime v, Lane currentLane, IReadOnlyList<string> remaining)
+    {
+        var destEdge = remaining[remaining.Count - 1];
+        if (destEdge == currentLane.EdgeId)
+        {
+            return false;   // already on the destination edge -- nothing to reroute toward
+        }
+
+        // LAST-RESORT gate: only reroute a car that has genuinely been stuck (blocking) for a while,
+        // not on the first touch of the lane end -- see DeadLaneRerouteWaitSeconds. Below the
+        // threshold, clamp this step and retry next step (WaitingTime keeps accumulating while
+        // clamped).
+        if (v.WaitingTime < DeadLaneRerouteWaitSeconds)
+        {
+            return false;
+        }
+
+        // Anti-loop hard bound: a vehicle whose every route to the destination loops back through the
+        // lane it is stuck on would otherwise reroute forever (veh 58 looped 300+ times). After the
+        // cap it clamps once, exactly like pre-GAP-1.
+        _deadLaneRerouteCount.TryGetValue(v.EntityIndex, out var already);
+        if (already >= MaxDeadLaneReroutes)
+        {
+            return false;
+        }
+
+        if (!_network!.ConnectionsByFromEdgeLane.TryGetValue((currentLane.EdgeId, currentLane.Index), out var outs)
+            || outs.Count == 0)
+        {
+            return false;   // true dead end: this lane has no outgoing connection at all
+        }
+
+        // Cost each candidate by the SAME live/smoothed edge-effort the periodic device.rerouting uses
+        // (RerouteEdgeWeights.Effort, settled by the previous step -- read-only and stable during this
+        // region-parallel execute), NOT static free-flow: vanilla's rerouter is congestion-aware, and
+        // a free-flow reroute sends the stalled car straight back into the jam it is leaving, wedging
+        // it at a downstream minor link (measured: free-flow inflated teleports 5->16). Falls back to
+        // free-flow only when rerouting/weights are off. All reads are of immutable/settled state, so
+        // this is safe outside the mutation lock below.
+        var vehicleMaxSpeed = v.VType.MaxSpeed * v.SpeedFactor;
+        var edgeWeights = _edgeWeights;
+        Func<string, double> effort = edgeWeights is not null
+            ? edgeId => edgeWeights.Effort(edgeId, vehicleMaxSpeed)
+            : EdgeFreeFlowCost;
+
+        var currentEdgeModel = _network.EdgesById.TryGetValue(currentLane.EdgeId, out var ce) ? ce : null;
+
+        IReadOnlyList<string>? bestTail = null;
+        var bestCost = double.PositiveInfinity;
+        var considered = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var conn in outs)
+        {
+            var nextEdge = conn.To;
+            if (nextEdge.Length > 0 && nextEdge[0] == ':')
+            {
+                continue;   // internal/junction edge -- not a routable normal edge
+            }
+
+            if (!considered.Add(nextEdge))
+            {
+                continue;   // a lane can carry several connections to the same edge
+            }
+
+            // Skip a U-turn (the reverse edge: this edge's endpoints swapped). SUMO's router disallows
+            // turnarounds by default, and taking one here loops straight back to this lane.
+            if (currentEdgeModel is not null
+                && _network.EdgesById.TryGetValue(nextEdge, out var nextModel)
+                && nextModel.From == currentEdgeModel.To && nextModel.To == currentEdgeModel.From)
+            {
+                continue;
+            }
+
+            var tail = Router().Route(nextEdge, destEdge, effort);
+            if (tail is null || tail.Count == 0)
+            {
+                continue;   // this connection cannot reach the destination
+            }
+
+            var cost = 0.0;
+            foreach (var e in tail)
+            {
+                cost += effort(e);
+            }
+
+            if (cost < bestCost)
+            {
+                bestCost = cost;
+                bestTail = tail;
+            }
+        }
+
+        if (bestTail is null)
+        {
+            return false;   // no connection this lane has can still reach the destination -> clamp
+        }
+
+        // Full rerouted edge list: currentEdge + the routed tail (which begins at the chosen successor
+        // edge, reachable from currentLane by construction).
+        var fullEdges = new List<string>(bestTail.Count + 1) { currentLane.EdgeId };
+        fullEdges.AddRange(bestTail);
+
+        // Resolve the new lane sequence pinned to leave THIS edge via the current lane
+        // (forceFirstExitToArrival). Pure (reads only the immutable net), so done outside the lock.
+        int[] pool;
+        int[] arrival;
+        try
+        {
+            var stopOverride = ParkStopFinalEdgeOverride(v.Def.Stops, fullEdges);
+            (pool, arrival) = _network.ResolveLaneSequenceHandlesWithArrival(
+                fullEdges, currentLane.Index, forceFirstExitToArrival: true, stopOverride: stopOverride);
+        }
+        catch (InvalidDataException)
+        {
+            return false;
+        }
+
+        // Register the new route + splice the pool + bump the reroute count under the pool lock:
+        // ExecuteMoves is region-parallel, so two vehicles can reach this reroute concurrently. The
+        // route dictionaries + _deadLaneRerouteCount are never READ during ExecuteMoves (every
+        // EffectiveRouteId/best-lanes read is in the Plan phase, which already ran this step), so
+        // serialising the WRITES here is sufficient; the pool append is the same discipline
+        // TryReResolveFromActualLane uses. Slice content is the vehicle's own, so serial ==
+        // region-parallel stays byte-identical.
+        int start;
+        lock (_laneSeqPoolLock)
+        {
+            RegisterRerouted(v, fullEdges);   // keep _routesById/EffectiveRouteId consistent with the new pool
+            _deadLaneRerouteCount[v.EntityIndex] = already + 1;
+            start = _laneSeqPool.Count;
+            _laneSeqPool.AddRange(pool);
+            _laneSeqArrival.AddRange(arrival);
+        }
+
+        v.LaneSeqStart = start;
+        v.LaneSeqLen = pool.Length;
+        v.LaneSeqIndex = 0;
+        v.KeepRightStayCacheLane = -1;
+        return true;
+    }
+
+    // GAP-1: free-flow travel time of ONE edge -- SUMO's DijkstraRouter effort (length /
+    // max-lane-speed). The dead-lane reroute's cost fallback when no live edge-weight snapshot exists
+    // (rerouting off); returns +inf for an unknown/zero-speed edge so it is never chosen.
+    private double EdgeFreeFlowCost(string edgeId)
+    {
+        if (!_network!.EdgesById.TryGetValue(edgeId, out var edge) || edge.Lanes.Count == 0)
+        {
+            return double.PositiveInfinity;
+        }
+
+        var maxSpeed = 0.0;
+        foreach (var l in edge.Lanes)
+        {
+            if (l.Speed > maxSpeed)
+            {
+                maxSpeed = l.Speed;
+            }
+        }
+
+        return maxSpeed > 0.0 ? edge.Lanes[0].Length / maxSpeed : double.PositiveInfinity;
     }
 
     // Rung A2 (+ rung 8b, moved here -- see the CORRECTED-ORDERING note below): the two LC2013

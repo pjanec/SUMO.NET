@@ -141,12 +141,41 @@ Candidate 1 (reroute-on-dead-lane) was fully implemented and measured on the 2×
   never read during the region-parallel execute; inert for every committed golden). It is the *policy*
   (reroute vs complete-the-LC) that was wrong, not the plumbing.
 
-**Next pass (candidate 2/3):** investigate why so many cars reach junctions on a lane with no connection
-to their next route edge even at 1× — the pool pins ONE exit lane (chasing a downstream bestLaneOffset
-hint) and the strategic LC onto it commits too late / does not fire when the target lane is momentarily
-occupied. Make the exit-lane change start earlier (best-lanes lookahead) and/or complete under light
-occupancy (cooperative gap), so the car is on a connecting lane at the junction. Keep the dead-lane
-reroute as a bounded fallback. Re-measure teleports at BOTH 1× (must stay ≤5) and 2× (drain, ≈vanilla).
+### 2.3.2 MEASURED passes 2-4 (2026-07-21): diagnosis + a SAFE gated reroute LANDED; full drainage still open
+- **Try 2 (diagnosis).** Traced the actual stuck cars in both engines. At 1× vanilla AND SumoSharp both
+  COMPLETE the tight exit-lane change (veh 58 enters `109_1` — forced by the sole `69→109` connection —
+  and changes to `109_0` within the 10.83 m edge, then turns to 173): at 1× the baseline is already fine
+  (5 tp / 287 arr). At 2× the change genuinely can't complete (target lane full): veh 295 enters `30_1`,
+  needs `30→124` which leaves only from `30_0`, never gets a gap, and clamps at the lane end from t=428 to
+  699. **Vanilla does NOT complete veh 295's change either — it REROUTES** (leaves `30_1` via `30_1`'s own
+  connection, arrives t=412). So the reroute is the right vanilla-faithful move for a truly-blocked dense
+  car; the instant-reroute failure at 1× is a CASCADE (rerouting the ~8 genuine strands perturbs SumoSharp's
+  fragile substrate → dozens more strand → some loop). vanilla doesn't cascade because its LC/junction
+  behaviour has margin.
+- **Try 3-4 (the landed fix).** Make the dead-lane reroute a LAST RESORT: a car only reroutes after it has
+  actually been clamped/blocking for `DeadLaneRerouteWaitSeconds` (5 s) — like vanilla's periodic 30 s
+  cadence, not instantly at the first lane-end touch — plus a U-turn (reverse-edge) skip and a per-car
+  `MaxDeadLaneReroutes` cap (both hard anti-loop bounds). Measured: **1× stays EXACTLY at baseline
+  (5 tp / 287 arr, ≤5 guard green); 2× improves — teleports 10→3, arrivals 275→281, halting 45→42.** Full
+  suite 656 green, all committed goldens byte-identical (inert — no golden strands), determinism holds
+  (route-dict + count writes lock-guarded, never read during the region-parallel execute). Code:
+  `Engine.cs` `TryRerouteFromDeadLane` + `EdgeFreeFlowCost` + `_deadLaneRerouteCount`, wired into
+  `TryReResolveFromActualLane`'s drop-lane branch; live-weight cost via `_edgeWeights.Effort`.
+- **STILL OPEN (the real Gap-1 finish).** 2× does not FULLY drain (~7 cars stay stuck, meanSpeed 0): the
+  same gate that protects 1× is too slow to stop the 2× jam forming (an instant reroute drains 2× but
+  cascades 1× / fails the guard — the two cannot be reconciled by tuning the reroute alone). Full drainage
+  needs the ROOT fix below.
+
+**Next pass (candidate 2/3) — the root, not the symptom.** SumoSharp's substrate is *fragile*: cars that
+should complete their exit-lane change under density don't, so they strand, and any reroute of them
+cascades. Fix the completion itself: (a) start the strategic exit-lane change earlier (best-lanes
+lookahead so it begins far enough upstream on short approaches like the 10.83 m edge 30/109), and/or (b)
+complete it under occupancy via a **cooperative gap** — a target-lane follower briefly yields so the
+mandatory change lands (SUMO's `informFollower`/LCA_COOPERATIVE, retired in
+`HIGH-DENSITY-P2G2-COOPERATIVE-LC-DESIGN.md`). With the substrate robust, far fewer cars strand, the
+cascade disappears, and the instant reroute (or no reroute at all) drains 2× without touching 1×. Keep the
+landed gated reroute as the bounded last-resort fallback. Re-measure teleports/halting at BOTH 1× (≤5) and
+2× (drain, ≈vanilla) every iteration; this is parity-sensitive (touches strategic LC) so guard the goldens.
 
 ### 2.4 Success criteria (Gap 1)
 On the 2× dense synthetic: SumoSharp teleports ≈ 0 (was 10), no permanent gridlock (halting drains toward

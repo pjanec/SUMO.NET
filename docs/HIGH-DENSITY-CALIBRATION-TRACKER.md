@@ -22,14 +22,24 @@ evidence). NEEDs: `SUMOSHARP-NEED-dense-flow-gridlock-vs-vanilla.md`,
       byte-identical; anchor `scenarios/76-parking-lot-reuse` (cap-1, veh0 pulls out → veh1 reuses lot 0)
       matches vanilla golden. Full suite green (656 pass). Full `demo_city/box` LOADS + runs to t=800 with
       no "lot index out of range"; two box runs byte-identical (deterministic).
-- [~] **Stage 3 — Gap 1** reroute-on-wrong-lane. PASS 1 DONE + REVERTED (see design §2.3.1). Reroute
-      (live-weight cost) drains the 2× gridlock fully (halting 45→34, meanSpeed 0→~8, arrived ≈292) —
-      confirms the clamp=gridlock diagnosis — BUT over-fires (~100 cars at 1×), can loop (veh 58 stuck on
-      109_1 loops 140–308×: every path returns to 109_1), and raises the low-density teleport floor
-      (1×: 5→12–21), failing the ≤5 guard and hurting the calibration knee. ROOT: it is a **lane-completion**
-      problem (car never reaches 109_0), not routing — reroute can't fix it. Reverted; branch green.
-      NEXT PASS = candidate 2/3: complete/commit the strategic exit-lane change earlier so cars are on a
-      connecting lane at the junction; keep the dead-lane reroute only as a bounded last-resort fallback.
+- [~] **Stage 3 — Gap 1** reroute-on-wrong-lane. PARTIAL FIX LANDED (safe, non-regressing) after 4 passes;
+      full 2× drainage still open. See design §2.3.1 for the full evidence. Summary:
+      - Passes 1-2: an INSTANT reroute drains 2× fully (arrived ≈292) — confirms clamp=gridlock — but
+        cascades at low density (a small perturbation tips SumoSharp's fragile LC/junction behaviour, so ~100
+        cars strand at 1×; some loop, e.g. veh 58 on 109_1 whose every route returns to 109_1). Instant fails
+        the ≤5 guard (6-18 tp). Diagnosis (Try 2): vanilla COMPLETES the 109_1→109_0 change at 1× (veh 58) and
+        REROUTES the truly-blocked car at 2× (veh 295 on 30_1 → its lane's own connection, arrives t=412) —
+        so reroute is directionally right, but SumoSharp cascades because its substrate is fragile, not because
+        the reroute is wrong.
+      - Passes 3-4: gate the reroute as a LAST RESORT — only after a car has been clamped/blocking ~5 s
+        (`DeadLaneRerouteWaitSeconds`), + U-turn skip + a per-car cap. This keeps 1× EXACTLY at baseline
+        (5 tp / 287 arr, guard green) while improving 2× (teleports **10→3**, arrivals **275→281**, halting
+        45→42). LANDED: full suite 656 green, all goldens byte-identical, deterministic.
+      - STILL OPEN: 2× does not fully drain (~7 cars still stuck, meanSpeed 0) — the gate that protects 1×
+        is too slow to prevent the 2× jam forming. Full drainage needs the ROOT fix: **candidate 2/3 —
+        make the strategic exit-lane change complete/commit reliably under density** (cooperative gap /
+        earlier commitment) so the substrate stops being fragile and the instant reroute (or no reroute) works
+        without cascading. That is the next pass.
 - [ ] **Stage 4** — end-to-end: full box (and crop if reachable) on SumoSharp ≈ vanilla (teleports ≈ 0,
       knee within tolerance). Hand-off note back to SumoData.
 
