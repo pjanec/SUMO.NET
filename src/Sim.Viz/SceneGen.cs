@@ -1900,12 +1900,14 @@ internal static class SceneGen
         // lane / inside a junction on red) from a pure render artifact (spline overshoot on 1 s-apart samples).
         var dumpEnv = Environment.GetEnvironmentVariable("LIVECITY_DUMP");
         Vec2? dumpAt = null;
+        var dumpRadius = 45.0;
         if (!string.IsNullOrWhiteSpace(dumpEnv))
         {
             var parts = dumpEnv.Split(',');
-            if (parts.Length == 2 && double.TryParse(parts[0], out var dxv) && double.TryParse(parts[1], out var dyv))
+            if (parts.Length >= 2 && double.TryParse(parts[0], out var dxv) && double.TryParse(parts[1], out var dyv))
             {
                 dumpAt = new Vec2(dxv, dyv);
+                if (parts.Length >= 3 && double.TryParse(parts[2], out var dr)) dumpRadius = dr;
             }
         }
 
@@ -2004,7 +2006,8 @@ internal static class SceneGen
         // Realism: a queued car must not snap sideways a full lane while essentially stopped -- it sorts
         // into its lane while moving. 1.0 m/s (a slow crawl) keeps this deadlock-safe (any forward creep
         // clears it) while removing the dead-stop lateral teleport that reads as deeply unrealistic.
-        engine.LaneChangeMinSpeed = 1.0;
+        engine.LaneChangeMinSpeed =
+            double.TryParse(Environment.GetEnvironmentVariable("LIVECITY_LCMIN"), out var lcm) ? lcm : 1.0;
         var vtype = engine.DefineVType(new VTypeParams { VClass = "passenger", Sigma = 0.0 });
 
         // W-B: cars yield to BOTH promoted (high-power ORCA) peds AND low-power peds on a crosswalk, via
@@ -2038,7 +2041,7 @@ internal static class SceneGen
         const double Dt = 0.5;
         const int steps = 240;
         const int Decimate = 1;
-        const int CarTargetConcurrent = 110;
+        var CarTargetConcurrent = int.TryParse(Environment.GetEnvironmentVariable("LIVECITY_CARS"), out var ct) ? ct : 110;
         const int CarSpawnPerStep = 5;
 
         var slotByHandle = new Dictionary<uint, int>();
@@ -2204,7 +2207,7 @@ internal static class SceneGen
                     var onPed = pedLaneIds.Contains(lane);
                     var ddx = dpx[i] - d.X;
                     var ddy = dpy[i] - d.Y;
-                    var near = (ddx * ddx) + (ddy * ddy) <= 45.0 * 45.0;
+                    var near = (ddx * ddx) + (ddy * ddy) <= dumpRadius * dumpRadius;
                     if (!near && !onPed) continue;
                     Console.WriteLine(
                         $"[DUMP step={step} t={(step + 1) * Dt:F1}s] veh{hh[i].Index} lane={lane}"

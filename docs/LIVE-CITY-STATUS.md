@@ -168,5 +168,29 @@ behaviour, ParityTests 654/+3 green; two demo runs byte-identical):
 - **Open lever if owner wants fewer still:** raise `LaneChangeMinSpeed` (2.0) or the full **sublane model**
   (continuous lateral posLat) — the only thing that makes a lane change a genuinely smooth slide. Big port.
 
+## KNOWN BLOCKER — cars OVERLAP in dense multi-lane traffic (pre-existing engine limitation)
+Owner saw cars merging into an occupied lane / sitting on top of each other at busy junctions. Diagnosed
+with a whole-crop overlap detector (`LIVECITY_DUMP="x,y,radius"`, then count same-lane car pairs <5.5 m
+apart): **3360+ overlap events** in a 120 s run, ~3200 with both cars stopped, many at 0.0 m gap. Proven
+example: veh18 stopped on lane `_1`; veh49 changes `_2→_1` and lands at the **exact same (x,y)** as veh18.
+- **Pre-existing & not from this session's work:** overlaps are ~identical with `LaneChangeMinSpeed=0` AND
+  `lanechange.duration=0` (the original settings). Confirmed A/B.
+- **Root cause is DOCUMENTED and DELIBERATE** (`docs/HIGH-DENSITY-P2G-DESIGN.md` §7): the engine's
+  lane-change safety applies only the **leader**-gap veto, NOT the **follower**-gap veto, because a
+  follower block without SUMO's **cooperative lane-changing** (`MSLCM_LC2013::informBlocker` /
+  `saveBlockerLength` — the follower slows to make room) over-brakes a saturated grid into gridlock
+  (measured: both-halves veto regressed a saturation test 0→30 stuck). So leader-only was chosen and the
+  residual (a change SUMO would block on the follower) was "accepted behaviourally per the owner steer."
+  In the live-city's **saturated random multi-lane flow** that residual shows up as visible overlaps.
+- **Density scales it** (LIVECITY_CARS): 110→3493, 60→1487, 30→903 overlaps — helps but does NOT eliminate.
+- **The real fix = the §7 follow-up: port SUMO cooperative lane-changing** (follower-gap veto + the
+  follower making room). Substantial, parity-sensitive engine feature → **design-first task**, not an
+  ad-hoc patch. This is what gates a *serious* high-density multi-lane live-city demo.
+- **Interim options for a presentable demo now:** (a) lower `LIVECITY_CARS` (e.g. 40–60) — fewer but still
+  some overlaps; (b) restrict the car flow to single-lane corridors (no lane changes → no overlaps);
+  (c) keep it as a moderate-density showcase until the cooperative-LC port lands.
+- Tuning knobs added to `BuildLiveCity` (env, default = production): `LIVECITY_CARS` (concurrent car cap),
+  `LIVECITY_LCMIN` (LaneChangeMinSpeed), `LIVECITY_YIELD` (crossing-yield A/B), `LIVECITY_DUMP="x,y[,r]"`.
+
 ## Phase 3 (later): City3D combined cars+peds + semantic (enter buildings, dine at terraces, meet). Data is
 in the box (buildings.json, entrances, venue table_cluster/service_door). Not started.
