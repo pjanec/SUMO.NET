@@ -22,8 +22,18 @@ evidence). NEEDs: `SUMOSHARP-NEED-dense-flow-gridlock-vs-vanilla.md`,
       byte-identical; anchor `scenarios/76-parking-lot-reuse` (cap-1, veh0 pulls out → veh1 reuses lot 0)
       matches vanilla golden. Full suite green (656 pass). Full `demo_city/box` LOADS + runs to t=800 with
       no "lot index out of range"; two box runs byte-identical (deterministic).
-- [~] **Stage 3 — Gap 1** reroute-on-wrong-lane. PARTIAL FIX LANDED (safe, non-regressing) after 4 passes;
-      full 2× drainage still open. See design §2.3.1 for the full evidence. Summary:
+- [x] **Stage 3 — Gap 1** dead-lane gridlock. **SOLVED (session 2, branch `claude/dense-lane-overlap-fix-5tr4ha`).**
+      2× dense synthetic drains to **0 teleports / 290 arrivals = vanilla parity** (was 10 tp / 275 arr /
+      ~45 stuck); 1× **5→1 teleport / 290 arr** (guard `<=2`). Fix = three faithful parts, all gated on the
+      car being on a DEAD LANE (byte-identical for every golden): (1) `DeadLaneMergeBrakeConstraint` — port
+      of `MSLCM_LC2013::informLeader` `stopSpeed(myLeftSpace)`, decelerate to re-try the merge; (2) boundary
+      reroute (existing, 5 s); (3) `TryRerouteStuckDeadLane` — reroute a yield/red-held dead-lane car just
+      before teleport (90 s gate, separate from the boundary's 5 s; an eager stuck-reroute churns the dense
+      case). Full suite green (657 pass), all goldens byte-identical, deterministic (serial == parallel).
+      Anchor: `scenario.dense.{rou,sumocfg}` + `DenseFlowDeadLaneDrainTests`. See design §2.3.5. Below is the
+      earlier partial-fix history (superseded):
+- [~] ~~Stage 3 partial (superseded by §2.3.5)~~ reroute-on-wrong-lane. PARTIAL FIX after 4 passes.
+      See design §2.3.1 for the full evidence. Summary:
       - Passes 1-2: an INSTANT reroute drains 2× fully (arrived ≈292) — confirms clamp=gridlock — but
         cascades at low density (a small perturbation tips SumoSharp's fragile LC/junction behaviour, so ~100
         cars strand at 1×; some loop, e.g. veh 58 on 109_1 whose every route returns to 109_1). Instant fails

@@ -251,6 +251,47 @@ boundary-crossing in `ExecuteMoveVehicle`; the reactive `TryRerouteFromDeadLane`
 just the route-repair (or removed in favour of the periodic reroute). Measure 1× (≤5) and 2× (drain) and
 diff every golden.
 
+### 2.3.5 SOLVED (2026-07-21, session 2, branch `claude/dense-lane-overlap-fix-5tr4ha`) — vanilla parity
+The §2.3.4 mechanism was implemented and it **cracks the gridlock**: 2× dense synthetic now drains to
+**0 teleports / 290 arrivals**, exactly matching vanilla SUMO 1.20.0 (was 10 tp / 275 arr / ~45 stuck).
+1× stays clean (**5→1 teleport / 290 arr**, guard `<=2`). Full suite green (657 pass), every committed
+golden byte-identical, deterministic (two runs identical; serial == `--max-parallelism 8`).
+
+**Why the earlier reactive-reroute passes stalled, and what changed.** Measuring the instant (gate=0)
+reroute again confirmed it churns BOTH densities (2× tp 3→**18**, 1× tp 5→**18**) — the churn is NOT from
+stopping (gate=0 crosses at speed yet still churns) but from **too many cars spilling onto the alternate
+corridor** because SumoSharp's LC never converged them onto the good (through) lane. That is the missing
+piece §2.3.4 named: SUMO's URGENT strategic change **brakes to find a gap** (`MSLCM_LC2013::informLeader`,
+`stopSpeed(myLeftSpace)`); SumoSharp's strategic LC only ever changed-or-gave-up (the secure-gap veto),
+so dense cars piled onto the dead lane at full speed and hard-deadlocked.
+
+**The fix that landed — three faithful parts, all gated on the car being on a DEAD LANE** (its current
+lane has no connection to its next route edge), a state no committed golden vehicle is ever in ⇒
+byte-identical for every golden by construction:
+1. **`DeadLaneMergeBrakeConstraint`** (plan phase, new): a dead-lane car decelerates via
+   `StopSpeedFor(usableDist)` toward the forced-merge point instead of barreling to the lane end. Port of
+   `informLeader`'s `stopSpeed(myLeftSpace)` (myLeadingBlockerLength = 0). This lets it fall back and
+   re-try the strategic merge onto its through lane each step (and stops the hard slam-and-clamp). ALONE
+   this took 2× from 275→**290** arrivals (full drainage) but left 7 teleports at 1× / 3 at 2× (yield
+   teleports at TL junctions like `-2437_1`→`-2337`, where the brake concentrates cars that then never
+   reach the lane end to trigger the boundary reroute).
+2. **Boundary reroute** (existing, `DeadLaneRerouteWaitSeconds = 5`): a dead-lane car that DOES reach the
+   lane end crosses via its actual lane's connection and reroutes (getBestLanesContinuation semantics).
+3. **`TryRerouteStuckDeadLane`** (execute phase, new, `StuckDeadLaneRerouteWaitSeconds = 90`): a dead-lane
+   car held short of the lane end by a junction yield / red light — which never reaches the boundary —
+   reroutes onto its actual lane's connection **just before time-to-teleport (120 s)**. A SEPARATE, LONGER
+   gate than the boundary path is essential: swept {5, 60, 90, 110} s — an eager stuck-reroute churns the
+   dense case (gate=5 → 2× tp 3→6), while 90 s diverts ONLY the cars that would otherwise jam-teleport,
+   leaving the rest to drain. gate=90 gives 2× **0 tp / 290 arr** and 1× **1 tp / 290 arr**.
+
+Anchor committed: `scenarios/_repro/synthetic-junction2/scenario.dense.{rou,sumocfg}` (325-vehicle 2×
+demand) + `tests/Sim.ParityTests/DenseFlowDeadLaneDrainTests.cs` (asserts 0 tp / ≥290 arr offline via
+SumoShim). `LowDensityTeleportTests` tightened `<=5`→`<=2`.
+
+**Still open (Stage 4, broader):** the full `demo_city/box` runs end-to-end but is not yet at parity
+(SumoSharp 2 tp / 22 arr vs vanilla 0 / 36 at t=800) — additional issues beyond this dead-lane gap
+(other junction/pedestrian/parking dynamics), a separate calibration effort.
+
 ### 2.4 Success criteria (Gap 1)
 On the 2× dense synthetic: SumoSharp teleports ≈ 0 (was 10), no permanent gridlock (halting drains toward
 0 like vanilla, not stuck at ~45), arrivals ≈ vanilla (≈290, was 275). Full `dotnet test Traffic.sln`

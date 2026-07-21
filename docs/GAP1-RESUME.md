@@ -1,5 +1,14 @@
 # GAP1-RESUME.md — single entry point to finish the dense-flow gridlock fix (Gap 1)
 
+> **✅ SOLVED (2026-07-21, session 2, branch `claude/dense-lane-overlap-fix-5tr4ha`).** 2× dense synthetic
+> now drains to **0 teleports / 290 arrivals = vanilla SUMO 1.20.0 parity** (was 10 tp / 275 arr); 1×
+> **5→1 tp / 290 arr**. Full suite green (657 pass), every committed golden byte-identical, deterministic.
+> The fix (three faithful parts gated on the dead-lane condition) is documented in **design §2.3.5** and
+> landed in commits `3f61809` (engine) + `9798904` (anchor test + dense scenario). The rest of this file is
+> the pre-solution diagnosis, kept for history. **Remaining: Stage 4 — the full `demo_city/box` (2 tp /
+> 22 arr vs vanilla 0 / 36) has additional non-dead-lane issues; separate broader calibration.**
+
+
 **Written 2026-07-21 to survive context compaction.** Self-contained: a fresh session should be able to
 resume from this file alone. Companions with the deep detail: `HIGH-DENSITY-CALIBRATION-DESIGN.md`
 (esp. **§2.3.4 — the real SUMO mechanism**, and §2 overall), `DENSE-FLOW-THROUGHPUT-DIAGNOSIS.md`,
