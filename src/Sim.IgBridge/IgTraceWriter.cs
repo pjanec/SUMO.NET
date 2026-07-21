@@ -45,6 +45,8 @@ public sealed class IgTraceWriter : IDisposable
                 _writer.Write(s.X.ToString("0.000", Inv));
                 _writer.Write(",\"y\":");
                 _writer.Write(s.Y.ToString("0.000", Inv));
+                _writer.Write(",\"z\":");
+                _writer.Write(s.Z.ToString("0.000", Inv));
                 _writer.Write(",\"h\":");
                 _writer.Write(s.HeadingDeg.ToString("0.00", Inv));
                 _writer.Write("}\n");
@@ -59,6 +61,8 @@ public sealed class IgTraceWriter : IDisposable
                 _writer.Write(s.X.ToString("0.000", Inv));
                 _writer.Write(",\"y\":");
                 _writer.Write(s.Y.ToString("0.000", Inv));
+                _writer.Write(",\"z\":");
+                _writer.Write(s.Z.ToString("0.000", Inv));
                 _writer.Write(",\"h\":");
                 _writer.Write(s.HeadingDeg.ToString("0.00", Inv));
                 _writer.Write("}\n");

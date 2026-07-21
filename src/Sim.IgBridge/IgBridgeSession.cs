@@ -173,10 +173,12 @@ public sealed class IgBridgeSession
 
             var (sx, sy, sdeg) = _smoother.Smooth(handle, pose.X, pose.Y, pose.HeadingDeg, state.Speed, _frameDt);
 
+            // z (multi-level disambiguation, Q5-revised): from lane geometry via PoseResolver's Pose.Z
+            // (0 on a flat net). The smoother corrects x,y only; z rides the arc geometry, which is smooth.
             var id = _runner.IdOf(handle);
             Emit(_vehNewEmitted.Add(handle)
-                ? IgSample.Created(id, tau, IgEntityModel.Car, sx, sy, sdeg)
-                : IgSample.Updated(id, tau, sx, sy, sdeg));
+                ? IgSample.Created(id, tau, IgEntityModel.Car, sx, sy, pose.Z, sdeg)
+                : IgSample.Updated(id, tau, sx, sy, pose.Z, sdeg));
         }
     }
 
@@ -220,10 +222,12 @@ public sealed class IgBridgeSession
                 continue;
             }
 
+            // Ped z = 0: the crowd is 2-D (holonomic, no surface elevation). Multi-level ped z is a future
+            // surface-mapping item (§ open); on a flat net it is 0 anyway.
             var sid = IgBridgeRunner.PedIdOf(id);
             Emit(_pedNewEmitted.Add(id)
-                ? IgSample.Created(sid, tau, IgEntityModel.Ped, x, y, headingDeg)
-                : IgSample.Updated(sid, tau, x, y, headingDeg));
+                ? IgSample.Created(sid, tau, IgEntityModel.Ped, x, y, 0.0, headingDeg)
+                : IgSample.Updated(sid, tau, x, y, 0.0, headingDeg));
         }
     }
 

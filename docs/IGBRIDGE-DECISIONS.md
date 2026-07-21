@@ -33,6 +33,24 @@ this doc is the delta, not a restatement.
   jump as motion.
 - **Orientation is scalar heading**, so the "quaternion vs yaw-only" branch collapses to yaw-only.
 
+### Revision (post-Q5): z IS on the wire, for multi-level disambiguation
+The owner later clarified the IG **needs z** for **multi-level roads and tunnels**: where a bridge and a
+tunnel share `(x, y)`, only z places the entity on the correct deck. This does **not** revive
+terrain-following (still the IG's job) — z is for *disambiguation*, not ground contact. So the wire is
+`[id, x, y, z, headingDeg, t]`. Sourcing (no engine-core change on the direct-10 Hz path):
+- **Vehicles:** z = `PoseResolver.Resolve`'s `Pose.Z`, sampled from `NetworkLaneSource.LaneShapeZ` — real
+  elevation on a 3-D net, `0.0` on a flat net (the box). Flows automatically; already available.
+- **Peds:** `z = 0` for now — the crowd is 2-D (holonomic). Multi-level ped z needs a future surface-z
+  mapping (see open items).
+
+**Open items (do NOT touch engine core — other sessions are editing lane-change / teleport there):**
+1. Pedestrian surface z on multi-level structures (needs a ped-position→deck-z map; possibly engine or
+   ped-nav support).
+2. Whether an elevated production net's lane z is fully carried by `NetworkLaneSource` (verify on a real
+   3-D net), and whether the DDS-DR wire path (option b) needs z added (`ReplicationLaneShapeSource`
+   currently returns null z).
+3. Coordinate any engine API need for z with the in-flight engine-core sessions rather than editing it here.
+
 ---
 
 ## 2. Refined architecture
@@ -70,8 +88,8 @@ Three record kinds, one JSONL line each, ordered by `t` then by kind (created < 
 equal `t`). All positions planar; heading navi-degrees.
 
 ```jsonc
-{"k":"new", "id":"veh0", "t":12.30, "model":"car",  "x":100.4, "y":22.1, "h":271.3}  // entity-created
-{"k":"upd", "id":"veh0", "t":12.35, "x":101.1, "y":22.0, "h":271.0}                   // entity-updated
+{"k":"new", "id":"veh0", "t":12.30, "model":"car",  "x":100.4, "y":22.1, "z":0.0, "h":271.3}  // entity-created
+{"k":"upd", "id":"veh0", "t":12.35, "x":101.1, "y":22.0, "z":0.0, "h":271.0}                   // entity-updated
 {"k":"del", "id":"veh0", "t":40.10}                                                    // entity-removed
 ```
 - `t` is **sim time** (seconds). It is the sole timing authority; a sample's `(x,y)` is the pose **at

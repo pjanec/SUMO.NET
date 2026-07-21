@@ -21,11 +21,18 @@ public enum IgEntityModel : byte
 }
 
 // One IG-native record. A value type (no allocation per emit); the same shape is flushed to the JSONL
-// trace (T1.2) and pushed onto the in-memory ring. `Model` is meaningful only on `New`; `X/Y/H` are
+// trace (T1.2) and pushed onto the in-memory ring. `Model` is meaningful only on `New`; `X/Y/Z/H` are
 // meaningful on `New`/`Upd` and ignored on `Del`.
+//
+// `Z` (docs/IGBRIDGE-DECISIONS.md §1 Q5, revised): the IG owns terrain-FOLLOWING, but on MULTI-LEVEL roads
+// and tunnels (x, y) is ambiguous -- a bridge and the tunnel beneath share it -- so the IG needs the
+// engine's z to place the entity on the correct deck. Sourced from lane geometry via PoseResolver's
+// Pose.Z (NetworkLaneSource.LaneShapeZ): real elevation on a 3-D net, 0.0 on a flat net (the box). No
+// engine-core change is needed for the direct-10 Hz vehicle path; ped z stays 0 (the crowd is 2-D) pending
+// a future surface-z mapping (§ open items).
 public readonly struct IgSample
 {
-    public IgSample(IgRecordKind kind, string id, double t, IgEntityModel model, double x, double y, float headingDeg)
+    public IgSample(IgRecordKind kind, string id, double t, IgEntityModel model, double x, double y, double z, float headingDeg)
     {
         Kind = kind;
         Id = id;
@@ -33,6 +40,7 @@ public readonly struct IgSample
         Model = model;
         X = x;
         Y = y;
+        Z = z;
         HeadingDeg = headingDeg;
     }
 
@@ -42,14 +50,15 @@ public readonly struct IgSample
     public IgEntityModel Model { get; }
     public double X { get; }
     public double Y { get; }
+    public double Z { get; }
     public float HeadingDeg { get; }
 
-    public static IgSample Created(string id, double t, IgEntityModel model, double x, double y, float headingDeg)
-        => new(IgRecordKind.New, id, t, model, x, y, headingDeg);
+    public static IgSample Created(string id, double t, IgEntityModel model, double x, double y, double z, float headingDeg)
+        => new(IgRecordKind.New, id, t, model, x, y, z, headingDeg);
 
-    public static IgSample Updated(string id, double t, double x, double y, float headingDeg)
-        => new(IgRecordKind.Upd, id, t, default, x, y, headingDeg);
+    public static IgSample Updated(string id, double t, double x, double y, double z, float headingDeg)
+        => new(IgRecordKind.Upd, id, t, default, x, y, z, headingDeg);
 
     public static IgSample Removed(string id, double t)
-        => new(IgRecordKind.Del, id, t, default, 0.0, 0.0, 0f);
+        => new(IgRecordKind.Del, id, t, default, 0.0, 0.0, 0.0, 0f);
 }
