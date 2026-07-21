@@ -34,8 +34,8 @@ using (var trace = new IgTraceWriter(tracePath))
         double.TryParse(Environment.GetEnvironmentVariable(k), System.Globalization.CultureInfo.InvariantCulture, out var v) ? v : def;
     var kin = new Sim.Viewer.Motion.KinematicHeadingParams
     {
-        PositionSmoothTime = EnvD("IGBRIDGE_POS_SMOOTH", 0.18),
-        HeadingSmoothTime = EnvD("IGBRIDGE_HEAD_SMOOTH", 0.12),
+        PositionSmoothTime = EnvD("IGBRIDGE_POS_SMOOTH", 0.40),
+        HeadingSmoothTime = EnvD("IGBRIDGE_HEAD_SMOOTH", 0.0),
     };
     var session = new IgBridgeSession(runner, emit, trace, retainAll: true, kinematics: kin);
     session.DebugVehicleId = Environment.GetEnvironmentVariable("IGBRIDGE_DEBUG_VEH"); // e.g. "v2"

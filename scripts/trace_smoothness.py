@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 import json, math, sys
 BOXLEN=5.0; DT=0.05
+PATH=sys.argv[1] if len(sys.argv)>1 else 'artifacts/igbridge/trace.jsonl'
 em={}
-for line in open('artifacts/igbridge/trace.jsonl'):
+for line in open(PATH):
     r=json.loads(line)
     if r['id'].startswith('v') and r['k'] in ('new','upd'):
         em.setdefault(r['id'],[]).append((r['t'],r['x'],r['y'],r['h']))

@@ -74,6 +74,8 @@ public sealed class KinematicHeading
         public double Fvy;
         public double Rx;   // rear-axle position
         public double Ry;
+        public double PrevFaX; // previous front-axle position (for substepped drag integration)
+        public double PrevFaY;
         public float Deg;   // last (emitted, smoothed) body heading (navi)
         public double DegVel; // angular SmoothDamp velocity for the heading low-pass
         public double EaseTimer; // seconds of lane-change ease remaining
@@ -113,7 +115,6 @@ public sealed class KinematicHeading
         double speed, double length, float dt, bool lateralEvent = false)
     {
         var lwb = _p.WheelbaseFactor * length;
-        var frontOver = _p.FrontOverhangFactor * length;
 
         _state.TryGetValue(handle, out var s);
 
@@ -166,12 +167,10 @@ public sealed class KinematicHeading
         var smFrontX = s.Fx;
         var smFrontY = s.Fy;
 
-        // Front axle: inset from the smoothed front reference by the front overhang, along the CURRENT body
-        // axis (previous frame's heading; the lane heading on the first frame). A small (~0.15*len) term.
-        var insetDeg = s.Init ? s.Deg : laneHeadingDeg;
-        var (ix, iy) = Dir(insetDeg);
-        var faX = smFrontX - frontOver * ix;
-        var faY = smFrontY - frontOver * iy;
+        // Front axle = the (error-blended) lane front reference. The previous prev-heading overhang inset
+        // was dropped: it fed the drag a laterally-offset front and broke the no-slip constraint.
+        var faX = smFrontX;
+        var faY = smFrontY;
 
         if (!s.Init)
         {
@@ -179,30 +178,27 @@ public sealed class KinematicHeading
             s.Rx = faX - lwb * lx;
             s.Ry = faY - lwb * ly;
             s.Deg = laneHeadingDeg;
+            s.PrevFaX = faX;
+            s.PrevFaY = faY;
             s.Init = true;
         }
 
-        var vx = faX - s.Rx;
-        var vy = faY - s.Ry;
-        var d = Math.Sqrt(vx * vx + vy * vy);
-
-        // Teleport / handle reuse: the front axle jumped far beyond a plausible step + the link length.
-        // Dragging across that gap would fling the body; reseed the rear from the lane heading instead.
-        if (d > lwb + _p.ReseedJumpMeters)
+        // Teleport / handle reuse: front jumped implausibly far -> reseed the rear from the lane heading.
+        if ((faX - s.Rx) * (faX - s.Rx) + (faY - s.Ry) * (faY - s.Ry)
+            > (lwb + _p.ReseedJumpMeters) * (lwb + _p.ReseedJumpMeters))
         {
             var (lx, ly) = Dir(laneHeadingDeg);
             s.Rx = faX - lwb * lx;
             s.Ry = faY - lwb * ly;
             s.Deg = laneHeadingDeg;
-            vx = faX - s.Rx;
-            vy = faY - s.Ry;
-            d = lwb;
+            s.PrevFaX = faX;
+            s.PrevFaY = faY;
         }
 
         float rawDeg;
-        if (d < 1e-6 || speed < _p.HoldSpeed)
+        if (speed < _p.HoldSpeed)
         {
-            // Degenerate / near-stationary: hold heading (no spinning at a red light), keep the rear rigid.
+            // Near-stationary: hold heading (no spin at a red light), keep the rear rigid behind.
             rawDeg = s.Deg;
             var (hx, hy) = Dir(rawDeg);
             s.Rx = faX - lwb * hx;
@@ -210,25 +206,45 @@ public sealed class KinematicHeading
         }
         else
         {
-            // Drag: pull the rear axle toward the front axle, staying exactly `lwb` behind, along the
-            // previous rear->front direction -> no lateral slip. Heading = the (new) rear->front axis.
-            var ux = vx / d;
-            var uy = vy / d;
-            s.Rx = faX - lwb * ux;
-            s.Ry = faY - lwb * uy;
+            // SUBSTEPPED trailer drag: integrate the rear axle along the front's motion this frame in N fine
+            // steps. The rear velocity stays along the body axis (no lateral slip) BY CONSTRUCTION; a single
+            // big step lets the rear cut the corner and appear to "steer"/skid, so we substep to make the
+            // discrete no-slip accurate even at high yaw rate.
+            const int n = 8;
+            for (var k = 1; k <= n; k++)
+            {
+                var f = (double)k / n;
+                var ffx = s.PrevFaX + (faX - s.PrevFaX) * f;
+                var ffy = s.PrevFaY + (faY - s.PrevFaY) * f;
+                var vvx = ffx - s.Rx;
+                var vvy = ffy - s.Ry;
+                var dd = Math.Sqrt(vvx * vvx + vvy * vvy);
+                if (dd > 1e-9)
+                {
+                    s.Rx = ffx - lwb * (vvx / dd);
+                    s.Ry = ffy - lwb * (vvy / dd);
+                }
+            }
+
             rawDeg = Navi(faX - s.Rx, faY - s.Ry);
         }
 
-        // Heading low-pass (critically-damped, angular): removes the last residual micro-steps that the
-        // full-length body lever would amplify into a tail wiggle.
+        s.PrevFaX = faX;
+        s.PrevFaY = faY;
+
+        // Heading low-pass (critically-damped, angular): removes any residual micro-step. Off by default.
         var delta = ((rawDeg - s.Deg + 540f) % 360f) - 180f;
         var smoothedDelta = SmoothDamp(0.0, delta, ref s.DegVel, _p.HeadingSmoothTime, dt);
         var outDeg = (float)(((s.Deg + smoothedDelta) % 360.0 + 360.0) % 360.0);
         s.Deg = outDeg;
         _state[handle] = s;
 
-        var cx = (faX + s.Rx) * 0.5; // vehicle center ~ midpoint of the two axles
-        var cy = (faY + s.Ry) * 0.5;
+        // Vehicle CENTER placed so the front BUMPER sits exactly on the lane front reference (faX): the body
+        // center is half a length behind the front bumper along the body heading. This makes the front
+        // "stick" to the lane while the rear follows the drag heading.
+        var (odx, ody) = Dir(outDeg);
+        var cx = faX - length * 0.5 * odx;
+        var cy = faY - length * 0.5 * ody;
         return new KinematicPose(cx, cy, smFrontX, smFrontY, s.Rx, s.Ry, outDeg);
     }
 

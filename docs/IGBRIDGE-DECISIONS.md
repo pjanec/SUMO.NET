@@ -208,7 +208,27 @@ vehicles clean, 80/85 at ≥4 m/s²):
    car yaws ~10° into a lane change, not ~25). Turns never set this, so they stay crisp.
 A residual tail (~5/85: departure/complex-swerve edge cases) remains for later refinement.
 
-Both additions are renderer-side, outside `Sim.Core`'s parity path; the offline `dotnet test` gate and
+### 5.5 As-built (no-slip fidelity — owner: "rear wheels look steered, front sticks / rear skids")
+§5.4 fixed heading smoothness, but the owner still read the *rear* as skidding — the visual signature of a
+rear that swings **outward** instead of tracking inside. Two geometry bugs caused it:
+1. **The single-step drag under-tracked at high yaw rate.** Pulling the rear to `Lwb` behind the front in one
+   discrete jump per frame lets the rear cut across the corner (an apparent rear-steer). Fixed by
+   **substepping** the tow: the rear is integrated along the front's *within-frame* motion in `N = 8` fine
+   steps (`PrevFa → Fa`), so the discrete no-slip constraint holds even on a hairpin.
+2. **A laterally-offset front axle.** The old front-overhang inset displaced the drag's front pivot sideways
+   (it used the previous heading), injecting artificial slip. Dropped — the drag now pivots on the
+   error-blended front reference directly. Vehicle **center** is placed half a length behind the front
+   bumper along the body heading, so the front bumper rides the lane while the rear off-tracks.
+
+**Verified against an ideal bicycle (not eyeballed).** For all 28 clean ~90° junction turns in the box run,
+the emitted body's drawn rear-bumper was compared to a ground-truth no-slip bicycle integrated from the same
+front path. They match to **<0.15°**: rear-bumper slip median 10.12° (emitted) vs 10.25° (ideal), max
+72.74° vs 72.74°. So the residual rear-bumper motion is the *physically-correct tail swing* every real car
+has on a 90° turn, not skid. Rear tracks inside (rear/front path-length ratio median 0.97) and heading stays
+smooth (median 0 yaw-accel reversals). `PositionSmoothTime` retuned to 0.40 s (matching §5.4); heading
+low-pass off (`HeadingSmoothTime = 0`, the substepped drag already yields a clean heading).
+
+All three additions are renderer-side, outside `Sim.Core`'s parity path; the offline `dotnet test` gate and
 every golden stay byte-identical (§6).
 
 ---
