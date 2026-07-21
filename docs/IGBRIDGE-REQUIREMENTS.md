@@ -1,13 +1,13 @@
-# Spectacle ↔ proprietary IG binding — REQUIREMENTS (the WHAT)
+# IgBridge ↔ proprietary IG binding — REQUIREMENTS (the WHAT)
 
 Reference/spec for a new SumoSharp output binding: feeding a **proprietary Image Generator (IG)** from an
-external .NET simulation host called **Spectacle**, with all SUMO-core motion artifacts smoothed out. This
-document is the WHAT (requirements + acceptance). The HOW is in `SPECTACLE-IG-BINDING-DESIGN.md`.
+external .NET simulation host called **IgBridge**, with all SUMO-core motion artifacts smoothed out. This
+document is the WHAT (requirements + acceptance). The HOW is in `IGBRIDGE-DESIGN.md`.
 
 ## 1. Context
-- **SumoSharp** (this repo) is embedded as a library inside **Spectacle**, an existing **.NET 6** C#
+- **SumoSharp** (this repo) is embedded as a library inside **IgBridge**, an existing **.NET 6** C#
   simulation host that already knows the full proprietary IG protocol and how to transmit to the real IG.
-- Spectacle is **tick-based, ~20 Hz, variable Δt** (it uses the previous frame's duration as the next
+- IgBridge is **tick-based, ~20 Hz, variable Δt** (it uses the previous frame's duration as the next
   frame's delta; fluctuates on Windows 11). It is **not** a fixed-step loop.
 - SumoSharp's core is to be **ticked at a fixed 10 Hz** to provide smooth-enough source samples.
 - Entity counts are **low for this use case: up to ~1000 vehicles + pedestrians combined.** The highly
@@ -23,7 +23,7 @@ document is the WHAT (requirements + acceptance). The HOW is in `SPECTACLE-IG-BI
 - There is a **configurable time offset (delay)**; in practice the IG is run **delayed a bit** so it
   **interpolates rather than extrapolates** (extrapolation is what makes SUMO output look bad).
 - Consequence (load-bearing): **the IG cannot fix any artifact.** Whatever smoothing is needed must be
-  **baked into the sample stream Spectacle emits**, such that naive linear/slerp interpolation between any
+  **baked into the sample stream IgBridge emits**, such that naive linear/slerp interpolation between any
   two consecutive emitted samples already looks correct.
 
 ## 3. The artifacts to smooth (why this is non-trivial)
@@ -35,17 +35,17 @@ artifacts a dumb interpolator exposes:
   per-segment tangent, so orientation **jumps** at each vertex.
 - **Orientation jumps generally** from coarse polyline sampling and from lane-relative heading snaps.
 - (Related, tracked separately: dense multi-lane car *overlaps* — see `LANE-CHANGE-OVERLAP-SPEC.md`. Out of
-  scope here; Spectacle smooths *motion*, it does not fix the sim.)
+  scope here; IgBridge smooths *motion*, it does not fix the sim.)
 
 ## 4. Reuse mandate (fix once, fix both)
 The Godot **City3D** viewer and any native viewer already smooth these artifacts with a shipped,
 engine-agnostic reconstruction stack (`Sim.Viewer.Motion` = `DrClock`/`DrPoseSmoother`, `Sim.Core.PoseResolver`,
-documented in `SUMOSHARP-VIEWER-DR-SMOOTHING.md`). **Spectacle must reuse the same reconstruction routines**
+documented in `SUMOSHARP-VIEWER-DR-SMOOTHING.md`). **IgBridge must reuse the same reconstruction routines**
 so that a fix to a junction-turn / lane-change / heading glitch fixes the IG feed *and* the City3D viewer
-together. No forked, Spectacle-private smoothing math.
+together. No forked, IgBridge-private smoothing math.
 
 ## 5. Deliverable — a PoC, no real IG required
-Build a **Spectacle-like proof-of-concept app** that:
+Build a **IgBridge-like proof-of-concept app** that:
 1. Embeds SumoSharp; ticks the core at fixed 10 Hz.
 2. Converts each vehicle's and pedestrian's motion into **IG-native `[id, position, orientation, timestamp]`
    samples**, applying all smoothing needed to hide the §3 artifacts, **reusing the §4 routines**.
@@ -55,7 +55,7 @@ Build a **Spectacle-like proof-of-concept app** that:
    would show. (This is the part that can be done well here with no proprietary dependency.)
 
 ## 6. Functional requirements
-- **R1** — Fixed 10 Hz SumoSharp core, decoupled from Spectacle's variable ~20 Hz wall-clock tick
+- **R1** — Fixed 10 Hz SumoSharp core, decoupled from IgBridge's variable ~20 Hz wall-clock tick
   (the sim clock must not be driven by Windows frame jitter; output must stay deterministic given the same
   scenario + seed + 10 Hz schedule).
 - **R2** — Per-entity, per-emit **smooth pose** `(position, orientation)` for both vehicles and pedestrians,
@@ -85,10 +85,10 @@ Build a **Spectacle-like proof-of-concept app** that:
 - **Parity untouched**: this is a consumer of engine output; it must not change any committed golden or the
   offline `dotnet test` gate. All smoothing lives outside `Sim.Core`'s parity path.
 - **.NET compatibility**: the reused reconstruction library already targets `net8.0` + `netstandard2.1`;
-  confirm it (and the PoC's shared parts) are consumable from Spectacle's **.NET 6**.
+  confirm it (and the PoC's shared parts) are consumable from IgBridge's **.NET 6**.
 
 ## 8. Out of scope
-- The real proprietary IG, its wire transport, and its non-simplified property set (Spectacle owns those).
+- The real proprietary IG, its wire transport, and its non-simplified property set (IgBridge owns those).
 - Fixing simulation-level defects (e.g. the dense multi-lane overlap — `LANE-CHANGE-OVERLAP-SPEC.md`).
 - The optimized DDS DR protocol itself (this binding deliberately uses the simple per-sample protocol).
 
