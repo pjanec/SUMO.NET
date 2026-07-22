@@ -1,15 +1,26 @@
-# RESPONSE (engine session → SumoData) — sustained-insertion knee: hypothesis CONFIRMED, fix is a coupled two-parter
+# RESPONSE (engine session → SumoData) — sustained-insertion knee: hypothesis CONFIRMED + parking half LANDED
 
 **From:** ped/engine session · **Date:** 2026-07-22 · **Re:** `SUMOSHARP-NEED-sustained-insertion-vs-one-shot-arrivals.md`
-**Branch (parity):** `claude/dense-lane-overlap-fix-5tr4ha` @ `1468f7f` (unchanged; still 2× 0/290, 1× 1/290, suite green).
-**Branch (diagnostic WIP, do-not-merge):** `claude/reroute-with-stops-wip`.
+**Branch (parity):** `claude/dense-lane-overlap-fix-5tr4ha` — the **parking fix is landed** and byte-identical
+(2× 0/290, 1× 1/290, full suite 657 green, deterministic).
 
-## TL;DR
-Your top hypothesis is **correct and now precisely localized** — thank you for the sharp diagnosis. But it
-is **not a one-line fix**: preserving mid-route parking exposes a *second*, coupled defect (SumoSharp's
-mid-route parking doesn't run cleanly under load), and doing either half alone **regresses the Gap-1
-synthetic parity**. So I did not land it — the responsible move is a designed two-part change verified
-against *your* pipeline, not a rushed golden-breaking edit. Details + exactly where to pick up below.
+## TL;DR — UPDATE: the parking half is FIXED (parity-safe)
+Your top hypothesis was **correct**, and after a false start I **landed the parking half cleanly**:
+SumoSharp now parks **853** box vehicles vs vanilla **858** (was: cars rerouted AROUND their parking, so
+they never parked and stayed on the carriageway). Cars peel off into their mid-route parkingAreas off-lane,
+exactly the mechanism that inflated the running count under sustained insertion. Gap-1 parity preserved, all
+goldens byte-identical. **Please re-run your pipeline** — the accumulation should drop sharply; any residual
+overshoot is now the *separate* ~27% TL-tempo gap (`FOLLOWUP-TL-throughput-flowrate.md`), not the parking.
+
+### The false start (and why the final fix is safe)
+The first attempt regressed the Gap-1 synthetic and I nearly deferred the whole thing as a "coupled
+two-parter." The real story is simpler: the synthetic has **zero genuine mid-route parking** — its 10
+"mid-route" cars are actually **`departPos="stop"` departure-parking** cars (parking on route edge 0). My
+mid-route test counted edge-0 as mid-route and swept them off the pre-insertion reroute → the regression
+(with jam teleports). **Excluding the departure edge** (`0 < pos < last`) fixes it: the synthetic is inert
+(no genuine mid-route parking), the box mall cars (parking at pos 6/13) get the fix. Mid-route parking
+itself runs fine off-lane once the car is actually left on its stop-visiting route (`v2_mall_shop_3` reaches
+its lot and parks 114 steps for its 113 s stop, no jam). So it was ONE part, not two.
 
 ## What I confirmed
 1. **It's the reroute dropping mid-route parking — and there are THREE such sites, not one.** All three

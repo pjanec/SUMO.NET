@@ -336,7 +336,14 @@ destination. Deferred here: it must not regress the Gap-1 synthetic parity (§2.
 design pass. Note `--stop-output` is not implemented in SumoSharp, so parking must be verified via
 trajectories/tripinfo, not stopinfo. Also minor: box teleports 3 vs vanilla 1.
 
-### 2.3.7 SUSTAINED-INSERTION (2026-07-22, session 3) — SumoData NEED confirmed; fix is a COUPLED two-parter
+### 2.3.7 SUSTAINED-INSERTION (2026-07-22, session 3) — SumoData NEED: parking half LANDED (parity-safe)
+**UPDATE:** the parking half is fixed and committed (byte-identical). It was NOT a coupled two-parter — the
+regression below was a mis-classification (departPos="stop" edge-0 parking counted as mid-route). Excluding
+the departure edge (`0 < pos < last` in `HasUnreachedMidRouteParkingStop`) makes the synthetic inert (it has
+ZERO genuine mid-route parking) while the box mall cars get the fix: SumoSharp now parks 853 box vehicles vs
+vanilla 858 (was ~0 mall parks); `v2_mall_shop_3` reaches its lot and parks 114 steps off-lane, no jam. Gap-1
+parity 2×0/290 1×1/290, suite green, deterministic. Remaining sustained-insertion overshoot (if any) is the
+separate ~27% TL-tempo residual. The original coupled-two-parter framing below is kept for the record.
 SumoData ran their sub-area **calibration** pipeline (sustained insertion held at the calibrated density
 knee, not one-shot demand) on the box crop and reported: SumoSharp `1468f7f` overshoots **540%** of target
 with **364 teleports** vs vanilla **100.1% / 0** (their metric ≠ the Stage-4 one-shot arrivals metric,
