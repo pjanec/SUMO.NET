@@ -22,6 +22,12 @@ public sealed class IgBridgeConfig
     public int Seed { get; init; } = 42;
     public int HistoryCapacity { get; init; } = 8;    // per-vehicle DR ring depth
 
+    // Feed decimation: sample core state into the reconstruction history only every Nth tick. The core
+    // still STEPS every tick (dynamics stay correct at 10 Hz), but the reconstruction sees a coarser feed --
+    // this models a low-rate shipped/DDS update stream, so we can verify the prediction-driven reconstruction
+    // stays visually smooth from a 1 Hz feed (N=10). 1 = every tick (10 Hz feed, the default).
+    public int FeedSampleEveryN { get; init; } = 1;
+
     // ---- pedestrian stream (PedStream.cs): a deterministic, always-populated PathArc walker crowd
     // synthesized over the same box net, mirroring SceneGen.BuildLiveCity's ped setup minus its
     // System.Random-seeded demand generator -- see PedStream's class remarks for why a monotonic trip
@@ -118,6 +124,7 @@ public sealed class IgBridgeRunner
     private readonly IReadOnlyList<RouteDemandEntry> _demand;
     private readonly int _historyCapacity;
     private readonly double _stepLength;
+    private readonly int _sampleEveryN;
 
     private readonly Dictionary<VehicleHandle, VehicleSampleHistory> _histories = new();
     private readonly Dictionary<VehicleHandle, string> _idByHandle = new();
@@ -139,6 +146,7 @@ public sealed class IgBridgeRunner
         Lanes = new NetworkLaneSource(Network);
         _historyCapacity = config.HistoryCapacity;
         _stepLength = config.StepLength;
+        _sampleEveryN = Math.Max(1, config.FeedSampleEveryN);
 
         _engine = new Engine { Seed = (ulong)config.Seed };
         // StepLength ONLY comes from the config's <step-length>; teleport OFF and sigma=0 for a clean,
@@ -179,6 +187,8 @@ public sealed class IgBridgeRunner
     public NetworkLaneSource Lanes { get; }
     public double SimTime => _engine.CurrentTime;
     public int StepCount => _engine.StepCount;
+    // True on ticks whose state was sampled into the reconstruction history + raw stream (feed decimation).
+    public bool IsSampleTick { get; private set; } = true;
     public int PendingDemand => _demand.Count - _cursor;
 
     public IReadOnlyDictionary<VehicleHandle, VehicleSampleHistory> VehicleHistories => _histories;
@@ -237,6 +247,8 @@ public sealed class IgBridgeRunner
 
         // 2) one fixed tick.
         _engine.Step();
+        // Whether this tick's state is sampled into the reconstruction/raw feed (feed decimation).
+        IsSampleTick = (_engine.StepCount % _sampleEveryN) == 0;
 
         // 3) append one sample per ACTIVE vehicle; first appearance == spawn.
         var current = new HashSet<VehicleHandle>();
@@ -267,6 +279,15 @@ public sealed class IgBridgeRunner
                 _histories[handle] = history;
                 _dims[handle] = (lengths[i], widths[i]); // once per vehicle -- for PoseResolver ChordHeading
                 _spawnedThisTick.Add(new SpawnInfo(handle, IdOf(handle), IgEntityModel.Car));
+            }
+
+            // Feed decimation: only sample into the reconstruction history (and the raw comparison stream)
+            // every Nth tick, so both the smoothed and the raw scenes see the SAME coarse feed rate -- a fair
+            // A/B of "prediction-reconstructed vs naive-interpolated" at 1 Hz. The core has already stepped,
+            // so the dynamics are the true 10 Hz ones regardless.
+            if (!IsSampleTick)
+            {
+                continue;
             }
 
             var n = _engine.GetUpcomingLanes(handle, upcoming);

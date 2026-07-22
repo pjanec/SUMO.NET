@@ -24,6 +24,11 @@ var busLen = double.TryParse(Environment.GetEnvironmentVariable("IGBRIDGE_BUS_LE
 // IGBRIDGE_BUS_VCLASS: bus (12 m) | coach (14 m) | truck (7.1 m) | trailer (16.5 m rigid). Length still
 // from IGBRIDGE_BUS_LEN. (No true articulation -- SUMO/SumoSharp model one rigid length; see docs.)
 var busVClass = Environment.GetEnvironmentVariable("IGBRIDGE_BUS_VCLASS")?.Trim() is { Length: > 0 } bvc ? bvc : "bus";
+// Feed rate (Hz) sampled into the reconstruction + raw stream. Core always steps at 10 Hz; this decimates
+// the FEED. IGBRIDGE_FEED_HZ=1 => sample every 10th tick (a 1 Hz shipped-update test). Default 10 (every tick).
+var feedHz = double.TryParse(Environment.GetEnvironmentVariable("IGBRIDGE_FEED_HZ"),
+    System.Globalization.CultureInfo.InvariantCulture, out var _fh) && _fh > 0 ? _fh : 10.0;
+var feedN = Math.Max(1, (int)Math.Round(10.0 / feedHz));
 var cfg = new IgBridgeConfig(netPath, rouPath)
 {
     StepLength = 0.1,
@@ -32,10 +37,20 @@ var cfg = new IgBridgeConfig(netPath, rouPath)
     BusVehicleIds = busIds,
     BusLengthMeters = busLen,
     BusVClass = busVClass,
+    FeedSampleEveryN = feedN,
 };
 Console.WriteLine($"scenario={scenarioRel}  net={Path.GetFileName(netPath)}  rou={Path.GetFileName(rouPath)}  peds={enablePeds}"
     + (busIds.Length > 0 ? $"  buses=[{string.Join(",", busIds)}]@{busLen}m" : ""));
-var emit = new IgEmitConfig { EmitHz = 20.0, LookaheadSeconds = 0.1 };
+// IgBridge output rate to the IG. Default 20 Hz; IGBRIDGE_EMIT_HZ=10 tests a coarser emit into the FakeIg.
+var emitHz = double.TryParse(Environment.GetEnvironmentVariable("IGBRIDGE_EMIT_HZ"),
+    System.Globalization.CultureInfo.InvariantCulture, out var _eh) && _eh > 0 ? _eh : 20.0;
+// The reconstruction query must stay behind the newest BUFFERED sample, which at a decimated feed lags
+// SimTime by up to one feed interval. So the emit lookahead tracks the feed interval (0.1 s at 10 Hz -- the
+// unchanged default; 1.0 s at a 1 Hz feed). Without this, a coarse-feed query runs past `newest` and the
+// emitter spuriously retires still-live vehicles.
+var lookaheadSec = Math.Max(0.1, feedN * 0.1);
+var emit = new IgEmitConfig { EmitHz = emitHz, LookaheadSeconds = lookaheadSec };
+Console.WriteLine($"feedHz={10.0 / feedN:F1} (sample every {feedN} ticks, lookahead {lookaheadSec:F1}s)  emitHz={emitHz:F1}");
 var igCfg = new FakeIgConfig { DelaySeconds = 0.75, JumpThresholdMeters = 8.0, RenderHz = 60.0 };
 
 var Steps = int.TryParse(Environment.GetEnvironmentVariable("IGBRIDGE_STEPS"), out var _st) ? _st : 1200; // 120 s @ 10 Hz
@@ -85,7 +100,11 @@ using (var trace = new IgTraceWriter(tracePath))
     for (var step = 0; step < Steps; step++)
     {
         runner.Tick();
-        raw.Ingest(runner);
+        // Decimate the raw comparison stream to the same feed rate as the reconstruction (fair A/B).
+        if (runner.IsSampleTick)
+        {
+            raw.Ingest(runner);
+        }
         session.Advance();
     }
 
