@@ -9,7 +9,7 @@ Legend: [ ] todo · [~] in progress · [x] done (success conditions met)
 ## S0 — baseline + facade extraction
 - [x] T0.1 Capture DrPoseSmoother metric baseline (Raylib) ✓ (see "S1 metric table" below; junction `44`/vW + lane-change `12`/follow, loopback `--trace-veh`)
 - [x] T0.2 Extract `KinematicReconstructor` into `Sim.Viewer.Motion`; IgBridge trace byte-identical to v5 ✓ (verified: byte-diff clean, deterministic, Motion 11/11, IgBridge 11/11, Parity 654/4)
-- [ ] T0.3 Facade unit tests (straight / junction / lane-change / stop / coarse-vs-dense)
+- [x] T0.3 Facade unit tests (straight / junction / lane-change / stop / coarse-vs-dense) ✓ (`tests/Sim.Viewer.Motion.Tests/KinematicReconstructorTests.cs`: straight = center L/2 behind front + stable heading + no drift; stop = no creep + heading held; lane-change ease = perpendicular snap eased over multiple frames, not jumped; coarse-vs-dense = wide-heading straddle reclassified out of the lane-change path under CoarseFeed while near-parallel unchanged, driven through the full `Resolve(DrClock.Resolved)` path on in-memory geometry; the junction-arc end-to-end case is covered by `CityLib.Tests/ReconstructorS2Tests`)
 
 ## S1 — Raylib 2D swap
 - [x] T1.1 Confirm box pivot (FRONT-anchored — `Renderer.cs:458-472`); wire the facade (loopback + remote) ✓ (build green; loopback+remote headless clean on `09-traffic-light` + `44-multilane-junction-turn`, no exceptions)
@@ -55,15 +55,43 @@ At any threshold that isolates *visible* jerk (≥300°/s²) the after-median is
 - determinism: fixed frame-dt + fixed packet stream → bit-identical ReconstructedVehicle transforms across two runs.
 
 ## S3 — tune, prove, sign-off
-- [ ] T3.1 Render-rate + stutter robustness (30/60/144 Hz + stall)
-- [ ] T3.2 Lock defaults + commit metric regression check
-- [ ] T3.3 Docs updated + owner desktop sign-off; decide DrPoseSmoother deletion
+- [x] T3.1 Render-rate + stutter robustness (30/60/144 Hz + stall) ✓ (`tests/Sim.Viewer.Motion.Tests/KinematicReconstructorTests.cs`: `RenderRate_ConstantCurvatureTurn_IsSmoothAtEveryRate` theory at 30/60/144 Hz — center stays L/2 behind front, max yaw-accel < 120 deg/s², yaw-rate converges to the true turn rate at every rate; `Stutter_LongFrame_NoSpikeNoNaN` — a 0.25 s frame stays < 7 m reseed threshold, no NaN, heading held)
+- [x] T3.2 Lock defaults + commit metric regression check ✓ (locked-defaults table below; the Motion unit tests are the committed regression guard — 19/19 green: 11 existing + 8 new facade/robustness cases)
+- [~] T3.3 Docs updated (SUMOSHARP-VIEWER-DR-SMOOTHING §11 as-built, DEMO-CITY3D-DESIGN data path, both package READMEs) ✓ — **owner desktop sign-off (Godot 3D + Raylib 2D) still pending**; DrPoseSmoother deletion already resolved (Q1, done in S1/T1.4)
+
+### Locked defaults — shipped `KinematicReconstructor` config (regression-guarded by the Motion unit tests)
+These are the v5-tuned values every consumer ships with. `KinematicReconstructor` properties (facade-level):
+
+| property | shipped value | who sets it |
+|---|---|---|
+| `LookAheadMeters` | 0.0 (viewers) · 3.0 (IgBridge) | viewers keep the facade default 0; IgBridge host sets 3.0 (`IGBRIDGE_LOOKAHEAD`) |
+| `LookAheadLengthFactor` | 0.5 | facade default (eff. look-ahead = `max(LookAheadMeters, 0.5·length)`) |
+| `MaxAnticipationLeadDeg` | 70 | facade default |
+| `MaxStraddleLaneChangeHeadingDeg` | 20 | facade default (coarse-feed junction-vs-lane-change discriminator threshold) |
+| `CoarseFeed` | **true** (all three viewers + IgBridge decimated feed) | Raylib `RenderHelpers`, City3D `Reconstructor`, `Sim.Viewer` loopback/remote all set `CoarseFeed = true` |
+| `AlwaysSplitJunctionStraddle` | false | facade default (opt-in only; would change the v5 baseline) |
+
+`KinematicHeadingParams` tunables (the bicycle core, shipped defaults — mirror `SUMOSHARP-VIEWER-DR-SMOOTHING.md` §9 / `IGBRIDGE-DECISIONS.md` §5.3):
+
+| tunable | value | tunable | value |
+|---|---|---|---|
+| `WheelbaseFactor` | 0.6 | `LaneChangeDecayTau` | 2.0 s |
+| `HoldSpeed` | 0.5 m/s | `LaneChangeSnapMeters` | 1.5 m |
+| `ReseedJumpMeters` | 7.0 m | `LaneChangeErrorCapMeters` | 3.4 m |
+| `PositionSmoothTime` | 0.60 s | `TurnInSmoothTime` | 0.0 (off) |
+| `LanePredictSmoothTime` | 0.18 s | `TurnInReconverge` | 0.15 |
+| `HeadingSmoothTime` | 0.0 (off) | `TurnInMaxOffsetMeters` | 0.6 m |
+
+**Regression guard:** `tests/Sim.Viewer.Motion.Tests` (facade + KinematicHeading unit tests) pins the pivot
+(center L/2 behind front), the lane-change ease, the stop hold, and render-rate/stutter smoothness; the
+committed IgBridge byte-identical trace pins the full v5 pipeline; `CityLib.Tests/ReconstructorS2Tests` pins
+the end-to-end City3D behaviour. A change to any locked value that regresses these is caught by `dotnet test`.
 
 ## Standing gates (re-verify every src/-touching task)
-- [ ] `dotnet test Traffic.sln` 654 pass / 4 skip, byte-identical
-- [ ] `Sim.Bench` determinism hash unchanged
-- [ ] IgBridge emitted trace byte-identical to v5
-- [ ] No ProjectReference from demos/City3D into src/
+- [x] `dotnet test tests/Sim.ParityTests -c Release` 654 pass / 4 skip ✓ (S3: tests + docs only, no src/ behaviour change)
+- [ ] `Sim.Bench` determinism hash unchanged (S3 touched no engine/src code paths)
+- [x] IgBridge emitted trace byte-identical to v5 ✓ (S3: regenerated `artifacts/igbridge/trace.jsonl`, `diff -q` vs `trace_v5_baseline.jsonl` = IDENTICAL)
+- [x] No ProjectReference from demos/City3D into src/ (unchanged; S3 added no references)
 
 ## Owner decisions (Design §7) — RESOLVED, green to go
 - [x] Q1 DrPoseSmoother → DELETE outright (no toggle)
