@@ -1,10 +1,23 @@
-# sustained-box — an offline reproduction of the calibration-knee discharge deficit
+# sustained-box — a sustained-load grid (does NOT faithfully reproduce the real knee)
 
-**Date:** 2026-07-22. **Purpose:** SumoData's calibration knee is measured under *sustained insertion
-held at the calibrated density*, where a small per-junction discharge deficit compounds into unbounded
-accumulation (their box piles to 33 veh/lkm where vanilla holds 6). The one-shot synthetic drains
-(finite demand) and no longer isolates it. This benchmark reproduces the **sustained-load regime
-offline**, no SumoData pipeline required.
+> **CORRECTION 2026-07-22 (SumoData cross-check):** this benchmark **does NOT reproduce the real
+> calibration-knee blocker.** SumoData ran their real sub-area pipeline on the same pre-yield-fix commit
+> `3cbc8b9` this grid calls "near-parity" (396 vs 408 accumulation, 0.97×) and got **5.5× over-accumulation**
+> (peak 33.24 vs 6.0 veh/lkm, 538.6% overshoot, 382 teleports). Same engine — this grid under-captures the
+> phenomenon by ~40×. Why: it is **uniform straight corridors on protected-green TLs with every border node
+> attached to fringe → all junctions are degree-4 (no connectivity asymmetry)**. The real blocker is a
+> **discharge REDISTRIBUTION keyed on 4-way-vs-3-way TL connectivity asymmetry**: SumoSharp drains the
+> high-degree 4-way center faster than vanilla while backing up the surrounding 3-way T-light approaches
+> 8–10× locally (network-wide only ~1.22×, so it hides in aggregate metrics — and in this grid). See the
+> **faithful** repro in `scenarios/_repro/signalized-asymmetry/` and SumoData's localization note.
+>
+> What this grid DID correctly show (kept for provenance): the permissive-yield fix is a ~12% junction-tempo
+> regression under sustained load — a *separate, much smaller* axis from the 5.5× knee, and a realism win
+> worth landing regardless (lt 112→7, goldens byte-identical). It is a red herring for the knee.
+
+**Date:** 2026-07-22. **Purpose (original, now corrected):** attempt an offline reproduction of SumoData's
+sustained-insertion knee. It reproduces a sustained-load *tempo* effect but NOT the real 5.5× density
+blow-up — see the correction above.
 
 ## Setup
 - `grid.net.xml`: `netgenerate --grid --grid.number=4 --grid.length=200 --default.lanenumber=2

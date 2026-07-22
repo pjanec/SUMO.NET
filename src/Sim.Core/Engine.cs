@@ -6285,6 +6285,26 @@ public sealed partial class Engine : IEngine
     // that produced it).
     private double RedLightConstraint(VehicleRuntime v, Lane lane, double time, double dt, double actionStepLengthSecs, double laneVehicleMaxSpeed)
     {
+        // SUMO MSVehicle::planMoveInternal (MSVehicle.cpp:2587-2601): a vehicle on its FINAL route edge
+        // (`myCurrEdge + view + 1 == myRoute->end()`) approaches its arrivalPos at arrivalSpeed and
+        // BREAKS out of the link walk BEFORE the downstream red/yellow brake is ever added -- an
+        // arriving vehicle exits at the end of its arrival edge and NEVER crosses that edge's exit TL,
+        // so the red/yellow signal there does not gate it (arrivalSpeed defaults to laneMaxV, i.e. it
+        // flows to the boundary at full speed and is removed). RedLightConstraint keys off the CURRENT
+        // lane's exit connection, so without this guard an arriving vehicle is braked at a red border
+        // TL -- adding tens of seconds to its trip and backing up the approach. That is the dominant
+        // driver of the signalized-discharge redistribution SumoData localized (SumoSharp piles 8-10x
+        // on the 3-way T-light approaches, which in a bounded/served demand are exactly the arrival
+        // edges, while the 4-way through-approaches stay at parity). The same `LaneSeqIndex + 1 >=
+        // LaneSeqLen` "no upcoming lane" test SuccessiveLaneSpeedConstraint already uses: true exactly
+        // when ego is on the last lane of its route (the arrival edge), so every through vehicle
+        // (which still has an internal lane + next edge ahead) is unaffected -- byte-identical for the
+        // committed goldens, whose vehicles never arrive at a red-held TL edge.
+        if (v.LaneSeqIndex + 1 >= v.LaneSeqLen)
+        {
+            return double.PositiveInfinity;
+        }
+
         if (!_network!.TryGetTlControlledConnection(lane.EdgeId, lane.Index, out var connection))
         {
             return double.PositiveInfinity;
