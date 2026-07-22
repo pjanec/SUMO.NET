@@ -93,10 +93,13 @@ saw v250 @1 Hz ride the lane-division line for ~5 s after a left turn. A junctio
 travel at a coarse feed, so its lateral arc motion was absorbed into the lane-change error E (τ=2 s), parking
 the front ~1.8 m off-lane. Fix (coarse-feed only, so v5 byte-identical): a straddle whose incoming/outgoing
 lane poses diverge > 20° is a turn, not a lane change → not absorbed (v250 off-lane integral 6.30→2.02 m·s).
-**Latent v5 finding (→ possible F4):** at the dense feed the SAME junction straddles are absorbed too, parking
-the front ~0.3 m off-lane through *every* junction (84% of samples move ~0.32 m if the discriminator is
-applied at 10 Hz). Removing that would be a real junction-fidelity improvement but is a **new baseline (v6)** —
-needs owner sign-off, not silent. Parked as F4 in case we want it.
+**v6 investigated and DISMISSED (F4 closed).** Hypothesis was that the dense feed also absorbs junction
+straddles, parking the front ~0.3 m off-lane. **Clean measurement (`IGBRIDGE_V6COMPARE=1`): v6 differs from v5
+in only 0.6% of samples, max 0.25 m** — the earlier "84% / 0.32 m" was a buggy first implementation. Reason:
+at 10 Hz a straddle's two bracketing poses are 0.1 s apart (~9° heading diff, below the 20° threshold), so the
+discriminator almost never fires at a dense feed — it self-adapts to feed rate via the bracket span (only bit
+at 1 Hz, fixing v250). v6 is marginally smoother (mean reversals 0.31→0.22, median 0) with no regression, but
+**not visually meaningful — v5 stands.** `IGBRIDGE_V6=1` remains as an opt-in; no separate baseline adopted.
 
 ### Env knobs (all read in `Program.cs`)
 `IGBRIDGE_SCENARIO` (default `_ped/subarea-box`), `IGBRIDGE_PEDS` (0), `IGBRIDGE_STEPS` (1200 = 120 s),
