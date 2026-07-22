@@ -53,6 +53,7 @@
   // Vehicles in the unified payload share one box dim per scene and render in a single colour
   // (the classic passenger blue). Speed colouring (derived from motion) is available via the HUD.
   var VEHICLE_COLOR = "#4f8ef7";
+  var BUS_COLOR = "#f97316";   // long vehicles (bus/truck) -- amber, distinct from the passenger blue
   // Discs (crowd/pedestrian agents) coloured by kind.
   var DISC_COLORS = {
     0: "#38bdf8", 1: "#fb7185", 2: "#c084fc", 3: "#f59e0b",
@@ -328,7 +329,21 @@
     }
     var reach = Math.max((vdim[0] || 5) * 1.2, 8); // metres: forgiving pick radius
     pickedId = (best >= 0 && bestD <= reach * reach) ? (scene.vehIds[best] || null) : null;
+    followId = null; // a manual click releases any typed-in follow
   });
+
+  // Find/follow by id: type a vehicle id into the HUD box to latch AND follow it -- the camera re-centers
+  // on it every frame (see render) so it can't hide off-view, which is the whole point when a promoted bus
+  // is somewhere outside the auto-cropped window. Forgiving: "213" resolves to "v213". Clearing releases it.
+  var followId = null;
+  var findEl = document.getElementById("findVeh");
+  if (findEl) {
+    findEl.addEventListener("input", function () {
+      var val = findEl.value.trim();
+      followId = val.length ? val : null;
+      if (!followId) { pickedId = null; }
+    });
+  }
 
   var touchState = null;
   canvas.addEventListener("touchstart", function (ev) {
@@ -760,9 +775,12 @@
     ctx.rotate((v.angle * Math.PI) / 180 - Math.PI / 2);
     var lengthPx = Math.max(length * camera.scale, 5);
     var widthPx = Math.max(width * camera.scale, 3);
+    // Long vehicles (buses/trucks) get a distinct base colour so they're findable at a glance among the
+    // passenger cars, independent of the speed/fear tints. Threshold sits between a car (~5 m) and a bus.
+    var baseColor = (typeof v.len === "number" && v.len >= 7) ? BUS_COLOR : VEHICLE_COLOR;
     ctx.fillStyle = speedColorToggle.checked
       ? colorForSpeed(v.speed)
-      : (v.fear !== undefined ? fearColor(v.fear) : VEHICLE_COLOR);
+      : (v.fear !== undefined ? fearColor(v.fear) : baseColor);
     ctx.strokeStyle = "rgba(0,0,0,0.55)";
     ctx.lineWidth = 1;
     ctx.beginPath();
@@ -834,6 +852,23 @@
     ctx.fillRect(0, 0, canvas.width, canvas.height);
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
+    // Find/follow: if an id was typed into the find box, re-center the camera on that vehicle before the
+    // frame draws so it's always in view (resolve "213" -> "v213"). Only the pan offset is driven; the user
+    // keeps zoom control. Also latch it as pickedId so the yellow highlight ring + label track it.
+    if (followId && scene.vehIds) {
+      var fid = scene.vehIds.indexOf(followId) >= 0 ? followId
+        : (scene.vehIds.indexOf("v" + followId) >= 0 ? "v" + followId : null);
+      if (fid) {
+        pickedId = fid;
+        var fv = interpolatedVehicles(simT)[scene.vehIds.indexOf(fid)];
+        if (fv) {
+          var fcw = canvas.clientWidth || 300, fch = canvas.clientHeight || 300;
+          camera.offsetX = fcw / 2 - fv.x * camera.scale;
+          camera.offsetY = fch / 2 + fv.y * camera.scale;
+        }
+      }
+    }
+
     // 1..6 Network layers (skipped cleanly for pure-crowd scenes). Draw order: junctions -> lane
     // bands -> lane markings -> crossing zebra -> round vehicle signals -> square ped signals.
     // NOTE: crossings are deliberately drawn AFTER the lane bands/markings, not before them --
@@ -875,11 +910,12 @@
       var pv = ps >= 0 ? vehicles[ps] : null;
       if (pv) {
         var sc = worldToScreen(pv.x, pv.y);
+        var ringLen = (typeof pv.len === "number" && pv.len > 0) ? pv.len : (vdim[0] || 5);
         ctx.save();
         ctx.strokeStyle = "#fde047";
         ctx.lineWidth = 2;
         ctx.beginPath();
-        ctx.arc(sc[0], sc[1], Math.max((vdim[0] || 5) * camera.scale * 0.7, 12), 0, Math.PI * 2);
+        ctx.arc(sc[0], sc[1], Math.max(ringLen * camera.scale * 0.7, 12), 0, Math.PI * 2);
         ctx.stroke();
         ctx.font = "bold 13px system-ui, sans-serif";
         var tw = ctx.measureText(pickedId).width;
