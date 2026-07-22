@@ -71,7 +71,7 @@ reversals/turner) and was the real "skidding". Guarded; other Sim.Viz consumers 
 ### Feed/emit-rate tests (owner: "run at 1 Hz", "emit 10 Hz")
 `IGBRIDGE_FEED_HZ` (default 10) decimates the rate state is sampled into the reconstruction + raw stream
 (core still steps at 10 Hz, so dynamics are correct); `IGBRIDGE_EMIT_HZ` (default 20) sets the output rate.
-Result (grid, display-level FakeIg metrics): a **1 Hz feed** is catastrophic for the *raw* dumb-IG path
+Result (grid, display-level FakeIg metrics): a **1 Hz feed** is catastrophic for the *raw* non-predictive-IG path
 (lat-accel median 1533, vel-gap 833 m/s — it teleports across 1 s gaps) but the prediction-driven
 reconstruction from the SAME feed stays smooth (lat-accel 21, vel-gap 4.5 — 71–184× better, near the 10 Hz
 baseline). **Emit 10 Hz** stays smooth (median yaw-rate unchanged) but ~doubles lat-accel/yaw-jerk vs 20 Hz

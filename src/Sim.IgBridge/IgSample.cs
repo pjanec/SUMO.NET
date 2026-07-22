@@ -1,6 +1,6 @@
 namespace Sim.IgBridge;
 
-// The IG-native record schema (docs/IGBRIDGE-DECISIONS.md §3). The proprietary IG accepts a lifecycle
+// The IG-native record schema (docs/IGBRIDGE-DECISIONS.md §3). The external IG accepts a lifecycle
 // triple -- entity-created / entity-updated / entity-removed -- carrying, per the owner's Q1/Q3
 // answers, a PLANAR pose only: (x, y, headingDeg) in SUMO metres + navi-degrees. No z / pitch / roll:
 // the IG owns its terrain and does its own conformal ground-clamping. `t` is SIM time (seconds) and is

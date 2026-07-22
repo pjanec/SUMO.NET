@@ -1,12 +1,13 @@
-# IgBridge ↔ proprietary IG binding — REQUIREMENTS (the WHAT)
+# IgBridge ↔ external 3D image-generator (IG) binding — REQUIREMENTS (the WHAT)
 
-Reference/spec for a new SumoSharp output binding: feeding a **proprietary Image Generator (IG)** from an
-external .NET simulation host called **IgBridge**, with all SUMO-core motion artifacts smoothed out. This
+Reference/spec for a new SumoSharp output binding: feeding an **external 3D image generator (IG)** — one with
+no protocol for predictive dead-reckoning, consuming only plain position/orientation/timestamp samples — from
+an external .NET simulation host called **IgBridge**, with all SUMO-core motion artifacts smoothed out. This
 document is the WHAT (requirements + acceptance). The HOW is in `IGBRIDGE-DESIGN.md`.
 
 ## 1. Context
 - **SumoSharp** (this repo) is embedded as a library inside **IgBridge**, an existing **.NET 6** C#
-  simulation host that already knows the full proprietary IG protocol and how to transmit to the real IG.
+  simulation host that already knows the full IG protocol and how to transmit to the real IG.
 - IgBridge is **tick-based, ~20 Hz, variable Δt** (it uses the previous frame's duration as the next
   frame's delta; fluctuates on Windows 11). It is **not** a fixed-step loop.
 - SumoSharp's core is to be **ticked at a fixed 10 Hz** to provide smooth-enough source samples.
@@ -28,7 +29,7 @@ document is the WHAT (requirements + acceptance). The HOW is in `IGBRIDGE-DESIGN
 
 ## 3. The artifacts to smooth (why this is non-trivial)
 SumoSharp's core (SUMO-parity) produces motion that is correct as *simulation* but has *rendering*
-artifacts a dumb interpolator exposes:
+artifacts a non-predictive 2-sample interpolator exposes:
 - **Instant lane changes** — position steps a full lane width (~3.2 m) in one core tick (no sublane lateral
   motion is modelled). Emitted raw, that is a teleport / 60 m/s lateral slide.
 - **Non-smooth junction turns** — internal-junction edges are coarse linear-segment polylines; heading is a
@@ -52,7 +53,7 @@ Build a **IgBridge-like proof-of-concept app** that:
 3. Produces the emitted samples **in memory** and **logged to a file** (a replayable trace).
 4. Is **renderable / analyzable WITHOUT the real IG**: a bundled *fake IG* consumes the logged samples using
    the **same 2-most-recent-sample interpolation** the real IG does, so one can *see and measure* what the IG
-   would show. (This is the part that can be done well here with no proprietary dependency.)
+   would show. (This is the part that can be done well here with no dependency on the IG's own protocol.)
 
 ## 6. Functional requirements
 - **R1** — Fixed 10 Hz SumoSharp core, decoupled from IgBridge's variable ~20 Hz wall-clock tick
@@ -88,7 +89,7 @@ Build a **IgBridge-like proof-of-concept app** that:
   confirm it (and the PoC's shared parts) are consumable from IgBridge's **.NET 6**.
 
 ## 8. Out of scope
-- The real proprietary IG, its wire transport, and its non-simplified property set (IgBridge owns those).
+- The real IG, its wire transport, and its non-simplified property set (IgBridge owns those).
 - Fixing simulation-level defects (e.g. the dense multi-lane overlap — `LANE-CHANGE-OVERLAP-SPEC.md`).
 - The optimized DDS DR protocol itself (this binding deliberately uses the simple per-sample protocol).
 

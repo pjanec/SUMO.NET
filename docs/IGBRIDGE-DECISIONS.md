@@ -6,7 +6,7 @@ narrow or correct it. Read the requirements (`IGBRIDGE-REQUIREMENTS.md`) and des
 this doc is the delta, not a restatement.
 
 > **Naming.** The binding — the external **.NET 6 host** that embeds SumoSharp, ticks the core at
-> 10 Hz, and feeds the proprietary IG — is called **IgBridge** everywhere: docs (`IGBRIDGE-*` family)
+> 10 Hz, and feeds the external IG — is called **IgBridge** everywhere: docs (`IGBRIDGE-*` family)
 > and code (`Sim.IgBridge` producer lib, `Sim.IgBridge.Host` verification console).
 
 ---
