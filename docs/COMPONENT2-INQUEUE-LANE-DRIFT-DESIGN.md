@@ -192,3 +192,42 @@ Gap-1, it is reverted/reworked independently of Stage 1.
 - [ ] T3.1 committed offline anchor
 - [ ] T3.2 docs updated
 - [ ] Hand-off to SumoData (re-run the box; report residual = components 1 + 3)
+
+---
+
+## OUTCOME 2026-07-22 (session 5) — implemented, measured, REVERTED; component 2 is entangled + low-ceiling
+
+Implemented Stage 1 (LaneOccupation density + nextOccupation → maxJam → rule 2) and measured on
+`art.sumocfg`. **The faithful `maxJam` fix does NOT eliminate the drift** — empirically:
+
+| variant | drift-and-freeze (BC_2→BC_1/0, stuck≥30) | near-stopline illegal % | running/arrived/meanSpeed |
+|---|---|---|---|
+| rule-2 only (baseline) | ~19 | ~44 | 460/867/2.84 |
+| + density maxJam | 19 | 43.9 | 434/857/3.09 |
+| + density + nextOccupation | 20 | 44.3 | 393/855/2.44 |
+| **full keep-right suppression** (upper bound) | **0** | **27.8** | 383/921/2.69 |
+| vanilla | 0 | 0.0 | 303/1094/6.14 |
+
+**Why maxJam fails:** the drift fires EARLY (turner at pos ~150, partial queue ahead), before the local
+occupation is large enough to make `neighLeftPlace*2 < laDist`. Determinism held (serial == `-p 8`).
+
+**Why vanilla never drifts (`--lanechange-output`):** vanilla makes exactly ONE `f_wsc` change on BC in the
+whole run — `BC_1→BC_2` (strategic|urgent). It NEVER right-changes off `BC_2`. The mechanism: vanilla
+segregates correctly (through on BC_0/1, turners on BC_2), so whenever a turner is on BC_2 the right lane BC_1
+has a through LEADER → SUMO's keep-right accumulator `fullSpeedGap` collapses (neighLead term) → keep-right
+never builds. **SumoSharp's drift is a downstream symptom of the initial mixing (merge-in failure): mixed
+lanes → BC_1 sometimes clear ahead of a turner → keep-right fires → more mixing. A vicious cycle seeded by
+component 1.**
+
+**Two conclusions:**
+1. **Component 2 is not cleanly separable from component 1** and its independent ceiling is modest: even
+   perfect drift elimination (full-suppress) only moves illegal 44→28%. The dominant ~28% residual is turners
+   that **never reach BC_2** (LCA_URGENT merge-in / gap-acceptance under saturation — component 1 family).
+2. **Full keep-right suppression matches vanilla here (0 changes)** but is NOT byte-identical-safe in general
+   (SUMO DOES keep-right onto a route-leaving lane when `neighDist ≥ 200`, room to return) — so it is not a
+   faithful drop-in.
+
+**Recommendation:** pause component 2; pivot to the **merge-in / gap-acceptance under saturation** lever
+(component 1 family), which dominates the turn-lane failure AND, per SumoData, is a top knee component. Revisit
+component 2 (keep-right drift) only after segregation-under-load is fixed — much of it should evaporate. WIP
+reverted; tree clean at rule-2 (`9a77d3b`) + docs.
