@@ -65,6 +65,77 @@ Console.WriteLine($"scenarioDir={scDir}");
 // stream (10 Hz x/y/angle) as the metrics "before" baseline.
 var runner = new IgBridgeRunner(cfg);
 var raw = new RawStreamCollector();
+
+// IGBRIDGE_V6COMPARE=1: run the SAME dynamics through two reconstructions -- v5 (current: junction-turn
+// straddles absorbed into the lane-change error, ~0.3 m off the connecting-lane centerline) and v6 (those
+// straddles NOT absorbed -> rides the centerline) -- and render them synced side by side.
+if (Environment.GetEnvironmentVariable("IGBRIDGE_V6COMPARE") == "1")
+{
+    double EnvD6(string k, double def) =>
+        double.TryParse(Environment.GetEnvironmentVariable(k), System.Globalization.CultureInfo.InvariantCulture, out var v) ? v : def;
+    var kin6 = new Sim.Viewer.Motion.KinematicHeadingParams
+    {
+        LaneChangeDecayTau = EnvD6("IGBRIDGE_LC_TAU", 2.0),
+        HeadingSmoothTime = EnvD6("IGBRIDGE_HEAD_SMOOTH", 0.0),
+        TurnInSmoothTime = EnvD6("IGBRIDGE_TURNIN", 0.0),
+        PositionSmoothTime = EnvD6("IGBRIDGE_POS_SMOOTH", 0.60),
+        LanePredictSmoothTime = EnvD6("IGBRIDGE_LANEPRED", 0.18),
+    };
+    IgBridgeSession Mk(IgTraceWriter w, bool v6) => new(runner, emit, w, retainAll: true, kinematics: kin6)
+    {
+        LookAheadMeters = EnvD6("IGBRIDGE_LOOKAHEAD", 3.0),
+        LookAheadLengthFactor = EnvD6("IGBRIDGE_LOOKAHEAD_LENFAC", 0.5),
+        MaxAnticipationLeadDeg = (float)EnvD6("IGBRIDGE_MAX_LEAD", 70.0),
+        CoarseFeed = feedN > 1,
+        AlwaysSplitJunctionStraddle = v6,
+    };
+    using var wr5 = new IgTraceWriter(Path.Combine(outDir, "trace_v5.jsonl"));
+    using var wr6 = new IgTraceWriter(Path.Combine(outDir, "trace_v6.jsonl"));
+    var s5 = Mk(wr5, false);
+    var s6 = Mk(wr6, true);
+    for (var step = 0; step < Steps; step++)
+    {
+        runner.Tick();
+        s5.Advance();
+        s6.Advance();
+    }
+
+    s5.Finish();
+    s6.Finish();
+
+    // Fleet delta: how far v6 moves each emitted center from v5 (the size of the junction-centerline pull).
+    var byKey5 = new Dictionary<(string, long), (double X, double Y)>();
+    foreach (var s in s5.AllEmitted)
+        if (s.Kind != IgRecordKind.Del) byKey5[(s.Id, (long)Math.Round(s.T * 1000))] = (s.X, s.Y);
+    var deltas = new List<double>();
+    foreach (var s in s6.AllEmitted)
+    {
+        if (s.Kind == IgRecordKind.Del) continue;
+        if (byKey5.TryGetValue((s.Id, (long)Math.Round(s.T * 1000)), out var p))
+            deltas.Add(Math.Sqrt((s.X - p.X) * (s.X - p.X) + (s.Y - p.Y) * (s.Y - p.Y)));
+    }
+
+    deltas.Sort();
+    if (deltas.Count > 0)
+    {
+        var moved = deltas.Count(d => d > 0.02);
+        Console.WriteLine($"v6 vs v5 emitted-center delta (m): median={deltas[deltas.Count / 2]:F3} "
+            + $"p95={deltas[(int)(0.95 * deltas.Count)]:F3} max={deltas[^1]:F3}  moved>{2}cm: {100.0 * moved / deltas.Count:F0}%");
+    }
+
+    var vehDims6 = new Dictionary<string, (double Length, double Width)>();
+    foreach (var kv in runner.VehicleDims) vehDims6[runner.IdOf(kv.Key)] = kv.Value;
+    var vizCfg6 = new FakeIgConfig { DelaySeconds = 0.75, JumpThresholdMeters = 8.0, RenderHz = 15.0 };
+    var html6 = Path.Combine(outDir, "sidebyside.html");
+    VizExport.WriteSideBySide(
+        repoRoot, runner.Network,
+        ("v5 (junction straddle absorbed)", "current baseline -- front pulled ~0.3 m off the junction centerline", new FakeIg(s5.AllEmitted, vizCfg6)),
+        ("v6 (junction straddle NOT absorbed)", "front rides the connecting-lane centerline through junctions", new FakeIg(s6.AllEmitted, vizCfg6)),
+        startT: 20.0, endT: 80.0, fps: 15.0, html6, vehDims6);
+    Console.WriteLine($"render: {html6}  (toggle: v5 vs v6)");
+    return 0;
+}
+
 IReadOnlyList<IgSample> smoothed;
 using (var trace = new IgTraceWriter(tracePath))
 {
@@ -96,6 +167,8 @@ using (var trace = new IgTraceWriter(tracePath))
         // At a decimated feed, don't absorb junction-turn straddles as lane changes (they'd ride between
         // lanes for seconds after a turn). No-op at the dense default, so v5 stays byte-identical.
         CoarseFeed = feedN > 1,
+        // IGBRIDGE_V6=1: apply that discriminator at the dense feed too (proposed v6 baseline).
+        AlwaysSplitJunctionStraddle = Environment.GetEnvironmentVariable("IGBRIDGE_V6") == "1",
     };
     // IGBRIDGE_DEBUG_VEH: one id or a comma-separated list (e.g. "v18,v98,v213,v321"); each gets its own CSV.
     var dbgIds = (Environment.GetEnvironmentVariable("IGBRIDGE_DEBUG_VEH") ?? "")

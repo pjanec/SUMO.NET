@@ -104,6 +104,11 @@ public sealed class IgBridgeSession
     // above. Off (dense feed) => behavior is exactly v5.
     public bool CoarseFeed { get; set; }
 
+    // v6 opt-in: apply the junction-turn-straddle discriminator at the DENSE feed too, so the front rides the
+    // connecting-lane centerline through junctions instead of being pulled ~0.3 m off it by the absorbed E.
+    // Changes the v5 baseline (a proposed new baseline), hence a flag rather than the default.
+    public bool AlwaysSplitJunctionStraddle { get; set; }
+
     // Diagnostics (T2.0 smoothness investigation): when DebugVehicleId is set, every emit instant for that
     // vehicle records a per-STAGE row so the jitter source can be localised (PoseResolver front -> position
     // smoother -> kinematic center/heading -> drawn rear bumper). Off (null) by default.
@@ -237,7 +242,7 @@ public sealed class IgBridgeSession
                 // feed the two bracketing poses are ~0.1 s apart (a few degrees of heading diff even mid-turn),
                 // so this stays below the threshold and the default is byte-identical; it only trips when a
                 // coarse feed makes the bracket span a large turn.
-                if (CoarseFeed)
+                if (CoarseFeed || AlwaysSplitJunctionStraddle)
                 {
                     var straddleHeadingDiff = Math.Abs(((pb.HeadingDeg - pa.HeadingDeg + 540f) % 360f) - 180f);
                     lateralEvent = straddleHeadingDiff < MaxStraddleLaneChangeHeadingDeg;
