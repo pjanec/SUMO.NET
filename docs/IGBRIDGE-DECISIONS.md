@@ -378,24 +378,31 @@ for experimentation. Motion 11/11, IgBridge 11/11, parity 654 / 4-skip byte-iden
 **On true look-ahead.** This predictor curves with the *current* lane heading — reactive, not yet reading the
 *upcoming* path (the forward trajectory a DDS producer ships to IGs). §5.13 prototypes that.
 
-### 5.13 Spatial look-ahead (EXPERIMENTAL — off by default)
+### 5.13 Spatial look-ahead (on by default)
 The reactive predictor (§5.12) keeps the front in-lane but tracks ~1.1–1.5 m off the CONNECTING-lane
 centerline through a junction (owner: v49 turns in a touch late, v229 overshoots, both then compensate). The
-fix is genuine anticipation: aim the front at a point `LookAheadMeters` ahead **on the upcoming lane
-centerline**. That point is free — `PoseResolver` already walks the upcoming lanes, so resolving a front pose
-with the arc position advanced by `LookAheadMeters` lands it down the connecting lane; the chord from the
-real front to it is the predictor direction. This is the same forward-path information a DDS producer ships
-to IGs.
+fix is genuine anticipation: aim the front at a point `LookAheadMeters` (3 m) ahead **on the upcoming lane
+centerline**. That point is free — `PoseResolver` already walks the upcoming lanes to place the bumper, so
+resolving a front pose with the front ARC POSITION advanced by `LookAheadMeters` lands it down the connecting
+lane; the chord from the real front to it is the predictor direction. This is the same forward-path
+information a DDS producer ships to IGs, and it is plumbed as an optional `predictHeadingDeg` into the
+kinematic front tracker (falls back to the lane heading).
 
-**It works on the target cases:** at `LookAheadMeters = 3` the front's offset from the connecting-lane
-centerline falls v49 1.15 → 0.49 m, v229 1.52 → 0.33 m — the car now rides the connecting centerline instead
-of overshooting/undershooting and compensating — and fleet *mean* yaw-accel reversals even improve (0.48 →
-0.32). **But** the resolved look-ahead point is unstable across some junction geometries: ~a dozen vehicles
-that were smooth (0–1 reversals) jitter (11–12) when it engages, and fleet lat-accel max jumps 70 → 367. So
-it is **off by default** (`LookAheadMeters = 0` ⇒ exactly v3); `IGBRIDGE_LOOKAHEAD=<m>` enables it. Making the
-look-ahead point stable (a wild-bearing guard is in place but insufficient; the point needs temporal
-smoothing / rejection of cross-junction jumps) is the work before it can become the default. Render-side
-only; with it off, parity and all v3 metrics are byte-identical.
+**Look-ahead-point stability.** The resolved point is occasionally unstable across a junction — it briefly
+lands on a crossing/internal lane and returns a bearing tens of degrees off for ~0.2 s, then snaps back
+(observed: a straight-driving car whose look-ahead flicked to 313° for 4–5 frames, repeatedly). A REAL turn's
+anticipation instead RAMPS smoothly. So the guard is a **frame-to-frame jump limit**: reject the look-ahead
+whenever it jumps from the previously-USED predictor heading faster than a plausible yaw rate (250 °/s) and
+fall back to the lane heading (remembered, so a sustained bad reading stays rejected). This kills the
+transient spurious excursions while passing the smooth turn ramp — the vehicles that jittered (11–12
+reversals) return to 0–1, with no loss on the target cases.
+
+**As-built (grid, 120 s), look-ahead ON vs the reactive v3:** the front now rides the connecting-lane
+centerline — offset v49 1.15 → 0.49 m, v229 1.52 → 0.33 m (no more late/overshoot-and-compensate) — AND the
+fleet is *smoother overall*: mean yaw-accel reversals 0.48 → 0.31, lat-accel max 70 → 32, yaw-jerk max 2244 →
+1629. No-slip median 10.5 → 11.3 (the body leads a touch more into the turn — more anticipatory, expected).
+Post-turn, stops, and lane changes all preserved. Two look-ahead runs are byte-identical (deterministic).
+`LookAheadMeters = 0` disables it (⇒ exactly v3). Render-side only; parity 654 / 4-skip byte-identical.
 
 ---
 

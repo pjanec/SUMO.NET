@@ -39,6 +39,7 @@ public sealed class IgBridgeSession
     private readonly HashSet<VehicleHandle> _vehNewEmitted = new();
     private readonly HashSet<VehicleHandle> _vehDone = new();
     private readonly Dictionary<VehicleHandle, double> _lastEmitTau = new(); // for real elapsed dt across straddle gaps
+    private readonly Dictionary<VehicleHandle, float> _lookAheadPrev = new(); // previously-USED predictor heading (jump guard)
     private readonly HashSet<int> _pedNewEmitted = new();
     private readonly HashSet<int> _pedDone = new();
 
@@ -71,6 +72,11 @@ public sealed class IgBridgeSession
     // in late. 0 disables (front follows the reactive current lane heading). Computed by re-resolving the
     // front pose with an extended length (PoseResolver already walks the upcoming lanes for the bumper).
     public double LookAheadMeters { get; set; }
+
+    // Max plausible frame-to-frame change (deg/s) of the look-ahead predictor heading; a bigger jump is a
+    // spurious cross-junction resolve and is rejected (falls back to the lane heading). A real 90° junction
+    // turn ramps at ~100°/s, so this passes turns and rejects the ~tens-of-degrees blips.
+    private const float _lookAheadMaxJumpDegPerSec = 250f;
 
     // Diagnostics (T2.0 smoothness investigation): when DebugVehicleId is set, every emit instant for that
     // vehicle records a per-STAGE row so the jitter source can be localised (PoseResolver front -> position
@@ -224,17 +230,27 @@ public sealed class IgBridgeSession
             // (removes the faceted-polyline kinks that would ride through as a tail wiggle). Emit the vehicle
             // CENTER (the IG's models pivot on center) + the drag heading; z (Q5) = the lane-surface ground z.
             // Spatial look-ahead heading (aim the front down the upcoming connecting lane, not the current
-            // lane) so junction turn-ins hit the connecting-lane centerline instead of lagging ~1 m off it.
-            // Guard: a look-ahead point that lands on a wildly different bearing than the current lane heading
-            // is a bad resolve (the point fell off the end of the mapped lanes, or jumped across a junction
-            // gap) — reject it and fall back to the lane heading, else it injects a lateral-accel jolt.
+            // lane) so junction turn-ins hit the connecting-lane centerline instead of lagging off it.
+            //
+            // Guard against a bad resolve: the look-ahead point is occasionally unstable across a junction
+            // (it briefly lands on a crossing/internal lane, giving a bearing tens of degrees off for ~0.2 s
+            // then snapping back). A REAL turn's anticipation instead RAMPS smoothly. So reject the look-ahead
+            // whenever it JUMPS from the previously-used predictor heading faster than a plausible yaw rate —
+            // that kills the transient spurious excursions while passing the smooth turn ramp. On reject we
+            // fall back to the lane heading (and remember that), so a sustained bad reading stays rejected.
             float? predictHeading = null;
             if (LookAheadMeters > 0.0
-                && TryLookAheadHeading(resolved.State, resolved.Upcoming, dims, frontX, frontY, upcoming, out var lah)
-                && Math.Abs(((lah - laneHeading + 540f) % 360f) - 180f) < 85f)
+                && TryLookAheadHeading(resolved.State, resolved.Upcoming, dims, frontX, frontY, upcoming, out var lah))
             {
-                predictHeading = lah;
+                var prevUsed = _lookAheadPrev.TryGetValue(handle, out var pv) ? pv : laneHeading;
+                var jump = Math.Abs(((lah - prevUsed + 540f) % 360f) - 180f);
+                if (jump <= _lookAheadMaxJumpDegPerSec * Math.Max(realDt, 1e-3f))
+                {
+                    predictHeading = lah;
+                }
             }
+
+            _lookAheadPrev[handle] = predictHeading ?? laneHeading;
 
             var kp = _kinematic.Update(handle, frontX, frontY, laneHeading, speed, dims.Length, realDt,
                 lateralEvent, predictHeading);
@@ -255,6 +271,7 @@ public sealed class IgBridgeSession
                     kp.FrontX.ToString("F4"), kp.FrontY.ToString("F4"),
                     kp.CenterX.ToString("F4"), kp.CenterY.ToString("F4"), kp.HeadingDeg.ToString("F4"),
                     rearBx.ToString("F4"), rearBy.ToString("F4"), speed.ToString("F4"),
+                    (predictHeading ?? laneHeading).ToString("F4"),
                 });
                 if (id == DebugVehicleId)
                 {

@@ -57,7 +57,7 @@ using (var trace = new IgTraceWriter(tracePath))
     {
         // Spatial look-ahead: aim the front predictor at a point this far ahead on the upcoming lane
         // centerline, so junction turn-ins hit the connecting lane instead of lagging off it. 0 disables.
-        LookAheadMeters = EnvD("IGBRIDGE_LOOKAHEAD", 0.0),
+        LookAheadMeters = EnvD("IGBRIDGE_LOOKAHEAD", 3.0),
     };
     // IGBRIDGE_DEBUG_VEH: one id or a comma-separated list (e.g. "v18,v98,v213,v321"); each gets its own CSV.
     var dbgIds = (Environment.GetEnvironmentVariable("IGBRIDGE_DEBUG_VEH") ?? "")
@@ -75,7 +75,7 @@ using (var trace = new IgTraceWriter(tracePath))
 
     session.Finish();
     {
-        var header = "t,prX,prY,prH,smX,smY,cX,cY,cH,rearX,rearY,speed";
+        var header = "t,prX,prY,prH,smX,smY,cX,cY,cH,rearX,rearY,speed,laH";
         foreach (var kv in session.DebugRowsById)
         {
             var dbgPath = Path.Combine(outDir, $"debug_{kv.Key}.csv");
