@@ -4,6 +4,17 @@ How to feed a proprietary 2-sample IG from SumoSharp with all core motion artifa
 PoC that proves it without the real IG. Requirements (the WHAT) are in `IGBRIDGE-REQUIREMENTS.md`;
 read it first. This doc references, and deliberately **reuses**, the existing viewer reconstruction stack.
 
+> **AS-BUILT (2026-07) — read this first.** This is the original plan. The PoC shipped and was tuned to an
+> owner-signed-off **v5** baseline. Its reconstruction outgrew the old `DrPoseSmoother`: it became a no-slip
+> **rear-axle (bicycle) model** with low-passed lane-heading prediction, a **spatial look-ahead** that
+> anticipates the connecting lane through a junction, an anticipation lead-bound, a bounded lane-change ease,
+> and coarse-feed junction-straddle handling. That reconstruction was extracted into the shared
+> `Sim.Viewer.Motion.KinematicReconstructor` (over `KinematicHeading`) and now smooths **both** the raylib 2D
+> and Godot City3D viewers as well — `DrPoseSmoother` was **deleted**. So **wherever this doc says
+> `DrPoseSmoother`, read `KinematicReconstructor`.** Current state lives in `IGBRIDGE-VERSIONS.md` (v1–v5
+> milestones), `IGBRIDGE-DECISIONS.md` (§5.x as-built), `IGBRIDGE-METHODOLOGY.md` (how we tuned + the
+> 2D-visualization recipe), and `VIEWER-KINEMATIC-SMOOTHING-DESIGN.md` (the viewer swap).
+
 ## 0. The load-bearing insight
 The IG is a **dumb 2-most-recent-sample interpolator with no prediction fields**. It cannot fix anything.
 Therefore **all smoothing must be baked into the sample stream IgBridge emits** — the emitted samples must
@@ -21,7 +32,9 @@ The Godot City3D / native viewers already solve exactly these artifacts. Reuse:
     same-lane arc-length lerp; **lane-crossing turns via an arc-window walk** (follows the real curved
     internal-lane geometry instead of snapping); **lane-change (sideways) straddle returns both bracketing
     states** for a Cartesian lerp.
-  - `DrPoseSmoother.Smooth(handle, x, y, deg, speed, dt)` — per-entity critically-damped pose follower.
+  - `KinematicReconstructor.Resolve(handle, resolved, lanes, dims, dt)` — the shared per-entity render-side
+    reconstruction (no-slip rear-axle drag + lane-heading prediction + spatial look-ahead + lane-change ease).
+    (Was `DrPoseSmoother.Smooth` in the original plan — see the AS-BUILT banner.)
 - **`Sim.Core.PoseResolver.Resolve(...)`** — `DrState → (x, y[, z], heading)`, with `RenderRealism.ChordHeading`
   (no "swing-wide" bow) and the motion-derived heading tilt.
 - **`Sim.Replication.DrExtrapolation.Arc`** — the single source-of-truth DR curve (publisher and viewer share
@@ -45,7 +58,7 @@ IgBridge adds *transport + resampling + 2D→3D + lifecycle*, never new curve/he
 - **[1] Fixed-rate core.** Own 100 ms sim clock; never driven by IgBridge's variable wall tick. Each step
   appends per-entity timestamped state to a **per-entity ring buffer** keyed by sim time. Feed the buffer
   the same shape the viewer expects (lane + arc-pos + speed, and/or x,y+heading — see §6 on which stream).
-- **[2] Reconstruction.** `DrClock.Resolve` + `PoseResolver.Resolve` (+ optional `DrPoseSmoother`) → a smooth
+- **[2] Reconstruction.** `DrClock.Resolve` + `PoseResolver.Resolve` (+ `KinematicReconstructor`) → a smooth
   `pose(entityId, tQuery)` for any query time inside the buffered window. This is the reused stack, unchanged.
 - **[3] IgBridge stage.** Advances a **sim clock** (§4), and at the IG send cadence queries [2] at a single
   coherent `tQuery` for all entities, applies **2D→3D** (§5), and emits `[id, pos, quat, t]` to a trace log +
