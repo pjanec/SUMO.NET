@@ -972,8 +972,12 @@
   // ---------------------------------------------------------------------
   // Scene loading / switching
   // ---------------------------------------------------------------------
-  function loadScene(idx) {
+  function loadScene(idx, preserveView) {
     if (idx < 0 || idx >= scenes.length) return;
+    // A/B scene toggle (raw <-> IgBridge) shares the same world coords and timeline, so preserve the
+    // camera pan/zoom AND the playback position across the switch instead of snapping back to the fit view
+    // at t=0 (the two scenes are meant to be compared frame-for-frame at the same place and moment).
+    var prevTime = simTime, prevPlaying = playing;
     scene = scenes[idx];
     frames = scene.frames || [];
     network = scene.network || null;
@@ -998,14 +1002,24 @@
     timeSlider.min = String(simStart);
     timeSlider.max = String(simEnd);
     timeSlider.step = String(Math.max(stepSize / 10, 0.001));
-    timeSlider.value = String(simStart);
 
-    // Re-fit the camera to the new scene and re-enable auto-fit (until the user pans/zooms).
-    userAdjusted = false;
-    resizeCanvas();
-    fitToView();
+    if (preserveView) {
+      // Keep the current camera and playback position (clamped to the new range). Leaves userAdjusted as-is,
+      // so a fitted view stays fitted and a user-panned view stays put -- the toggle just swaps the stream.
+      simTime = Math.max(simStart, Math.min(simEnd, prevTime));
+      timeSlider.value = String(simTime);
+      resizeCanvas();
+      setPlaying(prevPlaying);
+    } else {
+      // Fresh load: re-fit the camera to the new scene and re-enable auto-fit (until the user pans/zooms).
+      simTime = simStart;
+      timeSlider.value = String(simStart);
+      userAdjusted = false;
+      resizeCanvas();
+      fitToView();
+      if (!prefersReduced) setPlaying(true);
+    }
 
-    if (!prefersReduced) setPlaying(true);
     render(simTime);
   }
 
@@ -1034,7 +1048,7 @@
 
   sceneSel.addEventListener("change", function () {
     var idx = parseInt(sceneSel.value, 10) || 0;
-    loadScene(idx);
+    loadScene(idx, true); // preserve camera + playback position across the A/B toggle
   });
 
   btnPlay.addEventListener("click", function () { setPlaying(!playing); });

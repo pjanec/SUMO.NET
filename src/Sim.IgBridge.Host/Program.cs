@@ -21,6 +21,9 @@ var busIds = (Environment.GetEnvironmentVariable("IGBRIDGE_BUS_IDS") ?? "")
     .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
 var busLen = double.TryParse(Environment.GetEnvironmentVariable("IGBRIDGE_BUS_LEN"),
     System.Globalization.CultureInfo.InvariantCulture, out var _bl) ? _bl : 12.0;
+// IGBRIDGE_BUS_VCLASS: bus (12 m) | coach (14 m) | truck (7.1 m) | trailer (16.5 m rigid). Length still
+// from IGBRIDGE_BUS_LEN. (No true articulation -- SUMO/SumoSharp model one rigid length; see docs.)
+var busVClass = Environment.GetEnvironmentVariable("IGBRIDGE_BUS_VCLASS")?.Trim() is { Length: > 0 } bvc ? bvc : "bus";
 var cfg = new IgBridgeConfig(netPath, rouPath)
 {
     StepLength = 0.1,
@@ -28,6 +31,7 @@ var cfg = new IgBridgeConfig(netPath, rouPath)
     EnablePeds = enablePeds,
     BusVehicleIds = busIds,
     BusLengthMeters = busLen,
+    BusVClass = busVClass,
 };
 Console.WriteLine($"scenario={scenarioRel}  net={Path.GetFileName(netPath)}  rou={Path.GetFileName(rouPath)}  peds={enablePeds}"
     + (busIds.Length > 0 ? $"  buses=[{string.Join(",", busIds)}]@{busLen}m" : ""));

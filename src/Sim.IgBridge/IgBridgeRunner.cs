@@ -38,6 +38,10 @@ public sealed class IgBridgeConfig
     // so a bus swings wide with no core change; only the vType and the render box length differ.
     public IReadOnlyCollection<string> BusVehicleIds { get; init; } = Array.Empty<string>();
     public double BusLengthMeters { get; init; } = 12.0;
+    // vClass for the promoted long vehicle: "bus" (12 m), "coach" (14 m), "truck" (7.1 m), "trailer"
+    // (16.5 m -- the longest single rigid body SUMO defines; neither SUMO nor SumoSharp simulate a true
+    // articulated hinge, so a "trailer" is one rigid 16.5 m box). Length is still taken from BusLengthMeters.
+    public string BusVClass { get; init; } = "bus";
     public double PedMaxSpeed { get; init; } = 1.3;      // matches BuildLiveCity's PedDemandConfig.MaxSpeed
     public double PedRadius { get; init; } = 0.3;        // matches BuildLiveCity's PedDemandConfig.Radius
     public double PedArriveRadius { get; init; } = 0.3;  // PedestrianWorld ctor default
@@ -163,7 +167,7 @@ public sealed class IgBridgeRunner
 
         _hasBuses = _busIds.Count > 0;
         _busVtype = _hasBuses
-            ? _engine.DefineVType(new VTypeParams { VClass = "bus", Sigma = 0.0, Length = config.BusLengthMeters })
+            ? _engine.DefineVType(new VTypeParams { VClass = config.BusVClass, Sigma = 0.0, Length = config.BusLengthMeters })
             : _vtype;
 
         _demand = RouteDemand.Parse(config.RouXmlPath);
