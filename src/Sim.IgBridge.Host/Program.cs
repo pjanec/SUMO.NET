@@ -53,7 +53,12 @@ using (var trace = new IgTraceWriter(tracePath))
         PositionSmoothTime = EnvD("IGBRIDGE_POS_SMOOTH", 0.60),
         LanePredictSmoothTime = EnvD("IGBRIDGE_LANEPRED", 0.18),
     };
-    var session = new IgBridgeSession(runner, emit, trace, retainAll: true, kinematics: kin);
+    var session = new IgBridgeSession(runner, emit, trace, retainAll: true, kinematics: kin)
+    {
+        // Spatial look-ahead: aim the front predictor at a point this far ahead on the upcoming lane
+        // centerline, so junction turn-ins hit the connecting lane instead of lagging off it. 0 disables.
+        LookAheadMeters = EnvD("IGBRIDGE_LOOKAHEAD", 0.0),
+    };
     // IGBRIDGE_DEBUG_VEH: one id or a comma-separated list (e.g. "v18,v98,v213,v321"); each gets its own CSV.
     var dbgIds = (Environment.GetEnvironmentVariable("IGBRIDGE_DEBUG_VEH") ?? "")
         .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);

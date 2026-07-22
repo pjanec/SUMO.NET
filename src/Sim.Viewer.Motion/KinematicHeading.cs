@@ -149,7 +149,8 @@ public sealed class KinematicHeading
     // axle), `speed` the resolved speed, `length` the vehicle length, `dt` the emit interval.
     public KinematicPose Update(
         VehicleHandle handle, double frontX, double frontY, float laneHeadingDeg,
-        double speed, double length, float dt, bool lateralEvent = false)
+        double speed, double length, float dt, bool lateralEvent = false,
+        float? predictHeadingDeg = null)
     {
         var lwb = _p.WheelbaseFactor * length;
 
@@ -212,7 +213,11 @@ public sealed class KinematicHeading
         var inX = frontX - s.Ex;
         var inY = frontY - s.Ey;
 
-        var (rawLx, rawLy) = Dir(laneHeadingDeg);
+        // Predictor direction: the LOOK-AHEAD heading when supplied (the chord to a point a few metres ahead
+        // ON THE UPCOMING LANE CENTERLINE — through a junction it already points down the connecting lane, so
+        // the front anticipates the turn and tracks the connecting centerline instead of turning in late).
+        // Falls back to the current lane heading (reactive) when no look-ahead is available.
+        var (rawLx, rawLy) = Dir(predictHeadingDeg ?? laneHeadingDeg);
         if (!s.Init)
         {
             s.Fx = inX;

@@ -376,9 +376,26 @@ stage just double-counted and pushed the front toward the next lane; it is retai
 for experimentation. Motion 11/11, IgBridge 11/11, parity 654 / 4-skip byte-identical.
 
 **On true look-ahead.** This predictor curves with the *current* lane heading — reactive, not yet reading the
-*upcoming* path (the forward trajectory a DDS producer ships to IGs). A genuinely anticipatory version would
-gate/scale the wide line by the upcoming curvature from `PoseResolver`'s forward lane geometry; logged as the
-next refinement.
+*upcoming* path (the forward trajectory a DDS producer ships to IGs). §5.13 prototypes that.
+
+### 5.13 Spatial look-ahead (EXPERIMENTAL — off by default)
+The reactive predictor (§5.12) keeps the front in-lane but tracks ~1.1–1.5 m off the CONNECTING-lane
+centerline through a junction (owner: v49 turns in a touch late, v229 overshoots, both then compensate). The
+fix is genuine anticipation: aim the front at a point `LookAheadMeters` ahead **on the upcoming lane
+centerline**. That point is free — `PoseResolver` already walks the upcoming lanes, so resolving a front pose
+with the arc position advanced by `LookAheadMeters` lands it down the connecting lane; the chord from the
+real front to it is the predictor direction. This is the same forward-path information a DDS producer ships
+to IGs.
+
+**It works on the target cases:** at `LookAheadMeters = 3` the front's offset from the connecting-lane
+centerline falls v49 1.15 → 0.49 m, v229 1.52 → 0.33 m — the car now rides the connecting centerline instead
+of overshooting/undershooting and compensating — and fleet *mean* yaw-accel reversals even improve (0.48 →
+0.32). **But** the resolved look-ahead point is unstable across some junction geometries: ~a dozen vehicles
+that were smooth (0–1 reversals) jitter (11–12) when it engages, and fleet lat-accel max jumps 70 → 367. So
+it is **off by default** (`LookAheadMeters = 0` ⇒ exactly v3); `IGBRIDGE_LOOKAHEAD=<m>` enables it. Making the
+look-ahead point stable (a wild-bearing guard is in place but insufficient; the point needs temporal
+smoothing / rejection of cross-junction jumps) is the work before it can become the default. Render-side
+only; with it off, parity and all v3 metrics are byte-identical.
 
 ---
 

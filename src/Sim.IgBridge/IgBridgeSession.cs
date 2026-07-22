@@ -66,6 +66,12 @@ public sealed class IgBridgeSession
     public int EmittedCount { get; private set; }
     public IReadOnlyCollection<IgSample> Ring => _ring;
 
+    // Spatial look-ahead (docs/IGBRIDGE-DECISIONS.md §5.13): metres ahead ON THE UPCOMING LANE CENTERLINE to
+    // aim the front predictor at, so through a junction it anticipates the connecting lane instead of turning
+    // in late. 0 disables (front follows the reactive current lane heading). Computed by re-resolving the
+    // front pose with an extended length (PoseResolver already walks the upcoming lanes for the bumper).
+    public double LookAheadMeters { get; set; }
+
     // Diagnostics (T2.0 smoothness investigation): when DebugVehicleId is set, every emit instant for that
     // vehicle records a per-STAGE row so the jitter source can be localised (PoseResolver front -> position
     // smoother -> kinematic center/heading -> drawn rear bumper). Off (null) by default.
@@ -217,7 +223,21 @@ public sealed class IgBridgeSession
             // pivots at the rear like a real car. KinematicHeading also critically-damps the front POSITION
             // (removes the faceted-polyline kinks that would ride through as a tail wiggle). Emit the vehicle
             // CENTER (the IG's models pivot on center) + the drag heading; z (Q5) = the lane-surface ground z.
-            var kp = _kinematic.Update(handle, frontX, frontY, laneHeading, speed, dims.Length, realDt, lateralEvent);
+            // Spatial look-ahead heading (aim the front down the upcoming connecting lane, not the current
+            // lane) so junction turn-ins hit the connecting-lane centerline instead of lagging ~1 m off it.
+            // Guard: a look-ahead point that lands on a wildly different bearing than the current lane heading
+            // is a bad resolve (the point fell off the end of the mapped lanes, or jumped across a junction
+            // gap) — reject it and fall back to the lane heading, else it injects a lateral-accel jolt.
+            float? predictHeading = null;
+            if (LookAheadMeters > 0.0
+                && TryLookAheadHeading(resolved.State, resolved.Upcoming, dims, frontX, frontY, upcoming, out var lah)
+                && Math.Abs(((lah - laneHeading + 540f) % 360f) - 180f) < 85f)
+            {
+                predictHeading = lah;
+            }
+
+            var kp = _kinematic.Update(handle, frontX, frontY, laneHeading, speed, dims.Length, realDt,
+                lateralEvent, predictHeading);
             var id = _runner.IdOf(handle);
 
             if ((DebugVehicleId is not null && id == DebugVehicleId)
@@ -277,6 +297,44 @@ public sealed class IgBridgeSession
         catch (KeyNotFoundException)
         {
             pose = default;
+            return false;
+        }
+    }
+
+    // Look-ahead heading: resolve a "front" pose with the length extended by LookAheadMeters — PoseResolver
+    // walks the same upcoming lanes, so the extra length lands the point that far further along the path (down
+    // the connecting lane through a junction). The chord from the real front to that point is the anticipatory
+    // predictor direction. Returns false (caller falls back to the lane heading) if it can't be resolved or
+    // the point is degenerate.
+    private bool TryLookAheadHeading(DrState rawState, UpcomingLanes upcomingLanes,
+        (double Length, double Width) dims, double frontX, double frontY, Span<int> scratch, out float headingDeg)
+    {
+        headingDeg = 0f;
+        if (LookAheadMeters <= 0.0)
+        {
+            return false;
+        }
+
+        // Advance the front ARC position by LookAheadMeters (Pos is the front reference; Length only sets the
+        // chord's back point, so extending it would NOT move the front forward). SampleForward walks into the
+        // upcoming lanes, so past the junction this lands on the connecting-lane centerline.
+        var state = rawState with { Length = dims.Length, Width = dims.Width, Pos = rawState.Pos + LookAheadMeters };
+        var n = upcomingLanes.CopyTo(scratch);
+        if (n == 0)
+        {
+            scratch[0] = state.LaneHandle;
+            n = 1;
+        }
+
+        try
+        {
+            var ahead = PoseResolver.Resolve(
+                _runner.Lanes, state, scratch[..n], ReadOnlySpan<int>.Empty, dt: 0.0, RenderRealism.ChordHeading);
+            headingDeg = NaviFromVector(ahead.X - frontX, ahead.Y - frontY, out var moved);
+            return moved;
+        }
+        catch (KeyNotFoundException)
+        {
             return false;
         }
     }
