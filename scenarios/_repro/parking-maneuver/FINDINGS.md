@@ -35,9 +35,11 @@ parking does not explain the knee's 5.5× **over**-accumulation.
   skips the stop and continues. (My vanilla had no `parking.rerouting`, so it queued on-lane. If SumoData's
   vanilla uses parking rerouting it also would not queue — so verify against their config before treating
   this as a divergence. Either way it makes SumoSharp *under*-accumulate.)
-- **B — FCD excludes parked vehicles:** vanilla's `--fcd-output` includes parked cars (with their lane +
-  speed 0); SumoSharp omits them. Affects any FCD-based density/viz. If SumoData bins FCD for veh/lkm, this
-  makes SumoSharp's measured density *lower*, not higher — again the wrong direction for the 5.5×.
+- **B — FCD excludes parked vehicles: FALSIFIED (2026-07-22).** This was a mis-observation. SumoSharp DOES
+  emit parked vehicles in the FCD — verified against committed scenario 70 (`parked-passable`): its `parkStay`
+  car appears throughout SumoSharp's FCD at speed 0, matching the vanilla-generated golden. The zero-parked
+  readings above were an artifact of Bug A: in those tests SumoSharp *skipped* the full lot (never parked), so
+  there were simply no parked cars to emit. There is no FCD parked-emission bug.
 
 ## Conclusion / hand-off
 The parking-maneuver hypothesis does not reproduce here. Combined with SumoData's own finding (the arrival-TL
