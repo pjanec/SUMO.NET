@@ -8,7 +8,10 @@ re-run; desktop-only aesthetic sign-off is the user's and noted as such — neve
 baseline + `Sim.Bench` determinism hash unchanged (single + parallel). Capture the baseline fresh on the
 first `src/` task of each stage and repeat the numbers here as each box is ticked.
 
-Baseline (fill on first src task): tests `___/___`, hash `________________`.
+Baseline (captured 2026-07-22, clean checkout at `d1b1638`): **895 pass / 4 skip** —
+ParityTests 654/4, Pedestrians 227, IgBridge 11, DotRecast 2, Host 1; determinism hash
+**`D96213B7BB4021A7`** (single == parallel). This is the standing bar for every `src/`-touching tick.
+Re-capture fresh per task (other sessions may edit the engine).
 
 ## Stage A — SumoSharp.LiveCity shared host
 - [ ] **A1** project scaffold (`src/Sim.LiveCity`, packs `SumoSharp.LiveCity.0.1.0`)
