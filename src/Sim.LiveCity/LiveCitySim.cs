@@ -464,6 +464,60 @@ public sealed class LiveCitySim : IDisposable
         return _carSampleScratch;
     }
 
+    // issue #15 residual chase (docs/LIVE-CITY-15-RESIDUAL-REPRO.md): an ENGINE-AUTHORITATIVE per-vehicle
+    // witness for confirming the turn-lane-segregation hypothesis -- LiveCityCar carries no lane/pos/posLat/
+    // speed/TL, so this reaches straight into the live Engine's read columns. Diagnostic accessor only
+    // (host-side, read-only, never mutates the engine -> parity-untouched); the smoke witness gates it on
+    // an env flag so normal runs pay nothing. GapAhead = longitudinal distance to the nearest same-lane
+    // car ahead (PositiveInfinity if none); Tl = the controlling TL link's state char for the car's lane
+    // ('\0' if the lane is not TL-controlled).
+    public readonly record struct CarAuthWitness(
+        VehicleHandle Handle, string LaneId, double Pos, double PosLat, double Speed, char Tl, double GapAhead);
+
+    public IReadOnlyList<CarAuthWitness> WitnessAuthoritative()
+    {
+        var handles = _engine.VehicleHandles;
+        var laneH = _engine.LaneHandles;
+        var laneIds = _engine.LaneIds;
+        var pos = _engine.Pos;
+        var posLat = _engine.PosLat;
+        var speed = _engine.Speed;
+        var tlLaneH = _engine.TlLaneHandles;
+        var tlStates = _engine.TlStates;
+        var n = handles.Length;
+
+        var outList = new List<CarAuthWitness>(n);
+        for (var i = 0; i < n; i++)
+        {
+            // GapAhead: nearest same-lane car with a greater longitudinal pos.
+            var gap = double.PositiveInfinity;
+            for (var j = 0; j < n; j++)
+            {
+                if (j == i || laneH[j] != laneH[i]) continue;
+                var d = pos[j] - pos[i];
+                if (d > 0.0 && d < gap) gap = d;
+            }
+
+            // TL char for the car's lane: any controlling link that is green wins ('G'/'g'), else the
+            // first controlling link's char, else '\0' (uncontrolled). Inlined (ReadOnlySpan can't be
+            // captured by a local function).
+            var tl = '\0';
+            for (var k = 0; k < tlLaneH.Length; k++)
+            {
+                if (tlLaneH[k] != laneH[i]) continue;
+                var c = (char)tlStates[k];
+                if (c is 'G' or 'g') { tl = c; break; }
+                if (tl == '\0') tl = c;
+            }
+
+            outList.Add(new CarAuthWitness(
+                handles[i], i < laneIds.Length ? laneIds[i] : string.Empty,
+                pos[i], posLat[i], speed[i], tl, gap));
+        }
+
+        return outList;
+    }
+
     // Reads back one frame of the coupled scene: cars from the last captured snapshot (crop-filtered),
     // peds from the demand's live ids (crop-filtered), and the crossing-occupancy peak.
     public LiveCitySnapshot Sample()

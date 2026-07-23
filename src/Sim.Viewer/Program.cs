@@ -1207,6 +1207,10 @@ static int RunLiveCitySmoke(int steps, string? recordPath, int simHz)
     var intSumSpd = 0.0;
     var intAggMove = 0.0;
     var dtProbe = cfg.Dt;
+    // issue #15 residual witness (docs/LIVE-CITY-15-RESIDUAL-REPRO.md): LIVECITY_WITNESS=1 dumps
+    // engine-authoritative state for cars stuck ON GREEN with a clear gap ahead -- the smoking gun for
+    // turn-lane segregation (a car that could discharge but sits jockeying laterally instead).
+    var witnessOn = Environment.GetEnvironmentVariable("LIVECITY_WITNESS") == "1";
     Console.WriteLine("LIVECITY-GRIDLOCK: t(s) liveCars stoppedFrac meanSpd(m/s) aggMove(m) arrivals peds");
 
     try
@@ -1244,6 +1248,38 @@ static int RunLiveCitySmoke(int steps, string? recordPath, int simHz)
                     $"LIVECITY-GRIDLOCK: {sim.Time,6:F0} {snap.Cars.Count,7} {stoppedFrac,10:F2} " +
                     $"{meanSpd,11:F2} {intAggMove,9:F0} {sim.ArrivedTotal,8} {snap.Peds.Count,4}");
                 intMatched = 0; intStopped = 0; intSumSpd = 0.0; intAggMove = 0.0;
+
+                // Witness: once the jam has set in (t>=60), classify stopped cars by WHY they're stopped.
+                // stuckOnGreenClear = speed<0.3 & TL green for their lane & no leader within 15 m ahead ->
+                // they could discharge but don't = turn-lane/lane-selection failure (not the light, not a
+                // leader). If this is a large share of the stopped cars, the turn-lane hypothesis holds.
+                if (witnessOn && sim.Time >= 60.0)
+                {
+                    var w = sim.WitnessAuthoritative();
+                    var stuck = 0; var stuckGreenClear = 0; var stuckRed = 0; var stuckLeader = 0;
+                    foreach (var c in w)
+                    {
+                        if (c.Speed >= 0.3) continue;
+                        stuck++;
+                        var green = c.Tl is 'G' or 'g';
+                        var clear = c.GapAhead > 15.0;
+                        if (green && clear) stuckGreenClear++;
+                        else if (!green && c.Tl != '\0') stuckRed++;
+                        else if (!clear) stuckLeader++;
+                    }
+
+                    Console.Write($"LIVECITY-WITNESS: {sim.Time,6:F0} stuck={stuck,3} stuckOnGreenClear={stuckGreenClear,3} " +
+                        $"stuckRed={stuckRed,3} stuckBehindLeader={stuckLeader,3} | examples:");
+                    var shown = 0;
+                    foreach (var c in w)
+                    {
+                        if (shown >= 4 || c.Speed >= 0.3 || !(c.Tl is 'G' or 'g') || c.GapAhead <= 15.0) continue;
+                        var gapStr = double.IsPositiveInfinity(c.GapAhead) ? "inf" : c.GapAhead.ToString("F0");
+                        Console.Write($" [{c.LaneId} pos={c.Pos:F1} posLat={c.PosLat:F2} spd={c.Speed:F2} tl={c.Tl} gap={gapStr}]");
+                        shown++;
+                    }
+                    Console.WriteLine();
+                }
             }
         }
     }
