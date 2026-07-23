@@ -45,8 +45,10 @@ public sealed class LiveCityConfig
     // lifted past the blockage (CheckJamTeleports, already ported; gated off at <=0). SUMO default is
     // 300 s; the demo wants a SHORT recovery ("driver didn't notice the gap, recovers quickly"). At 5 s
     // the downtown crop goes from ~0.39 stopped to ~0.10 (free flow) and arrivals 81 -> 188 over 200 s.
-    // 0 = off. Overridable via LIVECITY_TELEPORT. Only the demo enables it; scenarios/bench leave it off.
-    public double TimeToTeleportSeconds { get; set; } = 5.0;
+    // 0 = OFF (default). Owner rejected teleport as an unrealistic cure ("the car needs to travel THROUGH
+    // the junction, not jump across"), so it is off by default; the knob stays for experimentation only.
+    // Overridable via LIVECITY_TELEPORT. Only the demo could enable it; scenarios/bench always leave it off.
+    public double TimeToTeleportSeconds { get; set; } = 0.0;
 
     public int CarSpawnPerStep { get; set; } = 5;
 

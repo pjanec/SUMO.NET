@@ -284,6 +284,38 @@ didn't notice the gap and recovers quickly.
   pointing at (report #15). The only tradeoff is teleport's forward *jump* (SUMO's own behaviour) — GPU
   session to tune 5 vs 10 s for the best look. Design: `docs/LIVE-CITY-15-YIELD-TIMEOUT-DESIGN.md`.
 
+## 2026-07-23 — TERMINAL gridlock IS reproduced (needed ~900 s); root = accumulating DEAD-END strands
+Owner: the GPU viewer gets stuck EVERY run; almost all cars standing, junctions "occupied", cars on
+green with NO visible reason; teleport (jump across) is the wrong cure — the car must travel THROUGH.
+Prior runs only went to 200-400 s and missed it. Ran the DEFAULT density (160) to 1000 s, teleport OFF:
+```
+t   stoppedFrac arrivals
+340   0.63       154
+580   0.86       228
+760   0.93       250
+940   0.99       257   <- terminal: ~all standing
+1000  0.97       258   (flatlined: +1 arrival in 120 s)
+```
+So the demo DOES reach TOTAL gridlock; it just takes ~15 min of sim time (the merge fix only DELAYED
+it). Terminal-state witness (t=1000):
+- **`stuckInternal=0, onInternal=0`** — junctions are EMPTY. NOT a box-block / cars-frozen-mid-junction.
+- **`strandedDeadEnd` grew 3 → 8–22** — cars PERMANENTLY frozen in a dead-end lane (their lane has no
+  connection to their next route edge → the engine clamps Speed=0 FOREVER, `TryReResolveFromActualLane`
+  fails → `Engine.cs:9587-9611`). These are the only PERMANENT blockers; the red (70) + behindLeader
+  (62) masses are downstream consequences that can never clear because the strands wall off lanes.
+- Matches the owner exactly: "car on green, no visible reason" = stranded at a lane-end with no route
+  connection (no foe, no light — a lane/route mismatch); teleport masks it, the car must travel through.
+
+**This is the turn-lane / dead-end strand issue** — dismissed early (strandedDeadEnd ~0-3 at 200 s) but
+it ACCUMULATES: each permanently-frozen car seeds a growing jam until the network locks. NOT the
+cross-traffic yield (that was the pre-terminal transient), NOT box-block, NOT teleport-curable properly.
+
+**REAL FIX (not teleport):** when a car dead-ends (its actual lane has no connection to its next route
+edge), RE-RESOLVE / reroute it onto a connection its lane DOES offer and let it drive through, instead
+of the permanent Speed=0 clamp. = the DENSE-FLOW-THROUGHPUT-DIAGNOSIS "candidate 1" (generalize
+`TryReResolveFromActualLane` to fire at the stop-line approach). Design-first, parity-gated.
+Teleport default set back to 0 (owner rejected it as unrealistic).
+
 ## Retired-machinery note (shelved, for the record — NOT to build now)
 Mechanism-gathering found the follower-cooperation channel was already built and RETIRED in `afec614`
 ("Retire the cooperative informFollower"): `VehicleRuntime.CoopSpeedAdvice` (+∞ default) +
