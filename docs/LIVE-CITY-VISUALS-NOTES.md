@@ -53,12 +53,18 @@ Add scene-overlay loaders once, in the shared host, so 2D and 3D don't each re-p
 Each step lands in both viewers (2D first — cheaper/faster to iterate — then 3D), independently demoable,
 render-side only (parity untouched). We formalize into design/tasks/tracker before building, per CLAUDE.md.
 
-## Open decisions for the owner
-- **Building heights:** use `buildings.json` `height_m` directly (it's present), or a `type→height` band with
-  id-hash jitter (the reference's generic approach)? Recommend: **use `height_m`** (real data beats synthetic).
-- **Procedural fallback scope:** keep `BuildingPlacer` strictly as the no-data fallback (recommended), or also
-  as an owner-toggle for A/B? Recommend fallback-only.
-- **POI prop fidelity:** simple colored markers/glyphs first (fast), or modeled props (benches/posts/pylons)?
-  Recommend markers first, upgrade later.
-- **2D scope:** do the static layers land in the Raylib 2D viewer too, or is 2D "good enough" and we focus the
-  richness on 3D? (The 2D reference has them all; cheap to port, but the 3D is the showcase.)
+## Decisions (owner-confirmed)
+- **STANDING DIRECTIVE — data over defaults.** Whenever we have real data for something, render/drive it from
+  the data, not a synthetic default. Defaults/procedural are a **fallback for when data is absent**, only.
+  (This governs every layer below, not just buildings.)
+- **Building heights:** use `buildings.json` `height_m` directly. ✔
+- **Procedural `BuildingPlacer`:** demoted to the **no-data fallback only** (used when `buildings.json` is
+  absent). ✔
+- **2D scope:** the static layers land in the **Raylib 2D viewer too** — confirmed important for orientation +
+  bug-spotting, not just aesthetics. Port each layer to BOTH viewers (2D first to iterate fast, then 3D). ✔
+
+## Still open (minor, decide during build)
+- **POI prop fidelity (3D):** simple colored markers/glyphs first (fast), upgrade to modeled props
+  (benches/posts/pylons) later. Recommend markers-first.
+- Whether to promote the "data over defaults" directive into `CLAUDE.md` as a standing project rule (happy to,
+  on request).
