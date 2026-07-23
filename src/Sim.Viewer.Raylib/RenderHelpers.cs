@@ -87,7 +87,14 @@ public static class RenderHelpers
                     $"delay={drClock.EffectiveDelay:F3} avgint={drClock.AvgSampleInterval:F3} hist={history.Count}");
             }
 
-            vehicleDraws.Add(new Renderer.DrVehicleDraw(px, py, pdeg, length, width, resolved.State.Speed));
+            // docs/LIVE-CITY-VIEWERS-TASKS.md Stage C (C3): carry the handle through, same as
+            // BuildLocalVehicleDraws already does -- DrVehicleDraw.Handle already exists for exactly this
+            // (D10's "an overlay keys its own per-vehicle state off it"); it was simply never threaded on
+            // this DR path before. Needed so a replay-mode LiveCityOverlay can identify/click-select
+            // vehicles reconstructed from a file source, the same way the live path does from
+            // LiveCitySim.Sample(). Existing callers (loopback/remote) are unaffected -- nothing reads
+            // DrVehicleDraw.Handle on those paths today.
+            vehicleDraws.Add(new Renderer.DrVehicleDraw(px, py, pdeg, length, width, resolved.State.Speed, handle));
         }
     }
 

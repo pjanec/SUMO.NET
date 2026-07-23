@@ -46,6 +46,19 @@ public sealed class LiveCitySim : IDisposable
     private readonly InMemoryReplicationBus _vehBus = new();
     private bool _vehGeometryPublished;
 
+    // docs/LIVE-CITY-VIEWERS-DESIGN.md §2.2, -TASKS.md Stage C (C1): an OPTIONAL tee onto a caller-supplied
+    // sink (e.g. a RecordingReplicationSink writing a .simrec) -- purely additive, a null sink is the
+    // default and costs nothing beyond the two null checks in Step(). A SEPARATE ReplicationPublisher
+    // instance (never the live `_vehPublisher` above) drives it: ReplicationPublisher's own per-vehicle
+    // lifecycle/adaptive-publish bookkeeping is STATEFUL, so sharing one instance across the live bus and
+    // the record sink would make the second PublishStep call each tick see "already known" vehicles the
+    // first call just announced, silently dropping spawn/despawn events from the recording. LiveCitySim
+    // owns no file handle here and never disposes `_recordVehSink` -- the caller (RunLiveCity) constructs
+    // and disposes it, exactly as the design's "LiveCitySim does not know about files" tenet requires.
+    private readonly IReplicationSink? _recordVehSink;
+    private readonly ReplicationPublisher? _recordPublisher;
+    private bool _recordGeometryPublished;
+
     // The ped publish wire (mirrors CityLib/PedSimSource.cs).
     private readonly PedReplicationPublisher _pedWirePublisher;
     private readonly InMemoryPedReplicationBus _pedBus = new();
@@ -53,9 +66,11 @@ public sealed class LiveCitySim : IDisposable
     private double _now;
     private SimulationSnapshot _lastSnapshot = SimulationSnapshot.Empty;
 
-    public LiveCitySim(LiveCityConfig cfg)
+    public LiveCitySim(LiveCityConfig cfg, IReplicationSink? recordVehSink = null)
     {
         _cfg = cfg ?? throw new ArgumentNullException(nameof(cfg));
+        _recordVehSink = recordVehSink;
+        _recordPublisher = recordVehSink is not null ? new ReplicationPublisher() : null;
         _x0 = cfg.X0; _y0 = cfg.Y0; _x1 = cfg.X1; _y1 = cfg.Y1;
 
         var netPath = Path.Combine(cfg.DatasetDir, "net.xml");
@@ -290,6 +305,20 @@ public sealed class LiveCitySim : IDisposable
 
         _vehPublisher.PublishStep(snap, _vehBus.Sink);
         _vehBus.Source.Pump();
+
+        // Stage C (C1) tee: also publish this step onto the record sink, if one was supplied -- geometry
+        // once (its own publish-once latch, independent of `_vehGeometryPublished` above), then the frame,
+        // through the DEDICATED `_recordPublisher` (see its field comment for why it must not be shared).
+        if (_recordVehSink is not null && _recordPublisher is not null)
+        {
+            if (!_recordGeometryPublished)
+            {
+                _recordPublisher.PublishGeometryOnce(Network, _recordVehSink);
+                _recordGeometryPublished = true;
+            }
+
+            _recordPublisher.PublishStep(snap, _recordVehSink);
+        }
 
         var newEvents = new List<PedEvent>(_pedPublisher.Events.Count - beforeCount);
         for (var e = beforeCount; e < _pedPublisher.Events.Count; e++)

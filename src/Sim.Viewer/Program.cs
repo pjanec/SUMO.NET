@@ -11,6 +11,7 @@ using Sim.LiveCity;
 using Sim.Pedestrians.Lod;
 using Sim.Replication;
 using Sim.Replication.Dds;
+using Sim.Replication.Recording;
 using Sim.Viewer;
 using Sim.Viewer.Core;
 using Sim.Viewer.Motion;
@@ -73,6 +74,13 @@ var demoSmoke = false;
 // LiveCitySim step + reconstruct loop headlessly (no window, no raylib draw calls) and logs/asserts the
 // coupled-scene invariants, for CI/offline verification. Meaningless outside `--mode live-city`.
 var liveCitySmoke = false;
+// docs/LIVE-CITY-VIEWERS-TASKS.md Stage C (C3): `--mode live-city --record <file>` tees the live run's car
+// stream (via a RecordingReplicationSink handed into LiveCitySim's tee ctor param) and the ped stream
+// (written directly by the record loop each step) into one `.simrec`. `--replay <file>` (or `--mode
+// live-city --replay <file>`) plays a previously recorded file back through the SAME overlay/render path,
+// with a playback panel instead of the live sim controls -- see RunLiveCityReplay.
+string? recordPath = null;
+string? replayPath = null;
 var frames = 150;
 var delaySeconds = 1.0f; // default DR playout delay (s). The auto "always interpolate" delay is OFF by
                          // default -- it fluctuated and made rendered speed visibly pulse; a stable manual
@@ -155,6 +163,12 @@ for (var i = 0; i < args.Length; i++)
         case "--smoke":
             liveCitySmoke = true;
             break;
+        case "--record":
+            recordPath = args[++i];
+            break;
+        case "--replay":
+            replayPath = args[++i];
+            break;
         case "--overlay-test":
             overlayTest = true;
             break;
@@ -198,11 +212,21 @@ if (mode == "ped-publish")
 // docs/LIVE-CITY-VIEWERS-DESIGN.md §1/§5-adjacent, -TASKS.md Stage B: `--mode live-city` -- no scenario
 // arg (the dataset is fixed via `LiveCityConfig.ForRepoRoot`), so dispatched before the `inputPath is
 // null` guard, exactly like `ped-publish` above. `--smoke` diverts to the headless gating check.
+// Stage C: `--replay <file>` swaps the whole LIVE half (LiveCitySim + its real-time step pacing) for a
+// `.simrec` file source + PlaybackClock -- RunLiveCityReplay/RunLiveCityReplaySmoke, never RunLiveCity.
+// `--record <file>` stays a modifier of the LIVE path (RunLiveCity/RunLiveCitySmoke both accept it).
 if (mode == "live-city")
 {
+    if (replayPath is not null)
+    {
+        return liveCitySmoke
+            ? RunLiveCityReplaySmoke(replayPath)
+            : RunLiveCityReplay(replayPath, screenshotPath, frames);
+    }
+
     return liveCitySmoke
-        ? RunLiveCitySmoke(Math.Max(frames, 120))
-        : RunLiveCity(screenshotPath, frames, delaySeconds, simRate);
+        ? RunLiveCitySmoke(Math.Max(frames, 120), recordPath)
+        : RunLiveCity(screenshotPath, frames, delaySeconds, simRate, recordPath);
 }
 
 // docs/SUMOSHARP-VIEWER-DEMO-EVAC-DESIGN.md §5: `--mode local --demo "<name>"` needs NO <path> at all --
@@ -751,11 +775,22 @@ static int RunPedPublish(double? secondsCap)
 // Z-aware `LocalLanes` (a NetworkLaneSource over the real, in-process NetworkModel) as the lane-shape
 // source instead of a wire-decoded 2-D one. `LiveCityOverlay` draws the pedestrian crowd + click-selected
 // vehicle identity on top, fed a fresh `sim.Sample()` every render frame.
-static int RunLiveCity(string? screenshotPath, int frames, float delaySeconds, double? speedFactor)
+// docs/LIVE-CITY-VIEWERS-TASKS.md Stage C (C3): `recordPath` (from `--record <file>`) is an OPTIONAL tee --
+// null means "record nothing", byte-identical to Stage B's behaviour. When set, a RecordingReplicationSink
+// owns the `.simrec` file: it is handed into LiveCitySim's own tee ctor param for the car track (geometry +
+// lifecycle + frames, written once per LiveCitySim.Step()), and this loop writes one PEDFRAME per Step()
+// too (sim.Sample().Peds converted to the neutral tuple PedFrameTrack/SimRecWriter expect) -- both tracks
+// share the ONE writer/file so they interleave by time.
+static int RunLiveCity(string? screenshotPath, int frames, float delaySeconds, double? speedFactor, string? recordPath)
 {
     var repoRoot = DemoCatalog.RepoRoot();
     var cfg = LiveCityConfig.ForRepoRoot(repoRoot);
-    using var sim = new LiveCitySim(cfg);
+
+    RecordingReplicationSink? recorder = recordPath is not null
+        ? new RecordingReplicationSink(recordPath, cfg.Dt, datasetId: cfg.DatasetDir)
+        : null;
+
+    using var sim = new LiveCitySim(cfg, recorder);
 
     var overlay = new LiveCityOverlay();
     var frameStats = new FrameStats();
@@ -790,6 +825,14 @@ static int RunLiveCity(string? screenshotPath, int frames, float delaySeconds, d
             {
                 sim.Step();
                 accumWall -= cfg.Dt;
+
+                // One PEDFRAME per sim tick (matching the car track's own per-Step() cadence), not per
+                // render frame -- a stalled/late render frame that lets this loop run more than once must
+                // not silently drop the intermediate steps' ped positions from the recording.
+                if (recorder is not null)
+                {
+                    recorder.WritePedFrame(sim.Time, ToPedTuples(sim.Sample().Peds));
+                }
             }
 
             overlay.UpdateSnapshot(sim.Sample());
@@ -820,12 +863,41 @@ static int RunLiveCity(string? screenshotPath, int frames, float delaySeconds, d
                 ImGui.Text($"sim time: {sim.Time:F1}s");
                 ImGui.Text($"renderSim(dr): {drClock.RenderSim:F2}s   simRate: {drClock.SimRate:F2}/s");
                 ImGui.Text($"GC gen0/1/2: {GC.CollectionCount(0)} / {GC.CollectionCount(1)} / {GC.CollectionCount(2)}");
+                if (recorder is not null)
+                {
+                    ImGui.Text($"recording: {recordPath}");
+                }
                 ImGui.End();
             }
         },
     };
 
-    return ViewerHost.Run(cfgHost);
+    try
+    {
+        return ViewerHost.Run(cfgHost);
+    }
+    finally
+    {
+        recorder?.Dispose();
+    }
+}
+
+// docs/LIVE-CITY-VIEWERS-TASKS.md Stage C (C1): LiveCityPed -> the neutral tuple RecordingReplicationSink/
+// SimRecWriter/PedFrameTrack all use, so Sim.Replication.Recording never needs a Sim.LiveCity reference
+// (the design's explicit "no dependency on Sim.LiveCity" instruction for the ped track). PedRegime's
+// numeric values (LowPowerWalking=0, HighPower=1, Paused=2) are the wire's `Regime` byte verbatim -- the
+// replay side casts back with `(PedRegime)tuple.Regime`.
+static IReadOnlyList<(int Id, float X, float Y, float Z, byte Regime, string AnimTag)> ToPedTuples(
+    IReadOnlyList<LiveCityPed> peds)
+{
+    var arr = new (int Id, float X, float Y, float Z, byte Regime, string AnimTag)[peds.Count];
+    for (var i = 0; i < peds.Count; i++)
+    {
+        var p = peds[i];
+        arr[i] = (p.Id, (float)p.X, (float)p.Y, (float)p.Z, (byte)p.Regime, p.AnimTag);
+    }
+
+    return arr;
 }
 
 // docs/LIVE-CITY-VIEWERS-TASKS.md Stage B success condition ("headless smoke, the gating functional
@@ -836,11 +908,20 @@ static int RunLiveCity(string? screenshotPath, int frames, float delaySeconds, d
 // plus the crossing-yield gate having fired at least once ACROSS the whole run (peakOccupiedCrossings>0 --
 // occupancy is transient/instantaneous, so gating on one arbitrary frame's snapshot would be flaky; "was
 // the gate ever proven live over the run" is the same invariant Stage A's own LiveCitySimTests asserts).
-static int RunLiveCitySmoke(int steps)
+// docs/LIVE-CITY-VIEWERS-TASKS.md Stage C (C1): `recordPath` (from `--record <file>` combined with
+// `--smoke`) is an OPTIONAL tee, identical in spirit to RunLiveCity's -- null reproduces Stage B's
+// behaviour byte-for-byte; set, it records the whole smoke run to a `.simrec` and reports its record
+// counts, giving a headless (no window, no Xvfb) way to produce+verify a recording end-to-end.
+static int RunLiveCitySmoke(int steps, string? recordPath = null)
 {
     var repoRoot = DemoCatalog.RepoRoot();
     var cfg = LiveCityConfig.ForRepoRoot(repoRoot);
-    using var sim = new LiveCitySim(cfg);
+
+    RecordingReplicationSink? recorder = recordPath is not null
+        ? new RecordingReplicationSink(recordPath, cfg.Dt, datasetId: cfg.DatasetDir)
+        : null;
+
+    using var sim = new LiveCitySim(cfg, recorder);
 
     var frameStats = new FrameStats();
     var drClock = new DrClock();
@@ -848,13 +929,21 @@ static int RunLiveCitySmoke(int steps)
     var draws = new List<Renderer.DrVehicleDraw>();
 
     var snap = sim.Sample();
-    for (var i = 0; i < steps; i++)
+    try
     {
-        sim.Step();
-        frameStats.Add(1f / 60f);
-        RenderHelpers.PumpAndBuildVehicleDraws(sim.VehicleSource, drClock, delaySeconds: 0.5f, smooth: true,
-            frameStats, recon, draws, paused: false, laneSource: sim.LocalLanes);
-        snap = sim.Sample();
+        for (var i = 0; i < steps; i++)
+        {
+            sim.Step();
+            frameStats.Add(1f / 60f);
+            RenderHelpers.PumpAndBuildVehicleDraws(sim.VehicleSource, drClock, delaySeconds: 0.5f, smooth: true,
+                frameStats, recon, draws, paused: false, laneSource: sim.LocalLanes);
+            snap = sim.Sample();
+            recorder?.WritePedFrame(sim.Time, ToPedTuples(snap.Peds));
+        }
+    }
+    finally
+    {
+        recorder?.Dispose();
     }
 
     var reconstructedCars = draws.Count;
@@ -874,7 +963,173 @@ static int RunLiveCitySmoke(int steps)
         return 1;
     }
 
+    if (recordPath is not null)
+    {
+        var fileInfo = new System.IO.FileInfo(recordPath);
+        Console.WriteLine($"LIVECITY-SMOKE: recorded '{recordPath}' ({fileInfo.Length} bytes).");
+    }
+
     Console.WriteLine("LIVECITY-SMOKE: OK.");
+    return 0;
+}
+
+// docs/LIVE-CITY-VIEWERS-DESIGN.md §2/§4, -TASKS.md Stage C (C3): the live-city REPLAY windowed run --
+// structurally `--mode remote` with a `.simrec` ReplicationFileSource standing in for the DdsSubscriber:
+// no EngineHost/LiveCitySim anywhere in this process, just the file source + a PedFrameTrack + a
+// PlaybackClock driving both. Cars reconstruct through the SAME RenderHelpers.PumpAndBuildVehicleDraws path
+// every other mode uses (fed the file source directly -- it implements IReplicationSource, so nothing
+// downstream can tell); geometry has no Z on the wire yet, so (unlike the live path) the lane source is
+// omitted and PumpAndBuildVehicleDraws falls back to its own DdsGeometryLaneSource over the file's decoded
+// 2-D geometry, exactly like loopback/remote already do. LiveCityOverlay is reused UNCHANGED (design §5) --
+// only the LiveCitySnapshot it is fed differs (built from the reconstructed draws' Handle + the
+// PedFrameTrack's frame at Clock.Now, rather than from LiveCitySim.Sample()).
+static int RunLiveCityReplay(string replayPath, string? screenshotPath, int frames)
+{
+    var clock = new PlaybackClock();
+    using var fileSource = new ReplicationFileSource(replayPath, clock);
+    clock.Duration = fileSource.Duration;
+    clock.Dt = fileSource.Dt > 0.0 ? fileSource.Dt : 0.5;
+
+    var pedTrack = new PedFrameTrack(replayPath);
+
+    var overlay = new LiveCityOverlay();
+    var frameStats = new FrameStats();
+    var drClock = new DrClock();
+    var recon = new KinematicReconstructor { CoarseFeed = true };
+
+    var draggingSlider = false;
+    var wasPlayingBeforeDrag = false;
+    var cameraFitted = false;
+
+    var cfgHost = new ViewerHostConfig
+    {
+        WindowTitle = "SumoSharp - native viewer (live city replay)",
+        ScreenshotPath = screenshotPath,
+        Frames = frames,
+
+        InitialCameraBounds = () => null,
+
+        PumpFrame = (dt, draws) =>
+        {
+            frameStats.Add(dt);
+            clock.Tick(dt);
+
+            fileSource.Pump();
+
+            RenderHelpers.PumpAndBuildVehicleDraws(fileSource, drClock, delaySeconds: 0f, smooth: true,
+                frameStats, recon, draws, paused: !clock.Playing);
+
+            // Build the LiveCitySnapshot LiveCityOverlay expects from what replay actually has: the
+            // reconstructed cars' Handle+pose (identity label falls back to the handle's own ToString --
+            // the wire carries no vehicle NAME yet, docs/LIVE-CITY-VIEWERS-DESIGN.md §3.1 is a separate,
+            // not-yet-landed stage) and the PedFrameTrack frame nearest the clock's current time.
+            var cars = new List<LiveCityCar>(draws.Count);
+            foreach (var d in draws)
+            {
+                cars.Add(new LiveCityCar(d.Handle, d.FrontX, d.FrontY, 0.0, d.HeadingDeg, d.Length, d.Width, d.Handle.ToString()));
+            }
+
+            var pedFrame = pedTrack.PedsAt(clock.Now);
+            var peds = new List<LiveCityPed>(pedFrame.Count);
+            foreach (var p in pedFrame)
+            {
+                peds.Add(new LiveCityPed(p.Id, p.X, p.Y, p.Z, (Sim.LiveCity.PedRegime)p.Regime, p.AnimTag));
+            }
+
+            overlay.UpdateSnapshot(new LiveCitySnapshot(cars, peds, occupiedCrossings: 0));
+        },
+
+        RefitCameraBounds = () =>
+        {
+            if (!cameraFitted && fileSource.Geometry.Count > 0)
+            {
+                cameraFitted = true;
+                return RenderHelpers.ComputeGeometryBounds(fileSource.Geometry);
+            }
+
+            return null;
+        },
+
+        DrawWorld = (camera, draws) =>
+        {
+            Renderer.DrawWorldDds(camera, fileSource.Geometry, fileSource.TlStateByLane, draws);
+            overlay.DrawWorldOver(camera, SimulationSnapshot.Empty, draws);
+
+            if (!fileSource.GeometryComplete)
+            {
+                Renderer.DrawWaitingOverlay(Raylib.GetScreenWidth(), Raylib.GetScreenHeight(), "loading recording...");
+            }
+        },
+
+        OnWorldClick = (wx, wy) => overlay.OnWorldClick(wx, wy),
+
+        DrawImGui = showDiagnostics =>
+        {
+            ViewerControlsPanels.DrawPlaybackPanel(clock, ref draggingSlider, ref wasPlayingBeforeDrag);
+            overlay.DrawUi();
+            if (showDiagnostics)
+            {
+                var (min, avg, p99) = frameStats.Compute();
+                ImGui.SetNextWindowPos(new System.Numerics.Vector2(10, 410), ImGuiCond.FirstUseEver);
+                ImGui.SetNextWindowSize(new System.Numerics.Vector2(360, 170), ImGuiCond.FirstUseEver);
+                ImGui.Begin("SumoSharp - diagnostics");
+                ImGui.Text($"fps: {Raylib.GetFPS()}");
+                ImGui.Text($"frame ms  min {min * 1000f:F2}  avg {avg * 1000f:F2}  p99 {p99 * 1000f:F2}");
+                ImGui.Text($"replay: {replayPath}");
+                ImGui.Text($"cars in view: {fileSource.History.Count}   peds: {pedTrack.PedsAt(clock.Now).Count}");
+                ImGui.End();
+            }
+        },
+    };
+
+    return ViewerHost.Run(cfgHost);
+}
+
+// docs/LIVE-CITY-VIEWERS-TASKS.md Stage C (C3) success condition ("a --replay <file> --smoke that steps
+// through the whole recording and asserts reconstructedCars>0 && peds>0 sourced FROM THE FILE"). No window,
+// no ViewerHost -- drives the SAME ReplicationFileSource/PedFrameTrack/PlaybackClock/RenderHelpers path
+// RunLiveCityReplay uses, just headlessly, stepping the clock across the whole recorded duration.
+static int RunLiveCityReplaySmoke(string replayPath)
+{
+    var clock = new PlaybackClock();
+    using var fileSource = new ReplicationFileSource(replayPath, clock);
+    clock.Duration = fileSource.Duration;
+    clock.Dt = fileSource.Dt > 0.0 ? fileSource.Dt : 0.5;
+
+    var pedTrack = new PedFrameTrack(replayPath);
+
+    var frameStats = new FrameStats();
+    var drClock = new DrClock();
+    var recon = new KinematicReconstructor { CoarseFeed = true };
+    var draws = new List<Renderer.DrVehicleDraw>();
+
+    var stepDt = clock.Dt > 0.0 ? clock.Dt : 0.5;
+    var reconstructedCars = 0;
+    var peds = 0;
+
+    for (var t = 0.0; t <= clock.Duration + 1e-6; t += stepDt)
+    {
+        clock.SeekTo(t);
+        fileSource.Pump();
+        frameStats.Add((float)stepDt);
+        RenderHelpers.PumpAndBuildVehicleDraws(fileSource, drClock, delaySeconds: 0.5f, smooth: true,
+            frameStats, recon, draws, paused: false);
+        reconstructedCars = Math.Max(reconstructedCars, draws.Count);
+        peds = Math.Max(peds, pedTrack.PedsAt(t).Count);
+    }
+
+    Console.WriteLine(
+        $"LIVECITY-REPLAY-SMOKE: duration={clock.Duration:F1} frames={pedTrack.FrameCount} " +
+        $"reconstructedCars={reconstructedCars} peds={peds}");
+
+    if (reconstructedCars <= 0 || peds <= 0)
+    {
+        Console.Error.WriteLine(
+            "LIVECITY-REPLAY-SMOKE: FAILED -- expected reconstructedCars>0 && peds>0.");
+        return 1;
+    }
+
+    Console.WriteLine("LIVECITY-REPLAY-SMOKE: OK.");
     return 0;
 }
 
