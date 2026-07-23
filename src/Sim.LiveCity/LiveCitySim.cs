@@ -491,9 +491,13 @@ public sealed class LiveCitySim : IDisposable
     // lane is empty or unknown) -- a small value means the junction EXIT is occupied at its mouth, so the
     // car holds even though its OWN lane is clear ahead (keep-clear / cross-junction car-following, which
     // the same-lane GapAhead cannot see).
+    // TlWire = the state char the VIEWER actually renders for this car's lane, read from the published
+    // wire (VehicleSource.TlStateByLane) rather than the engine -- so `Tl != TlWire` means the rendered
+    // signal head disagrees with the engine's authoritative phase (a "stopped under a green-rendered
+    // head while the engine has it red" render bug).
     public readonly record struct CarAuthWitness(
         VehicleHandle Handle, string LaneId, double Pos, double PosLat, double Speed, char Tl, double GapAhead,
-        string TlLinks, double NextMouthGap);
+        string TlLinks, double NextMouthGap, char TlWire);
 
     public IReadOnlyList<CarAuthWitness> WitnessAuthoritative()
     {
@@ -506,6 +510,7 @@ public sealed class LiveCitySim : IDisposable
         var tlLaneH = _engine.TlLaneHandles;
         var tlStates = _engine.TlStates;
         var nextLaneH = _engine.NextLaneHandles;
+        var wireTl = _vehBus.Source.TlStateByLane; // what the viewer renders
         var n = handles.Length;
 
         var outList = new List<CarAuthWitness>(n);
@@ -548,9 +553,11 @@ public sealed class LiveCitySim : IDisposable
                 }
             }
 
+            var tlWire = wireTl.TryGetValue(laneH[i], out var wb) ? (char)wb : '\0';
+
             outList.Add(new CarAuthWitness(
                 handles[i], i < laneIds.Length ? laneIds[i] : string.Empty,
-                pos[i], posLat[i], speed[i], tl, gap, links, nextMouthGap));
+                pos[i], posLat[i], speed[i], tl, gap, links, nextMouthGap, tlWire));
         }
 
         return outList;

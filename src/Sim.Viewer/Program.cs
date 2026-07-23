@@ -1265,6 +1265,7 @@ static int RunLiveCitySmoke(int steps, string? recordPath, int simHz)
                 {
                     var w = sim.WitnessAuthoritative();
                     var stuck = 0; var stuckMinorGreen = 0; var stuckMajorGreen = 0; var stuckRed = 0; var stuckLeader = 0;
+                    var renderedGreen = 0; var tlLie = 0; // wire(rendered) vs engine TL
                     foreach (var c in w)
                     {
                         if (c.Speed >= 0.3) continue;
@@ -1274,10 +1275,17 @@ static int RunLiveCitySmoke(int steps, string? recordPath, int simHz)
                         else if (c.Tl == 'G' && clear) stuckMajorGreen++;       // ANOMALY: protected green, all clear
                         else if (!(c.Tl is 'G' or 'g') && c.Tl != '\0') stuckRed++;
                         else stuckLeader++;                                     // blocked by a leader / occupied exit
+
+                        // What does the VIEWER show for this stopped car's light?
+                        var wireGreen = c.TlWire is 'G' or 'g';
+                        var engRed = !(c.Tl is 'G' or 'g') && c.Tl != '\0';
+                        if (wireGreen) renderedGreen++;                          // stopped under a green-rendered head
+                        if (wireGreen && engRed) tlLie++;                        // rendered green but engine RED = render lie
                     }
 
                     Console.Write($"LIVECITY-WITNESS: {sim.Time,6:F0} stuck={stuck,3} minorGreenYield={stuckMinorGreen,3} " +
-                        $"majorGreenSTUCK={stuckMajorGreen,3} red={stuckRed,3} behindLeader/exit={stuckLeader,3} strandedDeadEnd={sim.StrandedOffRouteLastStep,3} | examples:");
+                        $"majorGreenSTUCK={stuckMajorGreen,3} red={stuckRed,3} behindLeader/exit={stuckLeader,3} strandedDeadEnd={sim.StrandedOffRouteLastStep,3} " +
+                        $"renderedGreen={renderedGreen,3} tlRenderLie={tlLie,3} | examples:");
                     var shown = 0;
                     foreach (var c in w)
                     {

@@ -128,6 +128,28 @@ SUMO (per-junction throughput diff, or instrument the yield decision for a `majo
 design-first a parity-safe fix to the permissive-yield (`blockedByFoe`, `f69a58d`) path. Do NOT touch
 lane-change cooperation.
 
+## 2026-07-23 — Owner correction: "city full of cars standing on GREEN" — render-faithful, real
+Owner pushed back that the visible symptom is a CITY FULL of cars stopped on GREEN, not the "mostly
+normal red queuing" I had framed. Checked the render-vs-engine TL hypothesis directly: added `TlWire`
+(the wire/rendered state `VehicleSource.TlStateByLane`) alongside the engine state in the witness.
+Result (cap 160): **`tlRenderLie = 0` at every checkpoint** — the rendered signal heads faithfully
+match the engine (NO render lie), and **`renderedGreen = 11–30` of the 47–122 stopped cars (~25–45%)
+are genuinely under a green head.** So:
+- The cars really ARE on green in the engine — not a rendering artifact (unlike the earlier posLat
+  float). My "mostly normal red congestion" framing UNDER-counted the on-green stalls; correction
+  logged.
+- Most on-green stopped cars are **queues backed up behind a junction whose FRONT car will not
+  discharge** (minor-green yield / protected-green stall / blocked exit). The front car is the root;
+  the queue behind it (all on green) is the visible "city full on green."
+- Sharpest no-innocent-explanation signature = **`majorGreenSTUCK`** (protected green `G`, own lane
+  clear, exit empty, speed 0): 0–10 cars/step. A protected-green car with clear road AND empty exit
+  has NO legitimate reason to stop.
+
+**NEXT: instrument WHY a `majorGreenSTUCK` car is held** — dump its binding speed constraint
+(which term in `ComputeMoveIntent`'s Min-reduction pins vPos to ~0: junction-yield? a phantom foe? an
+internal-junction leader the same-lane gap misses?). That is the direct root cause of the on-green
+stall. Still junction/RoW territory, NOT lane changes.
+
 ## Retired-machinery note (shelved, for the record — NOT to build now)
 Mechanism-gathering found the follower-cooperation channel was already built and RETIRED in `afec614`
 ("Retire the cooperative informFollower"): `VehicleRuntime.CoopSpeedAdvice` (+∞ default) +
