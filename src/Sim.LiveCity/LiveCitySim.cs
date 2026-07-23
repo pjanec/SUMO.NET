@@ -148,8 +148,8 @@ public sealed class LiveCitySim : IDisposable
         {
             Origins = odPoints,
             Destinations = odPoints,
-            SpawnRatePerSecond = 8.0,
-            PopulationCap = 160,
+            SpawnRatePerSecond = cfg.PedSpawnRatePerSecond, // LIVECITY_PEDS scales this (default 8.0)
+            PopulationCap = cfg.PedPopulationCap,           // LIVECITY_PEDS overrides this (default 160)
             Seed = cfg.PedSeed,
             MaxSpeed = 1.3,
             Radius = 0.3,

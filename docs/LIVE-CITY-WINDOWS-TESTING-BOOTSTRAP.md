@@ -51,8 +51,10 @@ id (e.g. `veh_1234`), so "veh_1234 clips the kerb at ~t=40s" is enough for the d
 The live-city scene runs on **`scenarios\_ped\demo_city\box\`** (in-repo: `net.xml`, `scenario.rou.xml`, …).
 The viewers resolve it themselves via the repo root — **you never pass a scenario path** for live-city. The
 downtown "hero" block (`[2055,2055]–[2895,2895]`) is auto-cropped. Env knobs (optional, all default to the
-tuned values): `LIVECITY_CARS=<n>` (concurrent car cap, default 160), `LIVECITY_YIELD=0` (A/B: turn the
-crossing-yield gate off), `LIVECITY_LCMIN=<mps>`.
+tuned values): `LIVECITY_CARS=<n>` (concurrent car cap, default 160), `LIVECITY_PEDS=<n>` (concurrent
+ped cap, default 160; scales the ped spawn rate too, so e.g. `LIVECITY_PEDS=1600` fills a 10× crowd
+fast — handy for watching junction/crossing behaviour without waiting), `LIVECITY_YIELD=0` (A/B: turn
+the crossing-yield gate off), `LIVECITY_LCMIN=<mps>`.
 
 ---
 

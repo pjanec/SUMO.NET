@@ -56,6 +56,12 @@ public sealed class LiveCityConfig
     // Ped demand seed (SceneGen.BuildLiveCity's PedDemandConfig.Seed).
     public ulong PedSeed { get; set; } = 20260721UL;
 
+    // Ped crowd size knobs (SceneGen.BuildLiveCity's PedDemandConfig). Overridable via LIVECITY_PEDS,
+    // which sets the concurrent cap and scales the spawn rate proportionally so the crowd fills to the
+    // new cap at about the same wall-time as the default 160 does.
+    public int PedPopulationCap { get; set; } = 160;
+    public double PedSpawnRatePerSecond { get; set; } = 8.0;
+
     // Car spawn PRNG seed (SceneGen.BuildLiveCity's `rng` initializer for the deterministic SplitMix64).
     public ulong CarRngSeed { get; set; } = 0x243F6A8885A308D3UL;
 
@@ -71,6 +77,13 @@ public sealed class LiveCityConfig
         if (int.TryParse(Environment.GetEnvironmentVariable("LIVECITY_CARS"), out var cars))
         {
             cfg.CarTargetConcurrent = cars;
+        }
+
+        // LIVECITY_PEDS: concurrent ped cap; spawn rate scales with it so it fills at ~the default's pace.
+        if (int.TryParse(Environment.GetEnvironmentVariable("LIVECITY_PEDS"), out var peds) && peds > 0)
+        {
+            cfg.PedPopulationCap = peds;
+            cfg.PedSpawnRatePerSecond = 8.0 * System.Math.Max(1.0, peds / 160.0);
         }
 
         if (double.TryParse(Environment.GetEnvironmentVariable("LIVECITY_LCMIN"), out var lcMin))
