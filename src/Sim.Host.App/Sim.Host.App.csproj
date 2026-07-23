@@ -30,6 +30,14 @@
     <ProjectReference Include="..\Sim.Ingest\Sim.Ingest.csproj" />
     <ProjectReference Include="..\Sim.Replication\Sim.Replication.csproj" />
     <ProjectReference Include="..\Sim.Replication.Dds\Sim.Replication.Dds.csproj" />
+    <!-- docs/LIVE-CITY-VIEWERS-TASKS.md Stage E (E3): the "live-city" combined cars+peds producer mode
+         runs Sim.LiveCity.LiveCitySim directly, which needs Sim.Pedestrians for its ped side types
+         (PedReplicationPublisher et al. are consumed transitively via LiveCitySim's own public surface,
+         but the ped wire/publish types this file references directly, IPedReplicationSink, live in
+         Sim.Replication, already referenced above; Sim.Pedestrians is needed for LiveCitySim's own
+         constructor dependency graph to resolve at this project's TargetFramework). -->
+    <ProjectReference Include="..\Sim.LiveCity\Sim.LiveCity.csproj" />
+    <ProjectReference Include="..\Sim.Pedestrians\Sim.Pedestrians.csproj" />
   </ItemGroup>
 
 </Project>

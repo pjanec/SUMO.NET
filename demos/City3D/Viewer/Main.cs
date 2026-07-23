@@ -220,6 +220,14 @@ public partial class Main : Node3D
     // server clock is wire-authoritative (newest crowd-frame time), kept monotonic across frames.
     private DdsPedReplicationSource? _ddsPedSource;
     private double _pedRemoteServerTime;
+
+    // docs/LIVE-CITY-VIEWERS-DESIGN.md §7, -TASKS.md Stage E (E4) -- true only for the combined
+    // `--live-city --transport=dds` path (ReadyLiveCityRemote): distinguishes it from the plain vehicle
+    // remote (ReadyRemote, which ALSO sets `_ddsSource`) and the plaza ped remote (ReadyPeds' dds branch,
+    // which ALSO sets `_ddsPedSource`) so ProcessLiveCity can dispatch to ProcessLiveCityRemote without
+    // guessing from field nullity alone (a bare `_liveCity` flag is not enough since `_transport` also
+    // varies, and `_ddsSource is not null` alone is ambiguous with ReadyRemote's own non-live-city path).
+    private bool _liveCityRemote;
 #endif
 
     // Task T1.6 Part B -- built LAZILY on the first _Process frame `sim.Source.TlStateByLane` is
@@ -316,10 +324,19 @@ public partial class Main : Node3D
 
             case "dds":
 #if CITY3D_REMOTE
+                // docs/LIVE-CITY-VIEWERS-DESIGN.md §7, -TASKS.md Stage E (E4): `--live-city --transport=dds`
+                // takes its OWN dedicated combined-remote path (dual subscriber: DdsSubscriber + a
+                // DdsPedReplicationSource on the SAME participant, rendering both) -- checked BEFORE the
+                // `--peds` fork below so the two never collide.
+                //
                 // D3b: `--peds` over live DDS reuses the ped scene setup (local plaza net for the backdrop)
                 // but swaps the local byte-loopback ped-sim for a DdsPedReplicationSource fed by a separate
                 // `--mode ped-publish` process; the vehicle remote path (ReadyRemote) is unchanged.
-                if (_peds)
+                if (_liveCity)
+                {
+                    ReadyLiveCityRemote();
+                }
+                else if (_peds)
                 {
                     string pedRepoRoot;
                     try
@@ -828,6 +845,95 @@ public partial class Main : Node3D
             GD.Print("Main: --camera=close active (low angled close-up framing).");
         }
     }
+
+    // docs/LIVE-CITY-VIEWERS-DESIGN.md §7, -TASKS.md Stage E (E4) -- the combined `--live-city
+    // --transport=dds` REMOTE setup: no LiveCitySim/Engine here at all (mirrors ReadyRemote's own "do NOT
+    // create a SimSource/engine"), only a DdsSubscriber (vehicles) AND a DdsPedReplicationSource (peds)
+    // attached to the SAME DdsParticipant -- the DDS-branch mutual exclusion ReadyRemote()/ReadyPeds()'s
+    // own dds branch each embody is dropped for THIS mode: both wire types subscribe together and render
+    // together every frame (ProcessLiveCityRemote), fed by a single `Sim.Host.App --live-city --transport
+    // dds` producer (E3) publishing both topic sets from one net. Cars reuse the SAME
+    // Reconstructor/ReplicationLaneShapeSource path the plain vehicle remote uses (now Z- and name-aware,
+    // Stage E1/E2); peds reuse the SAME PedReconstructor/UpdatePeds path the `--peds --transport dds`
+    // branch uses (design §7: "removing the DDS-branch mutual exclusion"). Static scene (roads; buildings
+    // skipped, same reasoning as BuildRemoteScene) is built lazily once geometry arrives
+    // (BuildRemoteLiveCityScene, called from ProcessLiveCityRemote exactly like BuildRemoteScene is from
+    // AdvanceRemoteSim) -- `_lanes` stays null here, same "nothing to reconstruct/render yet" convention.
+    private void ReadyLiveCityRemote()
+    {
+        _cameraMode = ParseCameraArg();
+        _liveCityRemote = true;
+
+        _ddsParticipant = new DdsParticipant();
+        _ddsSource = new DdsSubscriber(_ddsParticipant);
+        _ddsPedSource = new DdsPedReplicationSource(_ddsParticipant);
+        _reconstructor = new Reconstructor();
+        _pedReconstructor = new PedReconstructor();
+        _source = _ddsSource;
+        var ddsSource = _ddsSource;
+        _placeSignalHeads = keys => TrafficLightPlacer.Place(ddsSource.Geometry, keys);
+
+        _carMultiMesh = BuildCarMultiMesh();
+        _pedMultiMesh = BuildPedMultiMesh();
+        BuildSelectionUi();
+
+        GD.Print(
+            "Main: --live-city --transport=dds active; waiting for a Sim.Host.App --live-city publisher " +
+            "(vehicle geometry + frames, ped crowd)...");
+
+        _shotPath = ParseShotArg();
+        if (_shotPath is not null)
+        {
+            var shotDelaySeconds = ParseShotDelayArg();
+            GD.Print(
+                $"Main: --shot requested, will capture to '{_shotPath}' " +
+                $"(shot-delay={shotDelaySeconds:F1}s real wall-clock before capture).");
+            CaptureScreenshotAsync(_shotPath, shotDelaySeconds);
+        }
+    }
+
+    // Lazily builds the static scene from the RECEIVED wire geometry, once complete -- the combined
+    // live-city remote's counterpart to BuildRemoteScene above. LiveCitySim publishes the FULL (uncropped)
+    // net.xml geometry over the wire (mirrors what it publishes onto its own local in-mem bus, design §1),
+    // so this crops the received geometry to the SAME pinned downtown block every other live-city path
+    // frames (Sim.LiveCity.LiveCityConfig's own default X0..Y1 -- a fixed constant, not tied to the
+    // producer's dataset dir, so the subscriber needs no repo/dataset access of its own to know it) purely
+    // for render legibility/build cost (BuildRoadMeshesFromGeometryCropped below), same idea as the LOCAL
+    // live-city path's BuildRoadMeshesCropped and the replay path's own crop-by-config. The camera framing
+    // reuses the live-city overview knobs (LiveCityFrameHalfExtentMeters/-CameraHeightFactor/-BackFactor),
+    // not BuildRemoteScene's whole-received-geometry framing.
+    private void BuildRemoteLiveCityScene()
+    {
+        var geometry = _ddsSource!.Geometry;
+        _lanes = new ReplicationLaneShapeSource(geometry);
+
+        var crop = new LiveCityConfig(); // pinned defaults only -- no dataset dir needed just for X0..Y1.
+        var roadBbox = BuildRoadMeshesFromGeometryCropped(geometry, crop.X0, crop.Y0, crop.X1, crop.Y1);
+        _sceneBbox = roadBbox;
+
+        var cropCenter = new Vector3(
+            (roadBbox.Min.X + roadBbox.Max.X) / 2f, 0f, (roadBbox.Min.Z + roadBbox.Max.Z) / 2f);
+        var frameHalf = LiveCityFrameHalfExtentMeters;
+        var frameBbox = (
+            Min: cropCenter - new Vector3(frameHalf, 0f, frameHalf),
+            Max: cropCenter + new Vector3(frameHalf, 8f, frameHalf));
+
+        BuildCameraAndLight(
+            frameBbox, makeCurrent: _cameraMode != "close",
+            heightFactor: LiveCityCameraHeightFactor, backFactor: LiveCityCameraBackFactor);
+
+        if (_cameraMode == "close")
+        {
+            _closeCamera = new Camera3D { Name = "CloseCamera", Current = true, Far = 2000f };
+            AddChild(_closeCamera);
+            UpdateCloseCameraFraming(_closeCamera, null);
+            GD.Print("Main: --camera=close active (low angled close-up framing).");
+        }
+
+        GD.Print(
+            $"Main: --live-city --transport=dds received geometry ({geometry.Count} lane(s) total on the " +
+            "wire); road meshes cropped to the pinned downtown block for legibility.");
+    }
 #endif
 
     public override void _Process(double delta)
@@ -993,6 +1099,14 @@ public partial class Main : Node3D
             return;
         }
 
+#if CITY3D_REMOTE
+        if (_liveCityRemote)
+        {
+            ProcessLiveCityRemote(delta);
+            return;
+        }
+#endif
+
         if (_liveCitySource is null || _reconstructor is null || _lanes is null)
         {
             return; // _Ready already reported the error.
@@ -1040,6 +1154,86 @@ public partial class Main : Node3D
             GetTree().Quit();
         }
     }
+
+#if CITY3D_REMOTE
+    // docs/LIVE-CITY-VIEWERS-DESIGN.md §7, -TASKS.md Stage E (E4) -- the per-frame `--live-city
+    // --transport=dds` REMOTE body: pump the vehicle subscriber, lazily build the static scene once its
+    // geometry completes (mirrors AdvanceRemoteSim + BuildRemoteScene), then reconstruct+render BOTH
+    // domains from the wire every frame -- cars through the SAME Reconstructor/UpdateCars the plain
+    // vehicle remote uses, peds through the SAME PedReconstructor/UpdatePeds the `--peds --transport dds`
+    // branch uses (design §7's "removing the DDS-branch mutual exclusion" made concrete: both run in one
+    // method, no `if(_peds){...return;}`). The vehicle Name table is refreshed from the wire's lifecycle-
+    // derived `DdsSubscriber.Names` every frame (Stage E2's "once per spawn" table, design §5's "resolves
+    // handle -> human-readable id ... in every mode/transport") so click-select shows the real SUMO id
+    // remotely too, not just in local live mode.
+    private void ProcessLiveCityRemote(double delta)
+    {
+        if (_ddsSource is null || _ddsPedSource is null || _reconstructor is null || _pedReconstructor is null)
+        {
+            return; // _Ready already reported the error.
+        }
+
+        _ddsSource.Pump();
+
+        if (_lanes is null)
+        {
+            if (!_ddsSource.GeometryComplete)
+            {
+                return; // waiting for the producer's one-time geometry publish to finish arriving.
+            }
+
+            BuildRemoteLiveCityScene();
+        }
+
+        var vehicles = _reconstructor.Reconstruct(_ddsSource, _lanes!, PlayoutDelaySeconds);
+        UpdateCars(vehicles);
+
+        // Stage E2: the wire's Handle->name table, populated once per spawn lifecycle event -- accumulate
+        // into `_vehicleNames` (never removed, same "last-known name survives despawn" rule the local live
+        // path's own Sample().Cars loop uses) so NameFor/click-select resolve the real SUMO id remotely.
+        foreach (var kv in _ddsSource.Names)
+        {
+            _vehicleNames[kv.Key] = kv.Value;
+        }
+
+        // Remote: no local sim to tick, so drive the ped reconstructor off the WIRE clock (newest
+        // crowd-frame sim-time), kept monotonic across frames -- identical pattern to ProcessPeds' own dds
+        // branch, just inline here since both domains share this one method.
+        _pedRemoteServerTime = Math.Max(_pedRemoteServerTime, _ddsPedSource.LatestCrowdTime);
+        var peds = _pedReconstructor.Reconstruct(_ddsPedSource, _pedRemoteServerTime);
+        UpdatePeds(peds);
+
+        UpdateSelectionHighlight();
+
+        if (_closeCamera is not null)
+        {
+            UpdateCloseCameraFraming(_closeCamera, vehicles);
+        }
+
+        var highPowerPeds = 0;
+        foreach (var p in peds)
+        {
+            if (p.IsHighPower)
+            {
+                highPowerPeds++;
+            }
+        }
+
+        var wireVehTimeLabel = _ddsSource.LatestVehicleSampleTime is { } wireVehTime ? $"{wireVehTime:F2}" : "?";
+        GD.Print(
+            $"Main: frame={_liveCityFrame} remote-live-city wireVehTime={wireVehTimeLabel} " +
+            $"pedTime={_pedRemoteServerTime:F2} cars={vehicles.Count} peds={peds.Count} highPowerPeds={highPowerPeds}");
+
+        _liveCityFrame++;
+
+        if (_liveCityFrame >= QuitAfterFrames && _shotPath is null)
+        {
+            GD.Print($"Main: reached {QuitAfterFrames} frames, quitting.");
+            DisposeSources();
+            GetTree().Quit();
+        }
+    }
+#endif
 
     // docs/LIVE-CITY-VIEWERS-DESIGN.md §2.3/§4, -TASKS.md D3 -- the per-frame `--live-city --replay` body:
     // advance the PlaybackClock by wall delta (a no-op while paused), pump the file source (SeekTo(Now)
@@ -1596,6 +1790,68 @@ public partial class Main : Node3D
     private (Vector3 Min, Vector3 Max) BuildRoadMeshesFromGeometry(
         IReadOnlyDictionary<int, GeometryCodec.LaneGeo> geometry)
         => BuildRoadMeshesFromRibbons(RoadMeshBuilder.BuildAll(geometry, includeInternal: true), geometry.Count);
+
+    // docs/LIVE-CITY-VIEWERS-DESIGN.md §7, -TASKS.md Stage E (E4) -- BuildRoadMeshesFromGeometry's
+    // crop-filtered counterpart (mirrors BuildRoadMeshesCropped's NetworkModel-side filtering, one input
+    // shape over): the combined `--live-city --transport=dds` remote path receives the FULL (uncropped)
+    // net's geometry over the wire (LiveCitySim publishes its whole parsed net.xml, same as the local
+    // path's `Network` property), so this keeps only lanes with at least one point inside the crop rect
+    // (+ margin) before handing them to RoadMeshBuilder.Build directly -- same reasoning as
+    // BuildRoadMeshesCropped: build/frame only the legible downtown block, not the whole ~4750m net. Z
+    // (GeometryCodec.LaneGeo.Z, Stage E1) threads through to RoadMeshBuilder.Build exactly like
+    // RoadMeshBuilder.BuildAll's own geometry-dictionary overload does.
+    private (Vector3 Min, Vector3 Max) BuildRoadMeshesFromGeometryCropped(
+        IReadOnlyDictionary<int, GeometryCodec.LaneGeo> geometry,
+        double x0, double y0, double x1, double y1, double marginMeters = 60.0)
+    {
+        var minX = x0 - marginMeters;
+        var minY = y0 - marginMeters;
+        var maxX = x1 + marginMeters;
+        var maxY = y1 + marginMeters;
+
+        var filtered = new List<(int Handle, RibbonMesh Mesh)>();
+        foreach (var lane in geometry.Values)
+        {
+            var inside = false;
+            foreach (var (px, py) in lane.Points)
+            {
+                if (px >= minX && px <= maxX && py >= minY && py <= maxY)
+                {
+                    inside = true;
+                    break;
+                }
+            }
+
+            if (!inside)
+            {
+                continue;
+            }
+
+            var shape = new (double X, double Y)[lane.Points.Length];
+            for (var i = 0; i < shape.Length; i++)
+            {
+                shape[i] = (lane.Points[i].X, lane.Points[i].Y);
+            }
+
+            double[]? shapeZ = null;
+            if (lane.Z is { Length: > 0 } laneZ)
+            {
+                shapeZ = new double[laneZ.Length];
+                for (var i = 0; i < laneZ.Length; i++)
+                {
+                    shapeZ[i] = laneZ[i];
+                }
+            }
+
+            filtered.Add((lane.Handle, RoadMeshBuilder.Build(shape, shapeZ, lane.Width)));
+        }
+
+        GD.Print(
+            $"Main: --live-city --transport=dds crop [{x0:F0},{y0:F0}]-[{x1:F0},{y1:F0}] kept " +
+            $"{filtered.Count} of {geometry.Count} lane(s) from the wire.");
+
+        return BuildRoadMeshesFromRibbons(filtered, filtered.Count);
+    }
 #endif
 
     // docs/DEMO-CITY3D-DESIGN.md "Procedural scene generation -> Roads" / task T1.3 (and T2.2b's remote

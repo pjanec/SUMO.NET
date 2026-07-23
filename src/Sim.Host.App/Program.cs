@@ -4,6 +4,7 @@ using CycloneDDS.Runtime;
 using Sim.Core;
 using Sim.Host;
 using Sim.Ingest;
+using Sim.LiveCity;
 using Sim.Replication;
 using Sim.Replication.Dds;
 
@@ -19,12 +20,23 @@ using Sim.Replication.Dds;
 // (Sim.Replication.InMemoryReplicationBus, a same-process self-test with no native dependency).
 // No rendering, no GPU -- this is the reusable headless host the City3D remote viewer (T2.2) and
 // any other Sim.Replication consumer subscribes to.
+//
+// docs/LIVE-CITY-VIEWERS-DESIGN.md §7, -TASKS.md Stage E (E3):
+//   dotnet run --project src/Sim.Host.App -- --live-city [--transport dds|inmem]
+//       [--hz <n>] [--seconds <n> | --steps <n>]
+//
+// `--live-city` runs Sim.LiveCity.LiveCitySim (the SAME coupled cars+peds+crossing-yield host every
+// other live-city viewer consumes) instead of loading a --scenario, and publishes BOTH the vehicle
+// topic set and the ped topic set from this ONE process over ONE net via LiveCitySim's own additive
+// record/DDS tee params (`recordVehSink`/`recordPedSink`) -- the crossing-yield gate stays server-side
+// inside LiveCitySim; only the resulting poses cross the wire. Mutually exclusive with --scenario/--spawn.
 string? scenarioArg = null;
 var transport = "dds";
 var hz = 10.0;
 double? secondsArg = null;
 int? stepsArg = null;
 var spawn = 0;
+var liveCity = false;
 
 for (var i = 0; i < args.Length; i++)
 {
@@ -32,6 +44,9 @@ for (var i = 0; i < args.Length; i++)
     {
         case "--scenario":
             scenarioArg = args[++i];
+            break;
+        case "--live-city":
+            liveCity = true;
             break;
         case "--transport":
             transport = args[++i];
@@ -54,17 +69,30 @@ for (var i = 0; i < args.Length; i++)
     }
 }
 
+if (transport is not ("dds" or "inmem"))
+{
+    Console.Error.WriteLine($"Sim.Host.App: unknown --transport '{transport}' (expected dds|inmem).");
+    return 1;
+}
+
+if (liveCity)
+{
+    if (scenarioArg is not null || spawn > 0)
+    {
+        Console.Error.WriteLine("Sim.Host.App: --live-city is mutually exclusive with --scenario/--spawn.");
+        return 1;
+    }
+
+    return RunLiveCity(transport, hz, secondsArg, stepsArg);
+}
+
 if (scenarioArg is null)
 {
     Console.Error.WriteLine(
         "Usage: dotnet run --project src/Sim.Host.App -- --scenario <dir|net.xml> " +
-        "[--transport dds|inmem] [--hz <n>] [--seconds <n> | --steps <n>] [--spawn <n>]");
-    return 1;
-}
-
-if (transport is not ("dds" or "inmem"))
-{
-    Console.Error.WriteLine($"Sim.Host.App: unknown --transport '{transport}' (expected dds|inmem).");
+        "[--transport dds|inmem] [--hz <n>] [--seconds <n> | --steps <n>] [--spawn <n>]\n" +
+        "   or: dotnet run --project src/Sim.Host.App -- --live-city " +
+        "[--transport dds|inmem] [--hz <n>] [--seconds <n> | --steps <n>]");
     return 1;
 }
 
@@ -272,4 +300,179 @@ static void SpawnAmbient(Engine engine, SimulationRunner runner, int count)
     }
 
     Console.WriteLine($"Sim.Host.App: --spawn requested {count} ambient trips, spawned {spawned}.");
+}
+
+// docs/LIVE-CITY-VIEWERS-DESIGN.md §7, -TASKS.md Stage E (E3) -- the combined cars+peds `--live-city`
+// producer. Builds ONE Sim.LiveCity.LiveCitySim (the shared coupled-sim host every other live-city
+// viewer/producer consumes) over a vehicle sink AND a ped sink for the chosen `--transport`, then loops
+// `sim.Step()` at `--hz`, respecting `--seconds`/`--steps` exactly like the --scenario loop above.
+// LiveCitySim's own internal in-memory bus is what the coupled sim uses to feed itself; the sinks passed
+// here are the ADDITIVE `recordVehSink`/`recordPedSink` tee params (docs/LIVE-CITY-VIEWERS-DESIGN.md §2.2,
+// this task's own ped-tee addition) -- i.e. this producer captures BOTH streams without LiveCitySim ever
+// knowing about DDS. `--transport inmem` wires the SAME tee onto a same-process InMemoryReplicationBus/
+// InMemoryPedReplicationBus pair and self-consumes (Pump()s both buses each step) so the whole plumbing
+// is exercised with no native DDS dependency -- the non-flaky gate this task's own success condition asks
+// for ("assert/log that BOTH vehicle frames AND ped crowd frames are produced/consumed in-process").
+static int RunLiveCity(string transport, double hz, double? secondsArg, int? stepsArg)
+{
+    var repoRoot = FindRepoRoot();
+    var cfg = LiveCityConfig.ForRepoRoot(repoRoot);
+
+    Console.WriteLine(
+        $"Sim.Host.App: --live-city dataset='{cfg.DatasetDir}' transport={transport} hz={hz:F1} " +
+        $"carCap={cfg.CarTargetConcurrent} yield={cfg.YieldEnabled}");
+
+    DdsParticipant? participant = null;
+    InMemoryReplicationBus? vehBus = null;
+    InMemoryPedReplicationBus? pedBus = null;
+    IReplicationSink vehSink;
+    IPedReplicationSink pedSink;
+
+    if (transport == "dds")
+    {
+        participant = new DdsParticipant();
+        vehSink = new DdsReplicationSink(participant);
+        pedSink = new DdsPedReplicationSink(participant);
+    }
+    else
+    {
+        vehBus = new InMemoryReplicationBus();
+        pedBus = new InMemoryPedReplicationBus();
+        vehSink = vehBus.Sink;
+        pedSink = pedBus.Sink;
+    }
+
+    using var sim = new LiveCitySim(cfg, vehSink, pedSink);
+
+    try
+    {
+        if (transport == "dds")
+        {
+            // DDS discovery is async -- give any already-running readers time to match before the step
+            // loop starts publishing (mirrors the --scenario path's own settle sleep, LoopbackSelfTest's
+            // proven pattern).
+            Thread.Sleep(500);
+        }
+
+        var stopRequested = false;
+        Console.CancelKeyPress += (_, e) =>
+        {
+            e.Cancel = true; // let the loop below exit cleanly (dispose the sinks/participant) instead of
+                              // the process dying mid-write.
+            stopRequested = true;
+        };
+
+        // Default run length when neither --seconds nor --steps is given. Shorter than the --scenario
+        // path's 30s default: the coupled sim ramps to peak density within a few seconds and this mode is
+        // primarily exercised as a bounded self-test/demo run, not a long-lived service.
+        const double defaultSeconds = 20.0;
+        var stepInterval = TimeSpan.FromSeconds(1.0 / hz);
+        var startWall = Stopwatch.StartNew();
+        var stepCount = 0;
+        var logEveryNSteps = Math.Max(1, (int)Math.Round(hz)); // ~once per sim second
+
+        Console.WriteLine(
+            $"Sim.Host.App: --live-city publishing headless (Ctrl-C to stop" +
+            (stepsArg is { } capSteps ? $"; capped at {capSteps} steps"
+                : secondsArg is { } capSeconds ? $"; capped at {capSeconds:F0}s"
+                : $"; capped at {defaultSeconds:F0}s") + ").");
+
+        while (!stopRequested)
+        {
+            if (stepsArg is { } maxSteps && stepCount >= maxSteps)
+            {
+                break;
+            }
+
+            if (stepsArg is null)
+            {
+                var capSecondsLoop = secondsArg ?? defaultSeconds;
+                if (startWall.Elapsed.TotalSeconds >= capSecondsLoop)
+                {
+                    break;
+                }
+            }
+
+            var tickStart = Stopwatch.GetTimestamp();
+
+            sim.Step();
+            stepCount++;
+
+            if (transport == "inmem")
+            {
+                vehBus!.Source.Pump();
+                pedBus!.Source.Pump();
+            }
+
+            if (stepCount % logEveryNSteps == 0)
+            {
+                Console.WriteLine(
+                    $"Sim.Host.App: --live-city t={sim.Time:F1}s step={stepCount} peakCars={sim.PeakCars} " +
+                    $"peakPeds={sim.PeakPeds} peakOccupiedCrossings={sim.PeakOccupiedCrossings}" +
+                    (transport == "inmem"
+                        ? $" | consumer: vehiclesInHistory={vehBus!.Source.History.Count} " +
+                          $"latestPedCrowdFrame={pedBus!.Source.LatestCrowdFrame.Count} " +
+                          $"pedLifecyclesSeen={pedBus.Source.Lifecycles.Count}"
+                        : string.Empty));
+            }
+
+            // Pace to --hz: sleep off whatever time this iteration didn't use.
+            var elapsed = Stopwatch.GetElapsedTime(tickStart);
+            var toSleep = stepInterval - elapsed;
+            if (toSleep > TimeSpan.Zero)
+            {
+                Thread.Sleep(toSleep);
+            }
+        }
+
+        Console.WriteLine(
+            $"Sim.Host.App: --live-city stopped after {stepCount} steps, final sim time={sim.Time:F1}s, " +
+            $"peakCars={sim.PeakCars}, peakPeds={sim.PeakPeds}, peakOccupiedCrossings={sim.PeakOccupiedCrossings}, " +
+            $"carYieldObservations={sim.CarYieldObservations}.");
+
+        if (transport == "inmem")
+        {
+            // The non-flaky gate this task's success condition asks for: both streams must have been
+            // produced by LiveCitySim's tee AND actually consumed by the same-process bus source --
+            // non-vacuous (nonzero vehicles AND nonzero peds), never just "no exception was thrown".
+            var vehiclesSeen = vehBus!.Source.History.Count;
+            var pedFrameCount = pedBus!.Source.LatestCrowdFrame.Count;
+            var pedLifecyclesSeen = pedBus.Source.Lifecycles.Count;
+            Console.WriteLine(
+                $"Sim.Host.App: --live-city inmem self-test: vehiclesInConsumerHistory={vehiclesSeen}, " +
+                $"latestPedCrowdFrameCount={pedFrameCount}, pedLifecyclesSeen={pedLifecyclesSeen}.");
+
+            if (vehiclesSeen == 0 || (pedFrameCount == 0 && pedLifecyclesSeen == 0))
+            {
+                Console.Error.WriteLine(
+                    "Sim.Host.App: --live-city inmem self-test FAILED -- expected nonzero vehicles AND " +
+                    "nonzero peds to have crossed the tee onto the consumer bus.");
+                return 3;
+            }
+        }
+    }
+    finally
+    {
+        vehSink.Dispose();
+        pedSink.Dispose();
+        participant?.Dispose();
+    }
+
+    return 0;
+}
+
+// Walk up from the running assembly's directory to the directory containing Traffic.sln -- the same
+// pattern DemoCatalog.RepoRoot() (src/Sim.Viewer/DemoCatalog.cs) uses, copied here so this headless host
+// (which never references Sim.Viewer) can resolve it independently. CLAUDE.md prime directive 1: never
+// hardcode an absolute VM path -- resolve the repo root, don't assume it.
+static string FindRepoRoot()
+{
+    var dir = new DirectoryInfo(AppContext.BaseDirectory);
+    while (dir is not null && !File.Exists(Path.Combine(dir.FullName, "Traffic.sln")))
+    {
+        dir = dir.Parent;
+    }
+
+    return dir?.FullName
+        ?? throw new InvalidOperationException("Could not locate repo root (Traffic.sln not found above assembly).");
 }

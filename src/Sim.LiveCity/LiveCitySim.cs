@@ -63,14 +63,29 @@ public sealed class LiveCitySim : IDisposable
     private readonly PedReplicationPublisher _pedWirePublisher;
     private readonly InMemoryPedReplicationBus _pedBus = new();
 
+    // docs/LIVE-CITY-VIEWERS-DESIGN.md §7, -TASKS.md Stage E (E3): the ped-side twin of `_recordVehSink`/
+    // `_recordPublisher` above -- an OPTIONAL tee onto a caller-supplied ped sink (e.g. a
+    // DdsPedReplicationSink for the combined cars+peds DDS producer), purely additive (null = unchanged
+    // Stage A/C behaviour, the two extra null checks in Step() cost nothing). Exactly like the car tee, a
+    // DEDICATED `PedReplicationPublisher` instance (never the live `_pedWirePublisher` above) drives it,
+    // with its OWN scheduler/governor/meter -- mirrors the in-mem ped publish's own setup in the
+    // constructor below so the record/DDS tee gates/measures its own stream independently of the live
+    // in-mem wire (sharing gating state across the two would let one stream's suppression decisions leak
+    // into the other's). LiveCitySim owns no DDS participant/file handle here and never disposes
+    // `_recordPedSink` -- the caller constructs and disposes it, exactly as the vehicle tee's own remark
+    // states.
+    private readonly IPedReplicationSink? _recordPedSink;
+    private readonly PedReplicationPublisher? _recordPedPublisher;
+
     private double _now;
     private SimulationSnapshot _lastSnapshot = SimulationSnapshot.Empty;
 
-    public LiveCitySim(LiveCityConfig cfg, IReplicationSink? recordVehSink = null)
+    public LiveCitySim(LiveCityConfig cfg, IReplicationSink? recordVehSink = null, IPedReplicationSink? recordPedSink = null)
     {
         _cfg = cfg ?? throw new ArgumentNullException(nameof(cfg));
         _recordVehSink = recordVehSink;
         _recordPublisher = recordVehSink is not null ? new ReplicationPublisher() : null;
+        _recordPedSink = recordPedSink;
         _x0 = cfg.X0; _y0 = cfg.Y0; _x1 = cfg.X1; _y1 = cfg.Y1;
 
         var netPath = Path.Combine(cfg.DatasetDir, "net.xml");
@@ -198,6 +213,18 @@ public sealed class LiveCitySim : IDisposable
         var governor = new PedBandwidthGovernor(scheduler, meter, maxMbitPerSecond: 500.0);
         _pedWirePublisher = new PedReplicationPublisher(_pedBus.Sink, scheduler, governor, meter, stepDt: cfg.Dt);
         PedSource = _pedBus.Source;
+
+        // Stage E (E3) tee: an entirely SEPARATE scheduler/meter/governor triple, wired to the caller's
+        // sink -- see `_recordPedSink`'s field remark for why this must not share state with the live
+        // in-mem publisher above.
+        if (_recordPedSink is not null)
+        {
+            var recordScheduler = new PedPublishScheduler(new PedDrErrorPublishPolicy());
+            var recordMeter = new PedBandwidthMeter();
+            var recordGovernor = new PedBandwidthGovernor(recordScheduler, recordMeter, maxMbitPerSecond: 500.0);
+            _recordPedPublisher = new PedReplicationPublisher(
+                _recordPedSink, recordScheduler, recordGovernor, recordMeter, stepDt: cfg.Dt);
+        }
     }
 
     public NetworkModel Network { get; }
@@ -327,6 +354,10 @@ public sealed class LiveCitySim : IDisposable
         }
 
         _pedWirePublisher.Publish(newEvents);
+
+        // Stage E (E3) tee: also publish this tick's ped event batch through the DEDICATED
+        // `_recordPedPublisher`, if a ped record/DDS sink was supplied -- mirrors the car tee just above.
+        _recordPedPublisher?.Publish(newEvents);
     }
 
     private readonly WorldDisc[] _gateProbeScratch = new WorldDisc[4];
