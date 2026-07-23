@@ -497,7 +497,7 @@ public sealed class LiveCitySim : IDisposable
     // head while the engine has it red" render bug).
     public readonly record struct CarAuthWitness(
         VehicleHandle Handle, string LaneId, double Pos, double PosLat, double Speed, char Tl, double GapAhead,
-        string TlLinks, double NextMouthGap, char TlWire);
+        string TlLinks, double NextMouthGap, char TlWire, byte Binder);
 
     public IReadOnlyList<CarAuthWitness> WitnessAuthoritative()
     {
@@ -510,6 +510,7 @@ public sealed class LiveCitySim : IDisposable
         var tlLaneH = _engine.TlLaneHandles;
         var tlStates = _engine.TlStates;
         var nextLaneH = _engine.NextLaneHandles;
+        var binders = _engine.BindingConstraints;   // which speed constraint bound each car
         var wireTl = _vehBus.Source.TlStateByLane; // what the viewer renders
         var n = handles.Length;
 
@@ -557,7 +558,8 @@ public sealed class LiveCitySim : IDisposable
 
             outList.Add(new CarAuthWitness(
                 handles[i], i < laneIds.Length ? laneIds[i] : string.Empty,
-                pos[i], posLat[i], speed[i], tl, gap, links, nextMouthGap, tlWire));
+                pos[i], posLat[i], speed[i], tl, gap, links, nextMouthGap, tlWire,
+                i < binders.Length ? binders[i] : (byte)0));
         }
 
         return outList;

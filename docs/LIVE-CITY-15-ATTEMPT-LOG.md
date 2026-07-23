@@ -172,6 +172,36 @@ frozen car, WHICH constraint pins vPos≈0 (a phantom junction foe? a moving int
 conflicting path? a crowd/crossing term? a leader across the junction the same-lane gap misses?).
 Parity-neutral diagnostic. That line IS the root cause of the on-green stall.
 
+## 2026-07-23 — ROOT CAUSE PROVEN: JunctionYieldConstraint over-yields on PROTECTED green
+Added a per-vehicle binding-constraint trace: `Engine.ComputeMoveIntent`'s Min-fold now records the
+argmin (WHICH of the 13 constraints limited the speed) into `VehicleRuntime.BindingConstraint` →
+`VehicleReadBuffer` column → `Engine.BindingConstraints` span → witness. **Parity byte-identical
+(657/4), bench hash D96213B7BB4021A7 unchanged** — the fold value/order/side-effects are untouched;
+only an argmin is captured alongside.
+
+Binder histogram for the `majorGreenSTUCK` cars (protected green `G`, own lane clear, exit empty),
+`LIVECITY_CARS=300`:
+```
+t=100  junctionYield=10  deadLaneMerge=4  freeFlow=1     (of 15)
+t=120  junctionYield=2   deadLaneMerge=4  freeFlow=1     (of 7)
+t=160  freeFlow=2 deadLaneMerge=2 crossJxnLeader=1 redLight=1  (of 6)
+```
+- **DOMINANT root: `JunctionYieldConstraint` binds protected-green (`'G'`) cars** — they are yielding
+  at the junction even though a major-green link holds priority (`havePriority`) and should yield to
+  no one (`EgoLinkHasSignalPriority`, `Engine.cs:2298`, is supposed to suppress exactly this). So the
+  bug is a right-of-way OVER-YIELD that the protected-green suppression is NOT catching on this path.
+- **Secondary: `DeadLaneMergeBrakeConstraint`** (GAP-1 wrong-lane/dead-lane brake) — a few cars braking
+  because their lane can't reach the next route edge (turn-lane-adjacent, but via the merge-brake, not
+  the strand clamp; `strandedDeadEnd` stays ~0-3).
+- **Noise:** `redLight` on a "majorGreen" car = the witness's any-green `TlForLane` mislabelled a lane
+  whose OWN movement link is red (per-movement red under a lane green for another movement);
+  `freeFlow` = a just-spawned car still at pos≈8 accelerating from 0. Both small.
+
+**ROOT CAUSE (proven, not inferred): the junction right-of-way gate over-yields vehicles that hold a
+protected green.** Next = read `JunctionYieldConstraint` (+ `EgoLinkHasSignalPriority` /
+`adaptToJunctionLeader`) to find WHY a `'G'`-priority ego still yields to a foe, then design-first a
+parity-safe fix. This is squarely `Sim.Core` junction RoW; lane-change cooperation stays shelved.
+
 ## Retired-machinery note (shelved, for the record — NOT to build now)
 Mechanism-gathering found the follower-cooperation channel was already built and RETIRED in `afec614`
 ("Retire the cooperative informFollower"): `VehicleRuntime.CoopSpeedAdvice` (+∞ default) +

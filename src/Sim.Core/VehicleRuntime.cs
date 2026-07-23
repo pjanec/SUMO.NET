@@ -135,6 +135,10 @@ internal sealed class VehicleRuntime
     // Inert for lane-0/single-lane vehicles: ApplyKeepRightDecision returns on `RightNeighbor < 0`
     // before ever reading this.
     public int KeepRightStayCacheLane = -1;
+
+    // DIAGNOSTIC ONLY (#15): the id of the constraint that bound this vehicle's speed on its last real
+    // plan pass (see Engine.ComputeMoveIntent's argmin fold). Never read by sim logic -> parity-neutral.
+    public byte BindingConstraint;
     public bool KeepRightStaySuppress;
 
     // Turn-lane segregation fix (docs/GETBESTLANES-RESUME.md follow-up): the position-INDEPENDENT

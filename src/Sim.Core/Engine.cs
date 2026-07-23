@@ -1966,6 +1966,10 @@ public sealed partial class Engine : IEngine
     private int _strandedOffRouteThisStep;
     public int StrandedOffRouteThisStep => _strandedOffRouteThisStep;
 
+    // DIAGNOSTIC (#15): per-vehicle argmin of ComputeMoveIntent's constraint fold (which constraint bound
+    // each vehicle's speed), aligned to the read columns. See ComputeMoveIntent's binder for the id map.
+    public ReadOnlySpan<byte> BindingConstraints => _readBuffer.BindingConstraint.AsSpan(0, _readBuffer.Count);
+
     // Per-vehicle generation for VehicleHandle staleness, indexed by EntityIndex. Presently a constant 1
     // (no vehicle slot is recycled yet); grown lazily off the hot creation path. When runtime despawn
     // lands it is bumped per-slot so a handle held across a despawn goes stale (TryGetVehicle rejects it).
@@ -2199,7 +2203,7 @@ public sealed partial class Engine : IEngine
             _readBuffer.Add(handle, v.EntityIndex, v.Def.Id, v.VType.Id,
                 v.LaneHandle, nextLane, prevLane, laneWindow, v.LaneId, v.Kinematics.Pos, v.Kinematics.Speed, v.Acceleration, v.Kinematics.LatOffset,
                 (float)x, (float)y, (float)z, (float)angle, (float)v.VType.Length, (float)v.VType.Width,
-                (byte)RegimeOf(v), v.LateralManoeuvre);
+                (byte)RegimeOf(v), v.LateralManoeuvre, v.BindingConstraint);
         }
 
         DetectLifecycleEvents();
@@ -4924,6 +4928,16 @@ public sealed partial class Engine : IEngine
         // per-step list allocation was the single biggest hot-path allocator this rung removes.
         var vPos = double.PositiveInfinity;
 
+        // DIAGNOSTIC ONLY (#15): the argmin of the constraint fold below -- WHICH constraint currently
+        // limits this vehicle's speed. Tracked by capturing each constraint value and noting when it is
+        // the new minimum, BEFORE the (unchanged) Math.Min, so vPos itself is byte-identical. Never read
+        // by sim logic; assigned to v.BindingConstraint (a diagnostic field) only on the real plan pass.
+        // Ids: 1 leaderFollow, 2 crossJxnLeader, 3 freeFlow, 4 successiveLane, 5 deadLaneMerge,
+        // 6 stopLine, 7 redLight, 8 railSignal, 9 railCrossing, 10 junctionYield, 11 keepClear,
+        // 12 obstacle, 13 crowd.
+        byte binder = 0;
+        double dc;
+
         // Leader car-following (MSCFModel_Krauss.cpp followSpeed -> MSCFModel.cpp
         // maximumSafeFollowSpeed): the REAL formula our resolved carFollowModel="Krauss"
         // uses -- NOT MSCFModel_KraussOrig1::vsafe (removed; see rung-4 briefing, that
@@ -4933,13 +4947,13 @@ public sealed partial class Engine : IEngine
         // C11-i: for an IDM-resolved vType this dispatches to IdmModel.FollowSpeed
         // (MSCFModel_IDM.cpp:104-107) instead -- see FollowSpeedFor's own header comment; the
         // Krauss arm is the SAME KraussModel.FollowSpeed call this line always made.
-        vPos = Math.Min(vPos, LeaderFollowSpeedConstraint(v, neighbors, dt, time, laneVehicleMaxSpeed, packedEgoSlot));
+        dc = LeaderFollowSpeedConstraint(v, neighbors, dt, time, laneVehicleMaxSpeed, packedEgoSlot); if (dc < vPos) binder = 1; vPos = Math.Min(vPos, dc);
 
         // Cross-junction leader following: car-follow a slow leader that has already crossed onto a
         // downstream lane, while ego is still on its approach (the same-lane constraint above cannot
         // see it). +infinity unless a close downstream leader exists on ego's route path -- inert for
         // every scenario without one. See CrossJunctionLeaderConstraint's own header comment.
-        vPos = Math.Min(vPos, CrossJunctionLeaderConstraint(v, neighbors, dt, time, laneVehicleMaxSpeed));
+        dc = CrossJunctionLeaderConstraint(v, neighbors, dt, time, laneVehicleMaxSpeed); if (dc < vPos) binder = 2; vPos = Math.Min(vPos, dc);
 
         // Desired free-flow speed (MSLane::getVehicleMaxSpeed): lane speed limit adapted
         // by this vehicle's speedFactor, capped by its vType maxSpeed. C11-i: for Krauss this
@@ -4948,7 +4962,7 @@ public sealed partial class Engine : IEngine
         // MSCFModel::freeSpeed braking-curve formula for this term either way, matching every
         // pre-C11 rung exactly); for IDM this routes through IdmModel.FreeSpeed
         // (MSCFModel_IDM.cpp:77-100) -- see FreeFlowDesiredSpeedConstraint's own header comment.
-        vPos = Math.Min(vPos, FreeFlowDesiredSpeedConstraint(v, laneVehicleMaxSpeed, dt));
+        dc = FreeFlowDesiredSpeedConstraint(v, laneVehicleMaxSpeed, dt); if (dc < vPos) binder = 3; vPos = Math.Min(vPos, dc);
 
         // C4-iii (successive-lane speed limit): FreeFlowDesiredSpeedConstraint above caps by the
         // CURRENT lane only; MSVehicle::planMoveInternal additionally caps the free-flow speed so
@@ -4957,40 +4971,40 @@ public sealed partial class Engine : IEngine
         // vMinComfortable); v = MIN2(va, v)`). Non-binding (+infinity) unless a slower lane lies
         // within braking distance ahead -- the first scenario to exercise it on-path is the
         // roundabout (32), whose curved internal ring lanes drop the speed limit.
-        vPos = Math.Min(vPos, SuccessiveLaneSpeedConstraint(v, lane, dt));
+        dc = SuccessiveLaneSpeedConstraint(v, lane, dt); if (dc < vPos) binder = 4; vPos = Math.Min(vPos, dc);
 
         // GAP-1 (dead-lane merge brake): decelerate smoothly toward the forced-merge point when
         // stuck on a lane that cannot reach the next route edge, so the vehicle falls back to
         // re-try its strategic merge instead of slamming into the lane end and deadlocking.
         // +infinity (inert) for every vehicle on an on-route lane -- see the method's own header.
-        vPos = Math.Min(vPos, DeadLaneMergeBrakeConstraint(v, lane, dt, actionStepLengthSecs, laneVehicleMaxSpeed));
+        dc = DeadLaneMergeBrakeConstraint(v, lane, dt, actionStepLengthSecs, laneVehicleMaxSpeed); if (dc < vPos) binder = 5; vPos = Math.Min(vPos, dc);
 
         // Stop line (rung 5): MSVehicle.cpp's planMoveInternal "process stops" block
         // (~lines 2467-2540), non-waypoint arm only. +infinity (non-binding) once reached
         // (the source's own approach-block condition `!stop.reached || (waypoint &&
         // keepStopping())` is simply false for a non-waypoint stop that IS reached) or when
         // there is no stop at all.
-        vPos = Math.Min(vPos, StopLineConstraint(v, dt, actionStepLengthSecs, laneVehicleMaxSpeed));
+        dc = StopLineConstraint(v, dt, actionStepLengthSecs, laneVehicleMaxSpeed); if (dc < vPos) binder = 6; vPos = Math.Min(vPos, dc);
 
         // Red light (rung 10): MSVehicle.cpp's planMoveInternal per-link loop (~2641-2666,
         // 2734), yellowOrRed arm only. +infinity (non-binding) when this lane's outgoing
         // connection is not TL-controlled, or its light is green, at the time this Plan/
         // Execute cycle's result will be observed (see RedLightConstraint's own comment on
         // why that is `time + dt`, not `time`).
-        vPos = Math.Min(vPos, RedLightConstraint(v, lane, time, dt, actionStepLengthSecs, laneVehicleMaxSpeed));
+        dc = RedLightConstraint(v, lane, time, dt, actionStepLengthSecs, laneVehicleMaxSpeed); if (dc < vPos) binder = 7; vPos = Math.Min(vPos, dc);
 
         // Rail signal (rung R4): MSRailSignal's block-based hold -- a train approaching a rail signal
         // whose forward block's opposing (bidi) lane is occupied by another train brakes to a stop at
         // the signal until that block clears. +infinity (non-binding) when this lane has no rail
         // signal or its conflict lanes are clear (green). Inert for every scenario with no
         // rail_signal junction (_railSignalConflictLaneHandles null). See RailSignalConstraint.
-        vPos = Math.Min(vPos, RailSignalConstraint(v, lane, dt, actionStepLengthSecs, laneVehicleMaxSpeed));
+        dc = RailSignalConstraint(v, lane, dt, actionStepLengthSecs, laneVehicleMaxSpeed); if (dc < vPos) binder = 8; vPos = Math.Min(vPos, dc);
 
         // Rail crossing (rung R5): a road vehicle yields to a train at a level crossing -- brakes to
         // the crossing's stop line while it is closed (not green). +infinity (non-binding) when this
         // lane is not a controlled crossing approach or the crossing is open. Inert for every net
         // with no rail_crossing junction (_railCrossingByRoadLaneHandle null). See RailCrossingConstraint.
-        vPos = Math.Min(vPos, RailCrossingConstraint(v, lane, dt, actionStepLengthSecs, laneVehicleMaxSpeed));
+        dc = RailCrossingConstraint(v, lane, dt, actionStepLengthSecs, laneVehicleMaxSpeed); if (dc < vPos) binder = 9; vPos = Math.Min(vPos, dc);
 
         // Priority-junction yielding (rung 9b-ii/iii, plus B5-iii's external-agent foe): MSLink's
         // right-of-way gate (stop-line brake while a higher-priority foe still approaches) plus
@@ -5006,7 +5020,7 @@ public sealed partial class Engine : IEngine
         // [StartTime, EndTime) active window at the SAME instant every other obstacle read this
         // step uses (ObstacleConstraint/TargetLaneBlockedByObstacle's own convention) -- nothing
         // about the pre-existing 9b-ii/iii SUMO-foe machinery reads `time` at all.
-        vPos = Math.Min(vPos, JunctionYieldConstraint(v, ActiveVehicles(), time, dt, actionStepLengthSecs, laneVehicleMaxSpeed, prePass));
+        dc = JunctionYieldConstraint(v, ActiveVehicles(), time, dt, actionStepLengthSecs, laneVehicleMaxSpeed, prePass); if (dc < vPos) binder = 10; vPos = Math.Min(vPos, dc);
 
         // C5 (keepClear / don't-block-the-box): MSVehicle::checkRewindLinkLanes' downstream
         // available-space accounting. A vehicle approaching a junction whose EXIT is jammed (a
@@ -5014,7 +5028,7 @@ public sealed partial class Engine : IEngine
         // creep onto the internal lane and block cross traffic. +infinity (non-binding) unless a
         // stopped vehicle is found on ego's downstream exit chain with leftSpace < 0 -- so every
         // existing (jam-free) scenario is untouched.
-        vPos = Math.Min(vPos, KeepClearConstraint(v, ActiveVehicles(), dt, actionStepLengthSecs, laneVehicleMaxSpeed));
+        dc = KeepClearConstraint(v, ActiveVehicles(), dt, actionStepLengthSecs, laneVehicleMaxSpeed); if (dc < vPos) binder = 11; vPos = Math.Min(vPos, dc);
 
         // B1: external obstacle (DESIGN.md "Two futures" -- a live, non-SUMO input, not a
         // ported SUMO code path). Modeled as one more virtual stopped leader reusing the same
@@ -5023,12 +5037,13 @@ public sealed partial class Engine : IEngine
         // from. +infinity (non-binding) whenever _obstacles is empty or none is active/ahead
         // on this lane -- this is the inert-when-absent guard: an empty store makes this a
         // no-op Min term, leaving every existing (obstacle-free) parity scenario untouched.
-        vPos = Math.Min(vPos, ObstacleConstraint(v, time, laneVehicleMaxSpeed));
+        dc = ObstacleConstraint(v, time, laneVehicleMaxSpeed); if (dc < vPos) binder = 12; vPos = Math.Min(vPos, dc);
 
         // Cross-regime bridge (Direction B longitudinal safety): brake for a crowd agent ego is still
         // laterally overlapping -- the "stop for a pedestrian you can't swerve clear of" net. +Infinity
         // (inert) unless a coupling has attached a CrowdSource, so byte-identical for every golden.
-        vPos = Math.Min(vPos, CrowdLongitudinalConstraint(v, time, laneVehicleMaxSpeed));
+        dc = CrowdLongitudinalConstraint(v, time, laneVehicleMaxSpeed); if (dc < vPos) binder = 13; vPos = Math.Min(vPos, dc);
+        if (!prePass) v.BindingConstraint = binder; // diagnostic (#15): argmin of the fold, never read by sim
 
         // MSCFModel.cpp:191 finalizeSpeed: `vStop = MIN2(vPos, veh->processNextStop(vPos))`.
         // ProcessNextStop reads only the front stop's START-OF-STEP snapshot (Reached/
