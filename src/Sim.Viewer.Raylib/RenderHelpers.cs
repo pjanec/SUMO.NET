@@ -1,6 +1,5 @@
 using Sim.Core;
 using Sim.Replication;
-using Sim.Replication.Dds;
 using Sim.Viewer.Motion;
 
 namespace Sim.Viewer.Raylib;
@@ -18,8 +17,19 @@ public static class RenderHelpers
     // City3D use, so all consumers move as one. `CoarseFeed=true` is set on the passed `recon` by the caller
     // (the viewers are ~1-3 Hz DR consumers). Mutates `vehicleDraws` (cleared and repopulated) and `recon` (its
     // per-vehicle kinematic + look-ahead state) in place.
+    //
+    // docs/LIVE-CITY-VIEWERS-DESIGN.md §1/§5 (Stage B): `subscriber` is typed as the transport-neutral
+    // `IReplicationSource` (not the DDS-specific `DdsSubscriber`) so an in-process source -- e.g.
+    // `LiveCitySim.VehicleSource`, an `InMemoryReplicationBus.Source` -- reconstructs through this EXACT
+    // same path as `--mode loopback`/`--mode remote`, with zero DDS involved. Every existing call site
+    // (both of which pass a `DdsSubscriber`, itself an `IReplicationSource`) keeps compiling unchanged.
+    // `laneSource` is optional: omitted (the DDS callers' case), it wraps `subscriber.Geometry` in a
+    // `DdsGeometryLaneSource` exactly as before (2-D only -- the wire geometry codec carries no Z yet);
+    // supplied (the live-city caller's case), it lets the caller hand in a Z-aware `ILaneShapeSource` --
+    // e.g. `LiveCitySim.LocalLanes` (a `NetworkLaneSource` over the real, in-process `NetworkModel`) --
+    // instead of round-tripping through the wire's own (currently 2-D) geometry codec.
     public static void PumpAndBuildVehicleDraws(
-        DdsSubscriber subscriber,
+        IReplicationSource subscriber,
         DrClock drClock,
         float delaySeconds,
         bool smooth,
@@ -27,13 +37,14 @@ public static class RenderHelpers
         KinematicReconstructor recon,
         List<Renderer.DrVehicleDraw> vehicleDraws,
         bool paused,
-        VehicleHandle? traceHandle = null)
+        VehicleHandle? traceHandle = null,
+        ILaneShapeSource? laneSource = null)
     {
         subscriber.Pump();
         drClock.Pump(subscriber.LatestVehicleSampleTime, hold: paused);
 
         vehicleDraws.Clear();
-        var geoSource = new DdsGeometryLaneSource(subscriber.Geometry);
+        var geoSource = laneSource ?? new DdsGeometryLaneSource(subscriber.Geometry);
 
         var (_, avgFrame, _) = frameStats.Compute();
         var frameDt = avgFrame > 0f ? avgFrame : 1f / 60f;

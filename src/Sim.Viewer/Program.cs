@@ -7,6 +7,7 @@ using Raylib_cs;
 using rlImGui_cs;
 using ImGuiNET;
 using Sim.Core;
+using Sim.LiveCity;
 using Sim.Pedestrians.Lod;
 using Sim.Replication;
 using Sim.Replication.Dds;
@@ -38,6 +39,17 @@ using Sim.Viewer.Raylib;
 // interactive slider's effect can be verified headlessly (can't be driven by mouse input under Xvfb).
 // `--seconds <n>` (P3): caps `--mode publish`'s otherwise-infinite loop to `n` wall-clock seconds, for
 // scripted/CI-style runs; omit it for a real long-lived headless publisher (Ctrl-C to stop).
+// `--mode live-city` (docs/LIVE-CITY-VIEWERS-DESIGN.md §1/§5-adjacent, -TASKS.md Stage B): the coupled
+// cars+pedestrians+crossing-yield "live city" scene, real-time, in this viewer. Deliberately NOT a
+// `DemoKind`/EngineHost path (see the design doc's rationale: LiveCitySim owns its own coupled Engine and
+// updates the crossing gate BEFORE Engine.Step() each tick, which EngineHost's post-step-only hook cannot
+// reproduce without going one tick stale) -- structurally a trimmed `RunLoopback`: LiveCitySim IS the
+// in-process replication source (its own `VehicleSource`/`LocalLanes`), reconstructed through the exact
+// same `KinematicReconstructor`/`RenderHelpers.PumpAndBuildVehicleDraws` path loopback uses, with a
+// `LiveCityOverlay` drawing the pedestrian crowd + click-selected vehicle on top. No scenario arg needed
+// (the dataset is fixed at `scenarios/_ped/demo_city/box` via `LiveCityConfig.ForRepoRoot`), so it
+// dispatches before the `inputPath is null` guard, like `ped-publish`. `--smoke` runs the same LiveCitySim
+// loop headlessly (no window) for the Stage B gating check.
 
 // Interactive viewer: prefer short, non-blocking GC pauses over throughput. SustainedLowLatency defers
 // blocking gen2 collections (trading some memory) so a background gen2 doesn't stall a render frame -- one
@@ -57,6 +69,10 @@ string? demoName = null;
 // SwitchTo an Evac demo, and exit -- no window, no --mode needed. Proves a live switch doesn't leak/hang
 // across scenario/sandbox/evac boundaries.
 var demoSmoke = false;
+// docs/LIVE-CITY-VIEWERS-TASKS.md Stage B success condition: `--mode live-city --smoke` runs the SAME
+// LiveCitySim step + reconstruct loop headlessly (no window, no raylib draw calls) and logs/asserts the
+// coupled-scene invariants, for CI/offline verification. Meaningless outside `--mode live-city`.
+var liveCitySmoke = false;
 var frames = 150;
 var delaySeconds = 1.0f; // default DR playout delay (s). The auto "always interpolate" delay is OFF by
                          // default -- it fluctuated and made rendered speed visibly pulse; a stable manual
@@ -136,6 +152,9 @@ for (var i = 0; i < args.Length; i++)
         case "--demo-smoke":
             demoSmoke = true;
             break;
+        case "--smoke":
+            liveCitySmoke = true;
+            break;
         case "--overlay-test":
             overlayTest = true;
             break;
@@ -174,6 +193,16 @@ if (mode == "remote")
 if (mode == "ped-publish")
 {
     return RunPedPublish(secondsCap);
+}
+
+// docs/LIVE-CITY-VIEWERS-DESIGN.md §1/§5-adjacent, -TASKS.md Stage B: `--mode live-city` -- no scenario
+// arg (the dataset is fixed via `LiveCityConfig.ForRepoRoot`), so dispatched before the `inputPath is
+// null` guard, exactly like `ped-publish` above. `--smoke` diverts to the headless gating check.
+if (mode == "live-city")
+{
+    return liveCitySmoke
+        ? RunLiveCitySmoke(Math.Max(frames, 120))
+        : RunLiveCity(screenshotPath, frames, delaySeconds, simRate);
 }
 
 // docs/SUMOSHARP-VIEWER-DEMO-EVAC-DESIGN.md §5: `--mode local --demo "<name>"` needs NO <path> at all --
@@ -711,6 +740,141 @@ static int RunPedPublish(double? secondsCap)
 
     Console.WriteLine($"Sim.Viewer: ped publish loop stopped after {publishedSteps} steps " +
         $"({sink.CrowdBytesPublished + sink.PathArcBytesPublished + sink.ActivityBytesPublished + sink.LifecycleBytesPublished} wire bytes).");
+    return 0;
+}
+
+// docs/LIVE-CITY-VIEWERS-DESIGN.md §1, -TASKS.md Stage B (B1/B2): `--mode live-city`'s windowed run --
+// structurally RunLoopback with LiveCitySim standing in for EngineHost+DdsPublisher+DdsSubscriber:
+// LiveCitySim already publishes onto its OWN in-process replication bus every Step() (VehicleSource is an
+// IReplicationSource), so this needs no DdsParticipant at all. Cars reconstruct through the SAME
+// KinematicReconstructor/RenderHelpers.PumpAndBuildVehicleDraws path loopback uses -- fed LiveCitySim's own
+// Z-aware `LocalLanes` (a NetworkLaneSource over the real, in-process NetworkModel) as the lane-shape
+// source instead of a wire-decoded 2-D one. `LiveCityOverlay` draws the pedestrian crowd + click-selected
+// vehicle identity on top, fed a fresh `sim.Sample()` every render frame.
+static int RunLiveCity(string? screenshotPath, int frames, float delaySeconds, double? speedFactor)
+{
+    var repoRoot = DemoCatalog.RepoRoot();
+    var cfg = LiveCityConfig.ForRepoRoot(repoRoot);
+    using var sim = new LiveCitySim(cfg);
+
+    var overlay = new LiveCityOverlay();
+    var frameStats = new FrameStats();
+    var drClock = new DrClock();
+    // VIEWER-KINEMATIC-SMOOTHING §1.1/§2.2: CoarseFeed=true, same as loopback/remote -- this is a sparse
+    // (Dt=0.5s => 2 Hz) DR consumer, so the junction-turn-straddle discriminator must be active.
+    var recon = new KinematicReconstructor { CoarseFeed = true };
+
+    // Real-time step accumulator: LiveCitySim.Step() always advances exactly cfg.Dt of sim time -- pace it
+    // to WALL time (honoring `speedFactor`, the same knob `--sim-rate` drives for `--mode local`) instead
+    // of stepping once per render frame (which would run the sim at whatever fps raylib happens to deliver,
+    // i.e. not real-time). A render frame that arrives before a full Dt of wall time has accumulated simply
+    // redraws the last sampled frame; a frame that arrives late (or after a wall-clock stall) may step more
+    // than once to catch back up.
+    var speed = speedFactor is > 0.0 ? speedFactor.Value : 1.0;
+    var accumWall = 0.0;
+
+    var cfgHost = new ViewerHostConfig
+    {
+        WindowTitle = "SumoSharp - native viewer (live city)",
+        ScreenshotPath = screenshotPath,
+        Frames = frames,
+
+        InitialCameraBounds = () => (cfg.X0, cfg.Y0, cfg.X1, cfg.Y1),
+
+        PumpFrame = (dt, draws) =>
+        {
+            frameStats.Add(dt);
+
+            accumWall += dt * speed;
+            while (accumWall >= cfg.Dt)
+            {
+                sim.Step();
+                accumWall -= cfg.Dt;
+            }
+
+            overlay.UpdateSnapshot(sim.Sample());
+
+            RenderHelpers.PumpAndBuildVehicleDraws(sim.VehicleSource, drClock, delaySeconds, smooth: true,
+                frameStats, recon, draws, paused: false, laneSource: sim.LocalLanes);
+        },
+
+        DrawWorld = (camera, draws) =>
+        {
+            Renderer.DrawWorldDds(camera, sim.VehicleSource.Geometry, sim.VehicleSource.TlStateByLane, draws);
+            overlay.DrawWorldOver(camera, SimulationSnapshot.Empty, draws);
+        },
+
+        OnWorldClick = (wx, wy) => overlay.OnWorldClick(wx, wy),
+
+        DrawImGui = showDiagnostics =>
+        {
+            overlay.DrawUi();
+            if (showDiagnostics)
+            {
+                var (min, avg, p99) = frameStats.Compute();
+                ImGui.SetNextWindowPos(new System.Numerics.Vector2(10, 410), ImGuiCond.FirstUseEver);
+                ImGui.SetNextWindowSize(new System.Numerics.Vector2(360, 170), ImGuiCond.FirstUseEver);
+                ImGui.Begin("SumoSharp - diagnostics");
+                ImGui.Text($"fps: {Raylib.GetFPS()}");
+                ImGui.Text($"frame ms  min {min * 1000f:F2}  avg {avg * 1000f:F2}  p99 {p99 * 1000f:F2}");
+                ImGui.Text($"sim time: {sim.Time:F1}s");
+                ImGui.Text($"renderSim(dr): {drClock.RenderSim:F2}s   simRate: {drClock.SimRate:F2}/s");
+                ImGui.Text($"GC gen0/1/2: {GC.CollectionCount(0)} / {GC.CollectionCount(1)} / {GC.CollectionCount(2)}");
+                ImGui.End();
+            }
+        },
+    };
+
+    return ViewerHost.Run(cfgHost);
+}
+
+// docs/LIVE-CITY-VIEWERS-TASKS.md Stage B success condition ("headless smoke, the gating functional
+// check"): constructs LiveCitySim, steps it `steps` times, and after EVERY step reconstructs the car
+// draw-list through the SAME RenderHelpers.PumpAndBuildVehicleDraws call the windowed render loop uses (no
+// window, no raylib draw calls -- safe to run with no display at all). Asserts the coupled-scene
+// invariants from the FINAL step's own frame (reconstructedCars>0 && sampledPeds>0, "in the same frame")
+// plus the crossing-yield gate having fired at least once ACROSS the whole run (peakOccupiedCrossings>0 --
+// occupancy is transient/instantaneous, so gating on one arbitrary frame's snapshot would be flaky; "was
+// the gate ever proven live over the run" is the same invariant Stage A's own LiveCitySimTests asserts).
+static int RunLiveCitySmoke(int steps)
+{
+    var repoRoot = DemoCatalog.RepoRoot();
+    var cfg = LiveCityConfig.ForRepoRoot(repoRoot);
+    using var sim = new LiveCitySim(cfg);
+
+    var frameStats = new FrameStats();
+    var drClock = new DrClock();
+    var recon = new KinematicReconstructor { CoarseFeed = true };
+    var draws = new List<Renderer.DrVehicleDraw>();
+
+    var snap = sim.Sample();
+    for (var i = 0; i < steps; i++)
+    {
+        sim.Step();
+        frameStats.Add(1f / 60f);
+        RenderHelpers.PumpAndBuildVehicleDraws(sim.VehicleSource, drClock, delaySeconds: 0.5f, smooth: true,
+            frameStats, recon, draws, paused: false, laneSource: sim.LocalLanes);
+        snap = sim.Sample();
+    }
+
+    var reconstructedCars = draws.Count;
+    var sampledPeds = snap.Peds.Count;
+    var sampledCars = snap.Cars.Count;
+
+    Console.WriteLine(
+        $"LIVECITY-SMOKE: steps={steps} sampledCars={sampledCars} reconstructedCars={reconstructedCars} " +
+        $"sampledPeds={sampledPeds} occupiedCrossings(final)={snap.OccupiedCrossings} " +
+        $"peakOccupiedCrossings={sim.PeakOccupiedCrossings} carYieldObservations={sim.CarYieldObservations} " +
+        $"peakCars={sim.PeakCars} peakPeds={sim.PeakPeds}");
+
+    if (reconstructedCars <= 0 || sampledPeds <= 0 || sim.PeakOccupiedCrossings <= 0)
+    {
+        Console.Error.WriteLine(
+            "LIVECITY-SMOKE: FAILED -- expected reconstructedCars>0 && sampledPeds>0 && peakOccupiedCrossings>0.");
+        return 1;
+    }
+
+    Console.WriteLine("LIVECITY-SMOKE: OK.");
     return 0;
 }
 

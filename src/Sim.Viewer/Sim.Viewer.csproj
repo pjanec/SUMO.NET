@@ -44,6 +44,11 @@
          allowed direction (an out-of-sln project referencing an in-sln one), same as Sim.Evac's own
          reference to it. -->
     <ProjectReference Include="..\Sim.Pedestrians\Sim.Pedestrians.csproj" />
+    <!-- docs/LIVE-CITY-VIEWERS-DESIGN.md §1/§6, -TASKS.md Stage B: the "mode live city" viewer path plus
+         LiveCityOverlay's reference to the shared coupled cars/peds/crossing-yield host. Sim.LiveCity is
+         OUT of Traffic.sln (like Sim.Evac/Sim.Pedestrians above), so this reference does not touch the
+         parity gate. -->
+    <ProjectReference Include="..\Sim.LiveCity\Sim.LiveCity.csproj" />
   </ItemGroup>
 
 </Project>
