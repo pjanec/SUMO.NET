@@ -230,6 +230,12 @@ public partial class Main : Node3D
     private double _accumulator;
     private int _frame;
     private string? _shotPath;
+
+    // BLOCKER fix (see ShouldAutoQuit): whether the in-code QuitAfterFrames auto-quit is even armed this
+    // run, and the explicit `--frames=N` override that supersedes it either way. Both resolved ONCE at the
+    // top of _Ready(), before any mode dispatch, exactly like _simHz/_renderHz above.
+    private bool _isHeadless;
+    private int? _framesOverride;
     private string _cameraMode = "overview";
     private (Vector3 Min, Vector3 Max) _sceneBbox;
     private Camera3D? _closeCamera;
@@ -441,6 +447,18 @@ public partial class Main : Node3D
         _renderHz = ValidateRenderHz(ParseRenderHzArg());
         Godot.Engine.MaxFps = _renderHz;
         GD.Print($"Main: tick rates -- sim-hz={_simHz} (live-city only) render-hz={_renderHz} (Engine.MaxFps).");
+
+        // BLOCKER fix: the in-code QuitAfterFrames=200 auto-quit used to fire unconditionally, closing an
+        // interactive windowed run after ~3.3s at 60fps on a real GPU. It is REDUNDANT outside headless --
+        // run-smoke.sh already bounds the headless run with Godot's own `--quit-after 400`, and `--shot`
+        // owns its own quit via CaptureScreenshotAsync (the `_shotPath is null` half of every guard below).
+        // So: arm it only under Godot's own --headless, UNLESS the user explicitly opts into a bound via
+        // `--frames=N`, which applies regardless of headless/windowed (e.g. for scripted windowed capture).
+        _isHeadless = IsHeadlessDisplay();
+        _framesOverride = ParseFramesArg();
+        GD.Print(
+            $"Main: auto-quit -- headless={_isHeadless} framesOverride={(_framesOverride?.ToString() ?? "none")} " +
+            $"defaultCap={QuitAfterFrames} (armed only when headless or an override is set).");
 
         _transport = ParseTransportArg();
         _peds = ParsePedsArg();
@@ -1264,6 +1282,23 @@ public partial class Main : Node3D
         }
     }
 
+    // BLOCKER fix -- the single "should the in-code frame-count auto-quit fire this frame" check, shared by
+    // every per-frame body's tail (ProcessPeds, ProcessLiveCity, ProcessLiveCityRemote,
+    // ProcessLiveCityReplay). An explicit `--frames=N` (_framesOverride) always applies; absent that, the
+    // legacy QuitAfterFrames=200 cap now only fires under Godot's own --headless -- an interactive/Xvfb-
+    // windowed run never self-quits anymore (it used to close after ~3.3s at 60fps on a real GPU, which is
+    // what made the local 3D viewer unusable for eyeballing). Every call site still ANDs this with its own
+    // `_shotPath is null` -- --shot keeps owning its own quit via CaptureScreenshotAsync, unaffected here.
+    private bool ShouldAutoQuit(int frame)
+    {
+        if (_framesOverride is { } n)
+        {
+            return frame >= n;
+        }
+
+        return _isHeadless && frame >= QuitAfterFrames;
+    }
+
     // docs/DEMO-CITY3D-DESIGN.md "#### Pedestrians (P7-3)" -- the per-frame ped body: advance the ped sim on
     // the sim-cadence accumulator (fixed 0.2s ped-Tick increments off `delta`, threshold PedTickWallSeconds),
     // reconstruct the crowd from the wire, and rewrite the ped MultiMesh transforms + regime colours. Mirrors
@@ -1330,9 +1365,9 @@ public partial class Main : Node3D
 
         _frame++;
 
-        if (_frame >= QuitAfterFrames && _shotPath is null)
+        if (_shotPath is null && ShouldAutoQuit(_frame))
         {
-            GD.Print($"Main: reached {QuitAfterFrames} frames, quitting.");
+            GD.Print($"Main: reached {(_framesOverride ?? QuitAfterFrames)} frames, quitting.");
             DisposeSources();
             GetTree().Quit();
         }
@@ -1428,9 +1463,9 @@ public partial class Main : Node3D
 
         _liveCityFrame++;
 
-        if (_liveCityFrame >= QuitAfterFrames && _shotPath is null)
+        if (_shotPath is null && ShouldAutoQuit(_liveCityFrame))
         {
-            GD.Print($"Main: reached {QuitAfterFrames} frames, quitting.");
+            GD.Print($"Main: reached {(_framesOverride ?? QuitAfterFrames)} frames, quitting.");
             DisposeSources();
             GetTree().Quit();
         }
@@ -1518,9 +1553,9 @@ public partial class Main : Node3D
 
         _liveCityFrame++;
 
-        if (_liveCityFrame >= QuitAfterFrames && _shotPath is null)
+        if (_shotPath is null && ShouldAutoQuit(_liveCityFrame))
         {
-            GD.Print($"Main: reached {QuitAfterFrames} frames, quitting.");
+            GD.Print($"Main: reached {(_framesOverride ?? QuitAfterFrames)} frames, quitting.");
             DisposeSources();
             GetTree().Quit();
         }
@@ -1579,9 +1614,9 @@ public partial class Main : Node3D
 
         _liveCityFrame++;
 
-        if (_liveCityFrame >= QuitAfterFrames && _shotPath is null)
+        if (_shotPath is null && ShouldAutoQuit(_liveCityFrame))
         {
-            GD.Print($"Main: reached {QuitAfterFrames} frames, quitting.");
+            GD.Print($"Main: reached {(_framesOverride ?? QuitAfterFrames)} frames, quitting.");
             DisposeSources();
             GetTree().Quit();
         }
@@ -3532,6 +3567,66 @@ public partial class Main : Node3D
             if (arg.StartsWith(prefix, StringComparison.Ordinal))
             {
                 return arg[prefix.Length..];
+            }
+        }
+
+        return null;
+    }
+
+    // BLOCKER fix -- true only under Godot's own `--headless` (no real/Xvfb display server backing the
+    // window). Verified Godot 4.7.1: DisplayServer.GetName() returns "headless" under --headless and a
+    // real driver name ("X11", ...) otherwise, including under Xvfb (Xvfb provides a real X11 display, so
+    // Godot picks its normal windowed driver there, NOT the headless one -- exactly the "interactive"
+    // case this auto-quit gate must leave alone). Falls back to scanning Godot's OWN cmdline args (not the
+    // USER args after `--`) for a literal `--headless` switch, in case a future engine build ever names the
+    // driver differently.
+    private static bool IsHeadlessDisplay()
+    {
+        if (Godot.DisplayServer.GetName() == "headless")
+        {
+            return true;
+        }
+
+        foreach (var arg in OS.GetCmdlineArgs())
+        {
+            if (arg == "--headless")
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    // `--frames=<n>` / `--frames <n>` USER cmdline arg (both forms, like --replay): an EXPLICIT opt-in
+    // override for the in-code auto-quit frame cap (QuitAfterFrames' fixed 200), applied REGARDLESS of
+    // headless/windowed -- e.g. bounding a windowed run for scripted capture without relying on an external
+    // `--quit-after`. Absent (null) means "use the headless-gated default" (see IsHeadlessDisplay /
+    // ShouldAutoQuit). Non-positive or unparsable values are ignored, same defensive style as
+    // ParseShotDelayArg's `seconds > 0.0` guard.
+    private static int? ParseFramesArg()
+    {
+        const string eqPrefix = "--frames=";
+        var args = OS.GetCmdlineUserArgs();
+        for (var i = 0; i < args.Length; i++)
+        {
+            var arg = args[i];
+            if (arg.StartsWith(eqPrefix, StringComparison.Ordinal))
+            {
+                var v = arg[eqPrefix.Length..].Trim();
+                if (int.TryParse(v, NumberStyles.Integer, CultureInfo.InvariantCulture, out var n) && n > 0)
+                {
+                    return n;
+                }
+
+                continue;
+            }
+
+            if (arg == "--frames" && i + 1 < args.Length
+                && int.TryParse(args[i + 1], NumberStyles.Integer, CultureInfo.InvariantCulture, out var n2)
+                && n2 > 0)
+            {
+                return n2;
             }
         }
 
