@@ -219,6 +219,7 @@ public sealed class LiveCitySim : IDisposable
         // tight merge. The engine helper is also caller-gated on CooperativeInformFollower, so this is
         // belt-and-suspenders (0 => the veto is fully inert).
         _engine.MergeStoppedMinGap = cfg.CooperativeLaneChange ? cfg.MergeStoppedMinGap : 0.0;
+        _engine.MergeStoppedStrategicDeferDist = cfg.CooperativeLaneChange ? cfg.MergeStoppedStrategicDeferDist : 0.0;
         _engine.JunctionYieldTimeoutSeconds = cfg.JunctionYieldTimeoutSeconds;
         _engine.DeadLaneDriveThrough = cfg.DeadLaneDriveThrough;
         _engine.WrongLaneRerouteAtApproach = cfg.WrongLaneRerouteAtApproach;

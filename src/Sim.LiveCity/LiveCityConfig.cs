@@ -39,6 +39,16 @@ public sealed class LiveCityConfig
     // Overridable via LIVECITY_MERGEGAP. Default 5 m covers the measured 2-5 m follow-side cut-in band.
     public double MergeStoppedMinGap { get; set; } = 5.0;
 
+    // #15 into-occupied, STRATEGIC (required) path only (Engine.MergeStoppedStrategicDeferDist). Urgency-gated
+    // deferral: defer a tight cut-in into a stopped turn-lane queue only while ego still has more than this
+    // much usable distance to complete the change; allow it once urgent so ego never strands. 0 = off (the
+    // required merge is never deferred). Overridable via LIVECITY_MERGEDEFER (only active when
+    // MergeStoppedMinGap>0 and coop on). Default 15 m: an A/B sweep found a sharp cliff -- <=20 m reduces the
+    // strategic tight cut-ins (44->16, -64%) with NO flow change (arrivals 1068, stoppedFrac 0.34, identical
+    // progression to no-defer), while >=25 m tips into congestion (arrivals 959, stoppedFrac 0.91) that
+    // paradoxically breeds MORE stopped-follower cut-ins. 15 m sits comfortably below that cliff.
+    public double MergeStoppedStrategicDeferDist { get; set; } = 15.0;
+
     // A/B switch: full crossing-yield gate + ped signal compliance vs the baseline (no coupling).
     // Overridable via LIVECITY_YIELD (0 = off).
     public bool YieldEnabled { get; set; } = true;
@@ -151,6 +161,11 @@ public sealed class LiveCityConfig
         if (double.TryParse(Environment.GetEnvironmentVariable("LIVECITY_MERGEGAP"), out var mergeGap) && mergeGap >= 0.0)
         {
             cfg.MergeStoppedMinGap = mergeGap;
+        }
+
+        if (double.TryParse(Environment.GetEnvironmentVariable("LIVECITY_MERGEDEFER"), out var mergeDefer) && mergeDefer >= 0.0)
+        {
+            cfg.MergeStoppedStrategicDeferDist = mergeDefer;
         }
 
         cfg.YieldEnabled = Environment.GetEnvironmentVariable("LIVECITY_YIELD") != "0";

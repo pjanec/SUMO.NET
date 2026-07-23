@@ -11152,6 +11152,16 @@ public sealed partial class Engine : IEngine
     // Set by the live-city demo; every parity/bench scenario leaves it 0 (inert -> byte-identical).
     public double MergeStoppedMinGap { get; set; }
 
+    // Realism knob (NOT a SUMO default; 0 = off = byte-identical). docs/LIVE-CITY-15-INTO-OCCUPIED-DESIGN.md
+    // "Follow-up". The STRATEGIC (required) path is exempt from the MergeStoppedMinGap veto because vetoing a
+    // required merge into a SATURATED queue strands ego (measured gridlock). This knob is the URGENCY-GATED
+    // relaxation: defer a strategic tight cut-in ONLY while ego still has more than this much usable distance
+    // left to complete the change (ample road to find a cleaner merge downstream); once usableDist drops to/
+    // below it (must-merge-now) the cut-in is allowed, so ego can never strand -- the deferral window is
+    // bounded by ego's own forward progress. 0 = off (strategic never deferred, the safe shipped default).
+    // Only consulted together with MergeStoppedMinGap>0 and CooperativeInformFollower. Inert on every golden.
+    public double MergeStoppedStrategicDeferDist { get; set; }
+
     // Realism knob (NOT a SUMO default; 0 = off = byte-identical to every golden, so parity is untouched).
     // docs/LIVE-CITY-15-YIELD-TIMEOUT-DESIGN.md: when > 0, a vehicle that has been WAITING at a junction
     // for at least this many seconds stops taking the APPROACHING-foe crossing yield -- it forces its gap,
@@ -11467,7 +11477,13 @@ public sealed partial class Engine : IEngine
         // Cutting in to a required-and-saturated turn lane IS the realistic queue-join, not a gratuitous
         // squeeze -- so it is allowed. Only the DISCRETIONARY paths (speed-gain, keep-right) get the veto,
         // where declining simply keeps ego's already-fine lane. See docs/LIVE-CITY-15-INTO-OCCUPIED-DESIGN.md.
-        if (!IsTargetLaneSafe(v, neighLead, neighFollow, dt) || TargetLaneBlockedByObstacle(v, neighborLane, time, dt) || IsTargetLaneOverlapped(v, neighborLane.Handle, neighbors, dt))
+        // URGENCY-GATED relaxation (MergeStoppedStrategicDeferDist>0): defer a strategic tight cut-in while
+        // ego still has ample usable distance (>the knob) to merge more cleanly downstream; allow it once
+        // urgent (usableDist<=knob) so ego can never strand. Off by default (knob 0 => the safe shipped state).
+        var deferStrategicCutIn = CoordinatedLaneChange && CooperativeInformFollower
+            && MergeStoppedStrategicDeferDist > 0.0 && usableDist > MergeStoppedStrategicDeferDist
+            && WouldCutInAheadOfStoppedFollower(v, neighFollow, dt);
+        if (!IsTargetLaneSafe(v, neighLead, neighFollow, dt) || TargetLaneBlockedByObstacle(v, neighborLane, time, dt) || IsTargetLaneOverlapped(v, neighborLane.Handle, neighbors, dt) || deferStrategicCutIn)
         {
             // #15 (docs/LIVE-CITY-15-COOPERATIVE-LC-DESIGN.md): NEW strategic-path informFollower --
             // the retired speed-gain informFollower (revived above in DecideSpeedGainChanges) only ever

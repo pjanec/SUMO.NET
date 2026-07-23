@@ -1086,3 +1086,41 @@ never <2 m, owner-permitted) -- reducing them via a veto is proven to reform gri
 realistic forced merges. Next: investigate whether the strategic ones can be reduced *cooperatively*
 (urgency-gated deferral only where ample road remains to merge more cleanly) WITHOUT the strand -- separate,
 measured step; back off if it touches flow.
+
+## Implementation ATTEMPT 3 (SHIPPED, additive) -- reduce the STRATEGIC cut-ins cooperatively via urgency-gated deferral
+The discretionary fix left the strategic follower-side merges (44) untouched -- correctly, since a blanket
+strategic veto reforms gridlock (attempt 1). But attempt-1 vetoed UNCONDITIONALLY (ego never commits, even
+when it reaches the must-merge point). An URGENCY-GATED veto avoids the strand: defer a tight strategic
+cut-in ONLY while ego still has more than `MergeStoppedStrategicDeferDist` metres of usable distance left to
+complete the change (ample road to merge more cleanly downstream); once `usableDist` drops to/below the knob
+(must-merge-now) the cut-in is ALLOWED. The deferral window is bounded by ego's own forward progress, so ego
+can never strand. New knob `Engine.MergeStoppedStrategicDeferDist` (0 = off = shipped-safe; demo default 15).
+
+A/B sweep on the identical demand (env `LIVECITY_MERGEDEFER`, all else default):
+| deferDist | strategic foll<5 | arrivals @t~1400 | stoppedFrac late | verdict |
+|---|---|---|---|---|
+| 0 (attempt-2 shipped) | 44 | 1060 | 0.2-0.5 | baseline |
+| 15 | **16** | **1068** | **0.34** | **best -- chosen default** |
+| 20 | 18 | 1068 | 0.34 | also healthy |
+| 25 | 24 | 959 | 0.91 | CLIFF -- tips into congestion |
+| 30 | 26 | 959 | 0.91 | congested |
+| 40 | 27 | 959 | 0.91 | congested |
+**A SHARP CLIFF sits between 20 and 25 m.** Below it, deferral reduces the cut-ins with NO flow change
+(t-progression byte-comparable to no-defer: arrivals climb 9->95->182->...->1068, stoppedFrac oscillates
+0.14-0.70, never pins). At/above 25 m the deferral is aggressive enough to build congestion, which
+PARADOXICALLY breeds MORE stopped followers -> MORE tight merges committed once urgent, AND worse flow. So
+bigger is NOT better here; 15 m sits comfortably below the cliff with the best reduction.
+
+### SHIPPED FINAL (both fixes together; verified first-hand, fresh build):
+- speedGain foll<5 11->**0**, keepRight foll<5 3->**0** (discretionary veto, attempt-2).
+- strategic foll<5 46->**16** (urgency-gated deferral, attempt-3).
+- **Total into-occupied follower-side tight cut-ins (<5 m): 60 -> 16 (-73%).** No car ever lands <2 m
+  (unchanged: always was 0). All survivors are REQUIRED, moving, forward+lateral queue-joins into a
+  saturated turn lane at the must-merge point -- realistic and owner-permitted.
+- Flow: arrivals 1085->1068 (noise), stoppedFrac healthy 0.34, NO gridlock.
+- Parity **657/4** byte-identical; bench hash **`D96213B7BB4021A7`** parallel==single. Both re-verified
+  first-hand after the final default change (engine knobs default 0 => every golden inert).
+
+**Gotcha logged:** a `dotnet run --no-build` after a config-DEFAULT change ran a STALE assembly and reported
+the old number (44) -- always re-run without `--no-build` (or rebuild) when a source DEFAULT changed, not
+just when an env override changed.

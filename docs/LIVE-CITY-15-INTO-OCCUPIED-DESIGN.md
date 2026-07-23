@@ -52,16 +52,29 @@ discretionary cut-in; low-realism areas keep the cheap merge — consistent with
 - `Engine.MergeStoppedMinGap` (m). Demo default 5.0 (covers the measured 2–5 m band). Env `LIVECITY_MERGEGAP`.
   0 disables. `LIVECITY_COOP=0` also disables it (low-realism fallback).
 
-## Result (verified first-hand, t≈1400)
-| metric | baseline | attempt-1 (all paths) | SHIPPED (discretionary only) |
-|---|---|---|---|
-| arrivals | 1085 | 361 (GRIDLOCK) | 1060 (no regression) |
-| stoppedFrac late | 0.2–0.5 | 1.00 | 0.2–0.5 |
-| speedGain foll<5 cut-ins | 11 | 0 | 0 |
-| keepRight foll<5 cut-ins | 3 | 0 | 0 |
-| strategic foll<5 cut-ins | 46 | 0 | 44 (required queue-joins, left) |
+## Strategic path — urgency-gated deferral (`MergeStoppedStrategicDeferDist`)
+The strategic exemption above still leaves ~44 required-path tight merges. Attempt-1 vetoed them
+unconditionally and gridlocked because ego *never* commits, even at the must-merge point. The fix is to make
+the strategic veto **urgency-gated**: defer a tight strategic cut-in **only while ego still has more than
+`MergeStoppedStrategicDeferDist` metres of usable distance** left to complete the change (ample road to merge
+more cleanly downstream); once `usableDist` drops to/below the knob (must-merge-now) the cut-in is **allowed**.
+The deferral window is bounded by ego's own forward progress, so ego can never strand — the structural fix
+attempt-1 lacked.
 
-## Follow-up (open)
-Reduce the strategic follower-side merges *cooperatively* without stranding — e.g. urgency-gated deferral
-(defer a tight cut-in only where ample road remains to merge more cleanly, allow it once urgent). Separate,
-measured step; back off on any flow regression.
+`Engine.MergeStoppedStrategicDeferDist` (m; 0 = off = never defer the required merge). Demo default **15 m**.
+An A/B sweep found a **sharp cliff between 20 and 25 m**: ≤20 m reduces the cut-ins with no flow change,
+≥25 m tips into congestion that paradoxically breeds *more* stopped-follower merges. 15 m sits below it.
+
+## Result (verified first-hand, t≈1400, fresh build)
+| metric | baseline | attempt-1 (veto all) | attempt-2 (discretionary veto) | SHIPPED (+ strategic defer 15 m) |
+|---|---|---|---|---|
+| arrivals | 1085 | 361 (GRIDLOCK) | 1060 | 1068 (no regression) |
+| stoppedFrac late | 0.2–0.5 | 1.00 | 0.2–0.5 | 0.34 |
+| speedGain foll<5 | 11 | 0 | 0 | 0 |
+| keepRight foll<5 | 3 | 0 | 0 | 0 |
+| strategic foll<5 | 46 | 0 | 44 | 16 |
+| **total foll<5 tight cut-ins** | **60** | 0 (gridlock) | 47 | **16 (−73%)** |
+
+No car ever lands within 2 m of a stopped neighbour (always 0). Survivors are required, moving,
+forward+lateral queue-joins into a saturated turn lane at the must-merge point — realistic and owner-permitted.
+Parity 657/4 byte-identical; bench hash `D96213B7BB4021A7`, parallel==single.
