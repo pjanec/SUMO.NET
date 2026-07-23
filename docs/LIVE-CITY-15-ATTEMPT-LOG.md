@@ -150,6 +150,28 @@ are genuinely under a green head.** So:
 internal-junction leader the same-lane gap misses?). That is the direct root cause of the on-green
 stall. Still junction/RoW territory, NOT lane changes.
 
+## 2026-07-23 — Box-blocking RULED OUT; root = front car stalls on PROTECTED green
+Owner: "junctions are full of blocked cars … at least one direction is clear and the TL state changes,
+so it should unblock eventually." Added an internal-lane counter (`onInternal`/`stuckInternal`: cars
+whose LaneId starts with `:` = physically inside a junction). Net has 2182 internal lanes, so the
+engine DOES model cars in junctions.
+- **`stuckInternal` = 0–4 even at LIVECITY_CARS=300 and 500** → it is NOT box-blocking / cars frozen
+  mid-junction. The `onInternal` cars are all moving through.
+- At density, `renderedGreen` = 47–108 stopped-on-green and `majorGreenSTUCK` = 14–19 → the "junctions
+  full" is the four APPROACH arms packed to the stop line, not the junction interior.
+- They don't clear because each arm's FRONT car wastes its green (`majorGreenSTUCK`: protected green
+  `G`, own lane clear, exit mouth clear, speed 0). This is exactly the owner's "one direction clear +
+  lights cycle but doesn't unblock."
+- Engine HAS protected-green priority (`EgoLinkHasSignalPriority`, `Engine.cs:2298`, suppresses the
+  minor-yield arms on `'G'`), so a `'G'` car being frozen is held by something OTHER than the normal
+  junction-yield — the exact binding constraint is the last unknown.
+
+**NEXT (final drill): binding-constraint trace for a `majorGreenSTUCK` car.** Instrument the engine's
+speed reduction (`ComputeMoveIntent`'s Min-over-constraints) to record, for a flagged protected-green
+frozen car, WHICH constraint pins vPos≈0 (a phantom junction foe? a moving internal-lane foe on the
+conflicting path? a crowd/crossing term? a leader across the junction the same-lane gap misses?).
+Parity-neutral diagnostic. That line IS the root cause of the on-green stall.
+
 ## Retired-machinery note (shelved, for the record — NOT to build now)
 Mechanism-gathering found the follower-cooperation channel was already built and RETIRED in `afec614`
 ("Retire the cooperative informFollower"): `VehicleRuntime.CoopSpeedAdvice` (+∞ default) +

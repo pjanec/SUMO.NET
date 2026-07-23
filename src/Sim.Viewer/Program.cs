@@ -1266,8 +1266,11 @@ static int RunLiveCitySmoke(int steps, string? recordPath, int simHz)
                     var w = sim.WitnessAuthoritative();
                     var stuck = 0; var stuckMinorGreen = 0; var stuckMajorGreen = 0; var stuckRed = 0; var stuckLeader = 0;
                     var renderedGreen = 0; var tlLie = 0; // wire(rendered) vs engine TL
+                    var onInternal = 0; var stuckInternal = 0; // cars ON an internal junction lane (blocking the box)
                     foreach (var c in w)
                     {
+                        var inJunction = c.LaneId.StartsWith(':');
+                        if (inJunction) { onInternal++; if (c.Speed < 0.3) stuckInternal++; }
                         if (c.Speed >= 0.3) continue;
                         stuck++;
                         var clear = c.GapAhead > 15.0 && c.NextMouthGap > 15.0; // own lane AND exit mouth clear
@@ -1285,7 +1288,7 @@ static int RunLiveCitySmoke(int steps, string? recordPath, int simHz)
 
                     Console.Write($"LIVECITY-WITNESS: {sim.Time,6:F0} stuck={stuck,3} minorGreenYield={stuckMinorGreen,3} " +
                         $"majorGreenSTUCK={stuckMajorGreen,3} red={stuckRed,3} behindLeader/exit={stuckLeader,3} strandedDeadEnd={sim.StrandedOffRouteLastStep,3} " +
-                        $"renderedGreen={renderedGreen,3} tlRenderLie={tlLie,3} | examples:");
+                        $"renderedGreen={renderedGreen,3} tlRenderLie={tlLie,3} onInternal={onInternal,3} stuckInternal={stuckInternal,3} | examples:");
                     var shown = 0;
                     foreach (var c in w)
                     {
