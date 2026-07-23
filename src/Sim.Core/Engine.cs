@@ -1970,6 +1970,10 @@ public sealed partial class Engine : IEngine
     // each vehicle's speed), aligned to the read columns. See ComputeMoveIntent's binder for the id map.
     public ReadOnlySpan<byte> BindingConstraints => _readBuffer.BindingConstraint.AsSpan(0, _readBuffer.Count);
 
+    // DIAGNOSTIC (#15): per-vehicle junction-yield arm that bound (low nibble) + 0x80 protected-green
+    // priority bit. Meaningful only where BindingConstraints[i] == 10 (junctionYield).
+    public ReadOnlySpan<byte> JunctionYieldArms => _readBuffer.JunctionYieldArm.AsSpan(0, _readBuffer.Count);
+
     // Per-vehicle generation for VehicleHandle staleness, indexed by EntityIndex. Presently a constant 1
     // (no vehicle slot is recycled yet); grown lazily off the hot creation path. When runtime despawn
     // lands it is bumped per-slot so a handle held across a despawn goes stale (TryGetVehicle rejects it).
@@ -2203,7 +2207,7 @@ public sealed partial class Engine : IEngine
             _readBuffer.Add(handle, v.EntityIndex, v.Def.Id, v.VType.Id,
                 v.LaneHandle, nextLane, prevLane, laneWindow, v.LaneId, v.Kinematics.Pos, v.Kinematics.Speed, v.Acceleration, v.Kinematics.LatOffset,
                 (float)x, (float)y, (float)z, (float)angle, (float)v.VType.Length, (float)v.VType.Width,
-                (byte)RegimeOf(v), v.LateralManoeuvre, v.BindingConstraint);
+                (byte)RegimeOf(v), v.LateralManoeuvre, v.BindingConstraint, v.JunctionYieldArm);
         }
 
         DetectLifecycleEvents();
@@ -6602,6 +6606,10 @@ public sealed partial class Engine : IEngine
 
         var constraint = double.PositiveInfinity;
 
+        // DIAGNOSTIC ONLY (#15): track WHICH arm produced the binding (minimum) junction-yield value.
+        // `constraint` only ever decreases, so a site that lowers it below jyBest is the new argmin arm.
+        byte jyArm = 0; double jyBest = double.PositiveInfinity;
+
         // C4-viii-b (bug C, the hold arm): ResolveRightBeforeLeftCycles (the willPass post-pass) has
         // broken a symmetric right-before-left cycle by selecting one non-conflicting subset to pass
         // and marking the rest to YIELD (JunctionCycleHold). A held vehicle must stop AT its junction
@@ -6647,6 +6655,7 @@ public sealed partial class Engine : IEngine
                     v.VType, v.Kinematics.Speed,
                     egoDistToEntry - PositionEps,
                     laneVehicleMaxSpeed, dt, actionStepLengthSecs, v.LevelOfService));
+            if (constraint < jyBest) { jyBest = constraint; jyArm = 1; } // diag: cycleHold
         }
 
         // C3 (TASKS.md "on-ramp merge" / minor-link CAUTIOUS APPROACH): ported from
@@ -6727,6 +6736,7 @@ public sealed partial class Engine : IEngine
                 constraint = Math.Min(
                     constraint,
                     StopSpeedFor(v.VType, v.Kinematics.Speed, stopDist, laneVehicleMaxSpeed, dt, actionStepLengthSecs, v.LevelOfService));
+                if (constraint < jyBest) { jyBest = constraint; jyArm = 2; } // diag: cautiousApproach
             }
         }
 
@@ -6762,6 +6772,7 @@ public sealed partial class Engine : IEngine
                     SameTargetMergeConstraint(
                         v, junction, egoLink, egoInternalLaneId, egoOnInternal, approachLane, egoDistToEntry,
                         j, allVehicles, dt, time, actionStepLengthSecs, laneVehicleMaxSpeed, egoHasSignalPriority));
+                if (constraint < jyBest) { jyBest = constraint; jyArm = 3; } // diag: sameTargetMerge
                 continue;
             }
 
@@ -6795,6 +6806,7 @@ public sealed partial class Engine : IEngine
                         approachLane!.Length - v.Kinematics.Pos - PositionEps,
                         laneVehicleMaxSpeed, dt, actionStepLengthSecs, v.LevelOfService);
                 constraint = Math.Min(constraint, extConstraint);
+                if (constraint < jyBest) { jyBest = constraint; jyArm = 4; } // diag: externalAgent
             }
 
             var foe = FindCrossFoeVehicle(v, foeInternalLaneHandle);
@@ -6806,8 +6818,10 @@ public sealed partial class Engine : IEngine
             var foeInternalSeqIndex = IndexOfLaneHandle(foe, foeInternalLaneHandle);
 
             double thisConstraint;
+            byte thisArm = 0; // diag (#15): 5 adaptToJunctionLeader, 6 approachingCross
             if (foe.LaneId == foeInternalLaneId)
             {
+                thisArm = 5;
                 // On-junction: MSVehicle::adaptToJunctionLeader.
                 // Rung ER2: an emergency vehicle with jmIgnoreJunctionFoeProb IGNORES the
                 // on-junction link-leader (MSVehicle.cpp:3430 -- checkLinkLeaderCurrentAndParallel's
@@ -6937,6 +6951,7 @@ public sealed partial class Engine : IEngine
                     egoArrivalCross, egoLeaveCross, foeArrivalCross, foeLeaveCross,
                     egoImpatience, foeSeenCross, foe.VType.Decel, actionStepLengthSecs);
 
+                thisArm = 6;
                 var takesCrossingYield = !(egoOnInternal || foeWillNotPass || foeNotApproaching || foeYieldsThisStep || ignoresFoe || egoHasSignalPriority || crossingWindowClear);
                 // Perf (willPass/plan fusion): a finite approaching-foe crossing yield taken in the
                 // pre-pass is the ONLY thing the real pass can relax (via `!foe.WillPass`), so flag it
@@ -6961,6 +6976,12 @@ public sealed partial class Engine : IEngine
             }
 
             constraint = Math.Min(constraint, thisConstraint);
+            if (constraint < jyBest) { jyBest = constraint; jyArm = thisArm; } // diag: on-junction / approaching
+        }
+
+        if (!prePass)
+        {
+            v.JunctionYieldArm = (byte)(jyArm | (egoHasSignalPriority ? 0x80 : 0)); // diag (#15)
         }
 
         return constraint;

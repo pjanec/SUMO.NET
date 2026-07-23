@@ -202,6 +202,38 @@ protected green.** Next = read `JunctionYieldConstraint` (+ `EgoLinkHasSignalPri
 `adaptToJunctionLeader`) to find WHY a `'G'`-priority ego still yields to a foe, then design-first a
 parity-safe fix. This is squarely `Sim.Core` junction RoW; lane-change cooperation stays shelved.
 
+## 2026-07-23 — CORRECTION: NOT a protected-green over-yield. Measure-first saved a bad fix.
+Was about to implement a "protected-green priority not suppressing junction yield" fix. Added a
+junction-yield SUB-ARM trace first (`VehicleRuntime.JunctionYieldArm`: which arm bound + a 0x80 bit =
+`egoHasSignalPriority` was true), plumbed like `BindingConstraint`. **Parity 657/4 byte-identical,
+bench hash unchanged.**
+
+For the `majorGreenSTUCK` cars whose binder is `junctionYield` (`LIVECITY_CARS=300`):
+```
+t=100  JYarm: adaptToJxnLeader=8(prio0)  approachingCross=2(prio0)
+t=120  JYarm: adaptToJxnLeader=2(prio0)
+t=140  JYarm: adaptToJxnLeader=1(prio0)
+```
+- **`prio0` in EVERY case → `egoHasSignalPriority` is FALSE.** These cars do NOT hold a protected-green
+  priority for their own movement. The witness's lane-level `Tl='G'` (any-green-wins) MISLABELLED them:
+  the lane has a green movement, but the stuck car's own junction link is minor/permissive. **So the
+  "protected-green over-yield" bug I was about to fix DOES NOT EXIST.** (Both static-matrix minor arms —
+  cautiousApproach, approachingCross — are already correctly gated by `egoHasSignalPriority`; and the RBL
+  `JunctionCycleHold` already excludes TL junctions, P2-G Bug-2.)
+- **Dominant real hold = `adaptToJunctionLeader`** (following a foe physically ON the junction =
+  clearance / don't-drive-into-a-crossing-car). That is car-following safety SUMO applies regardless of
+  priority (`checkLinkLeader`) — largely LEGITIMATE. A few are the minor-movement approaching-cross yield.
+- Net: there is **no single clean over-yield bug**. The real ~26% deficit vs SUMO is subtler — most
+  likely gap-acceptance / impatience / clearance aggressiveness under saturation (SUMO's impatient front
+  cars force gaps + clear faster), where the un-gated-by-design `adaptToJunctionLeader` dominates and is
+  not subject to impatience. This needs a careful engine-vs-SUMO *per-junction* comparison before any
+  fix — a blind change here is high parity risk for an unproven target.
+
+**DO NOT implement a protected-green-priority fix — measured false.** Next honest step (if pursued):
+compare our minor-movement / clearance discharge to SUMO on ONE saturated junction (tripinfo + a
+per-junction throughput diff) to localize whether impatience/gap-acceptance or clearance timing is the
+gap — then design-first. This is a genuinely harder, subtler target than a one-line RoW gate.
+
 ## Retired-machinery note (shelved, for the record — NOT to build now)
 Mechanism-gathering found the follower-cooperation channel was already built and RETIRED in `afec614`
 ("Retire the cooperative informFollower"): `VehicleRuntime.CoopSpeedAdvice` (+∞ default) +

@@ -1299,6 +1299,18 @@ static int RunLiveCitySmoke(int steps, string? recordPath, int simHz)
                         "keepClear", "obstacle", "crowd" };
                     Console.Write("LIVECITY-BINDER(majorGreenSTUCK):");
                     for (var b = 0; b < 14; b++) if (majorGreenBinder[b] > 0) Console.Write($" {binderNames[b]}={majorGreenBinder[b]}");
+                    // For the junctionYield-bound majorGreenSTUCK cars, which ARM + did the ego actually hold
+                    // protected-green priority (0x80 bit)? This distinguishes a real priority over-yield (prio=1)
+                    // from a witness mislabel (a minor-green movement under a lane green for another movement).
+                    string[] armNames = { "none", "cycleHold", "cautiousApproach", "sameTargetMerge", "externalAgent", "adaptToJxnLeader", "approachingCross" };
+                    var armCount = new int[7]; var armPrio = new int[7];
+                    foreach (var c in w)
+                    {
+                        if (c.Speed >= 0.3 || c.Tl != 'G' || !(c.GapAhead > 15.0 && c.NextMouthGap > 15.0) || c.Binder != 10) continue;
+                        var arm = c.JyArm & 0x0F; if (arm < 7) { armCount[arm]++; if ((c.JyArm & 0x80) != 0) armPrio[arm]++; }
+                    }
+                    Console.Write(" || JYarm:");
+                    for (var a = 0; a < 7; a++) if (armCount[a] > 0) Console.Write($" {armNames[a]}={armCount[a]}(prio{armPrio[a]})");
                     Console.Write(" | examples:");
                     var shown = 0;
                     foreach (var c in w)

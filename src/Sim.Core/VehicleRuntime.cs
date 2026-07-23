@@ -139,6 +139,12 @@ internal sealed class VehicleRuntime
     // DIAGNOSTIC ONLY (#15): the id of the constraint that bound this vehicle's speed on its last real
     // plan pass (see Engine.ComputeMoveIntent's argmin fold). Never read by sim logic -> parity-neutral.
     public byte BindingConstraint;
+
+    // DIAGNOSTIC ONLY (#15): when JunctionYieldConstraint bound this vehicle, WHICH arm did (low 4 bits:
+    // 1 cycleHold, 2 cautiousApproach, 3 sameTargetMerge, 4 externalAgent, 5 adaptToJunctionLeader,
+    // 6 approachingCross) plus bit 0x80 = the ego link held a protected-green signal priority. Never read
+    // by sim logic.
+    public byte JunctionYieldArm;
     public bool KeepRightStaySuppress;
 
     // Turn-lane segregation fix (docs/GETBESTLANES-RESUME.md follow-up): the position-INDEPENDENT

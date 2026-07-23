@@ -53,6 +53,7 @@ internal sealed class VehicleReadBuffer
     // DIAGNOSTIC ONLY (#15): the constraint id that bound each vehicle's speed (Engine.ComputeMoveIntent
     // argmin). Additive column, populated in the Step projection only (off the golden Run path).
     public byte[] BindingConstraint = new byte[InitialCapacity];
+    public byte[] JunctionYieldArm = new byte[InitialCapacity]; // #15 diag: which junction-yield arm bound (+0x80 priority)
 
     // EntityIndex -> dense slot, frame-stamped so BeginFrame never has to clear it: a slot is current
     // only if its stamp equals the live frame counter.
@@ -73,7 +74,7 @@ internal sealed class VehicleReadBuffer
         int laneHandle, int nextLane, int prevLane, ReadOnlySpan<int> laneWindow,
         string laneId, double pos, double speed, double accel, double posLat,
         float x, float y, float z, float angle, float length, float width,
-        byte drModel, bool manoeuvring, byte bindingConstraint = 0)
+        byte drModel, bool manoeuvring, byte bindingConstraint = 0, byte junctionYieldArm = 0)
     {
         EnsureColumnCapacity(Count + 1);
 
@@ -105,6 +106,7 @@ internal sealed class VehicleReadBuffer
         DrModel[i] = drModel;
         Manoeuvring[i] = manoeuvring;
         BindingConstraint[i] = bindingConstraint;
+        JunctionYieldArm[i] = junctionYieldArm;
 
         _slotByEntity[entityIndex] = i;
         _frameOfEntity[entityIndex] = _frame;
@@ -160,6 +162,7 @@ internal sealed class VehicleReadBuffer
         Array.Resize(ref DrModel, newCap);
         Array.Resize(ref Manoeuvring, newCap);
         Array.Resize(ref BindingConstraint, newCap);
+        Array.Resize(ref JunctionYieldArm, newCap);
     }
 
     private void EnsureEntityCapacity(int needed)
