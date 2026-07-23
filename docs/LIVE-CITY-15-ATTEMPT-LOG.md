@@ -11,6 +11,65 @@ explicit fast-mode flag); bench determinism (serial == parallel) holds.
 
 ---
 
+## HOW TO REPRODUCE (read this first — exact data, build, params, and how to read the output)
+
+Everything below is deterministic: same inputs → same numbers, on any fresh VM, **no SUMO needed** (SUMO
+is only for the optional cross-check in §"SUMO drains it"). Run from the repo root
+(`cd "$(git rev-parse --show-toplevel)"`).
+
+**Data (all committed, nothing generated at run time):** the coupled cars+peds demo over
+`scenarios/_ped/demo_city/box/` — a pinned downtown crop `[2055,2055]–[2895,2895]` (~840 m). The host
+is `Sim.LiveCity.LiveCitySim`; the headless test loop is `RunLiveCitySmoke` in `src/Sim.Viewer/Program.cs`
+(`--mode live-city --smoke`). Inputs used: `net.xml` (51 static uncoordinated TLs), `scenario.rou.xml`,
+`vType.config.xml` (Krauss **army vehicles, 7–14 m long**, `lcStrategic=0.3`). Cars spawn crop-edge→
+crop-edge on the **best departure lane** (`departBestLane: true`), refill to a concurrent cap on arrival;
+the RNG seed is fixed in `LiveCityConfig` (`CarRngSeed`, `PedSeed`), so the demand stream is identical
+every run.
+
+**Build once:** `dotnet build src/Sim.Viewer -c Release` (add `--no-build` to the run commands after).
+
+**THE repro command (headless, ~1000 s of sim → terminal gridlock):**
+```bash
+LIVECITY_TELEPORT=0 LIVECITY_CARS=160 \
+  dotnet run --project src/Sim.Viewer -c Release -- --mode live-city --smoke --frames 2000 \
+  2>&1 | grep "LIVECITY-GRIDLOCK:"
+```
+`--frames N` = N sim steps of `Dt=0.5 s` (so 2000 frames ≈ 1000 s). Baseline outcome (knob off): by
+t≈940 `stoppedFrac ≈ 0.99`, `arrivals` flatline ≈258. `LIVECITY-GRIDLOCK` columns are:
+`t  liveCars  stoppedFrac  meanSpd  aggMove  arrivals  peds`.
+
+**The per-car autopsy (why cars are stuck — add `LIVECITY_WITNESS=1`):**
+```bash
+LIVECITY_WITNESS=1 LIVECITY_TELEPORT=0 LIVECITY_CARS=160 \
+  dotnet run --project src/Sim.Viewer -c Release --no-build -- --mode live-city --smoke --frames 1400 \
+  2>&1 | grep -E "LIVECITY-WITNESS:|LIVECITY-STUCKCLEAR:|LIVECITY-STRANDREASON|STRANDDUMP"
+```
+- `LIVECITY-WITNESS` — stuck breakdown (minorGreenYield / majorGreenSTUCK / red / behindLeader /
+  `strandedDeadEnd` / renderedGreen / `stuckInternal` / `tlRenderLie`).
+- `LIVECITY-STUCKCLEAR` — every car stuck (speed<0.3) **with a clear road** (own-lane gap>15 AND
+  exit-mouth>15), bucketed by binding constraint, plus the first ~8 dumped as `  CAR …` lines
+  (lane, pos, tlLane, binder, gap, exitMouth).
+- `LIVECITY-STRANDREASON(cumulative)` — WHY wrong-lane cars resolve as they do at a lane end:
+  `reResolveOK`/`rerouteOK` (recovered) vs strand causes (`poolEdgeMismatch`, `capSpent`, `waitGate`,
+  `noRouteToTarget`, `noOutgoingConn`, …). This is the histogram that localized the root cause.
+- `STRANDDUMP` — concrete desynced cars (actualLane / edge / seqIdx / pool). **Gated on
+  `LIVECITY_WRONGLANE=1`** (the dump only, not the histogram), capped at 8 lines.
+
+**Knobs (env overrides, all default to the parity-safe/measured setting; only set to experiment):**
+`LIVECITY_CARS=<n>` concurrent car cap (80/120/160 all gridlock) · `LIVECITY_PEDS=<n>` ·
+`LIVECITY_TELEPORT=<s>` SUMO jam-teleport seconds (0=off; owner-rejected cure) ·
+`LIVECITY_WRONGLANE=0|1` reroute-at-approach (default off, measured regression) ·
+`LIVECITY_DRIVETHROUGH=0|1` any-forward-connection fallback · `LIVECITY_YIELDTIMEOUT=<s>` ·
+`LIVECITY_LCMIN=<mps>` lane-change min speed (default 1.5; **owner: must NOT be 0** — no slow-speed lane
+changes) · `LIVECITY_HZ=<hz>` · `LIVECITY_DUMPROUTES=<path>` export the sustained demand as SUMO `<trip>`s.
+
+**Gates that must hold for any code change:** `dotnet test tests/Sim.ParityTests -c Release` = **657
+passed / 4 skipped** byte-identical; `dotnet run --project src/Sim.Bench -c Release` → `deterministic=True`,
+`parallel==single`, hash **`D96213B7BB4021A7`**; no `System.Random`. The diagnostic knobs above are all
+inert on every committed golden (byte-identical), which is why they can live in the engine default-off.
+
+---
+
 ## 2026-07-23 — Repro + engine merge (context, already landed on the live-city line)
 - Built the headless `LIVECITY-GRIDLOCK` probe (`--mode live-city --smoke`); reproduced the pre-merge
   **terminal** gridlock (stoppedFrac → 0.94, arrivals 38/200 s).
