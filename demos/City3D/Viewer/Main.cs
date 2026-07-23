@@ -962,7 +962,10 @@ public partial class Main : Node3D
         // TL-controlled lane handles ProcessLiveCity's TlStateByLane lookup passes in are dense handles into
         // that same network, cropping doesn't change lane numbering.
         var liveCitySource = _liveCitySource;
-        _placeSignalHeads = keys => TrafficLightPlacer.Place(liveCitySource!.Network, keys);
+        // Fix #16: crop the controlled-lane handles to the SAME box as the rendered roads so no signal-head
+        // pole floats over bare ground outside the crop.
+        _placeSignalHeads = keys => TrafficLightPlacer.Place(
+            liveCitySource!.Network, CropTlLaneHandles(liveCitySource.Network, keys, x0, y0, x1, y1));
 
         if (ParseShowZonesArg() && _zonesNode is not null)
         {
@@ -1114,7 +1117,8 @@ public partial class Main : Node3D
         // same net for roads" design note), so the NetworkModel overload applies unchanged -- no need for
         // the wire-geometry overload here even though this IS a replay path, since the road geometry was
         // never actually replicated (it's read locally, same as the live path).
-        _placeSignalHeads = keys => TrafficLightPlacer.Place(network, keys);
+        _placeSignalHeads = keys => TrafficLightPlacer.Place(
+            network, CropTlLaneHandles(network, keys, cfg.X0, cfg.Y0, cfg.X1, cfg.Y1)); // Fix #16: crop TL poles to the rendered net
 
         if (ParseShowZonesArg() && _zonesNode is not null)
         {
@@ -3883,6 +3887,41 @@ public partial class Main : Node3D
             var gx = Mathf.Round(pos.X / GridSpacingMeters) * GridSpacingMeters;
             var gz = Mathf.Round(pos.Z / GridSpacingMeters) * GridSpacingMeters;
             _gridNode.Position = new Vector3(gx, GridGroundY, gz);
+        }
+    }
+
+    // Fix #16 (Windows testing session): TL signal heads were placed for ALL TL-controlled lanes while
+    // roads render only the CROP (BuildRoadMeshesCropped keeps lanes with a shape vertex in crop+margin),
+    // so poles appeared floating over bare ground outside the rendered net. This keeps only the controlled
+    // lanes whose geometry is inside the SAME crop box (same rule as the roads) before placing heads.
+    private static IEnumerable<int> CropTlLaneHandles(
+        NetworkModel network, IEnumerable<int> handles, double x0, double y0, double x1, double y1, double margin = 60.0)
+    {
+        var minX = x0 - margin;
+        var minY = y0 - margin;
+        var maxX = x1 + margin;
+        var maxY = y1 + margin;
+        foreach (var h in handles)
+        {
+            if (h < 0 || h >= network.LanesByHandle.Count)
+            {
+                continue;
+            }
+
+            var inside = false;
+            foreach (var (sx, sy) in network.LanesByHandle[h].Shape)
+            {
+                if (sx >= minX && sx <= maxX && sy >= minY && sy <= maxY)
+                {
+                    inside = true;
+                    break;
+                }
+            }
+
+            if (inside)
+            {
+                yield return h;
+            }
         }
     }
 
