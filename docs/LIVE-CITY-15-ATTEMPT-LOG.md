@@ -936,19 +936,26 @@ pure-lateral swap) must be gated by them:
   better-flowing "cheat" (pure-lateral swap / stopped keep-right sort) is ACCEPTABLE. There is no viewer
   to see it, and it costs less than running cooperation everywhere.
 
-Design implication for `CooperativeLaneChange` (and the keep-right float guard):
-1. It is a REALISM feature, so it must be GATED and **optionally turnable OFF** to trade realism for
-   performance/flow -- the current global `LiveCityConfig.CooperativeLaneChange` / `LIVECITY_COOP` flag
-   already provides the coarse (whole-sim) on/off, which satisfies the minimum "optionally OFF".
-2. IDEAL (future): make it PER-AREA, keyed on the same high/low-power / InterestField LOD split the ped
-   side already uses (`PedLodManager`, `Sim.Pedestrians.Lod`, `InterestField`). High-realism cells run
-   cooperative LC + forbid the pure-lateral swap; low-realism cells may keep the cheap swap. This is the
-   car-side analogue of the ped LOD reconstruction and is a natural extension, NOT part of the initial
-   cooperative-LC landing.
-3. Determinism/parity unaffected: all of this is demo/host-side gating; every parity/bench golden leaves
-   the underlying engine flags OFF (byte-identical), and a per-area gate is still a pure function of the
-   frozen start-of-step state (no System.Random, order-independent).
+Design implication for `CooperativeLaneChange` (and the keep-right float guard) -- CLARIFIED by owner:
+1. **Two-level gate.** The global `LiveCityConfig.CooperativeLaneChange` / `LIVECITY_COOP` flag is the
+   MASTER switch (whole-sim on/off; off = cheap swap everywhere, on = cooperative-capable). It is the
+   coarse "trade realism for perf/flow" control.
+2. **AUTOMATIC per-area fallback UNDER the master switch (the actual requirement, not just a future ideal).**
+   When cooperative LC is globally ENABLED, each area's realism LOD *automatically* decides per-car:
+   - HIGH-realism area (on-screen / hero / observed): run cooperative LC, FORBID the pure-lateral swap.
+   - LOW-realism area (distant / off-screen / unobserved): AUTOMATICALLY skip cooperation and fall back to
+     the cheap unrealistic pure-lateral swap (keep-right stopped sort) -- no viewer to see it, cheaper to
+     run. This disable is automatic (driven by the LOD classification), NOT a manual per-area toggle.
+   Key it on the same high/low-power / InterestField LOD split the ped side already uses (`PedLodManager`,
+   `Sim.Pedestrians.Lod`, `InterestField`) -- the car-side analogue of the ped LOD reconstruction.
+3. So the effective per-car decision is: `useCooperative = globalCoopEnabled && areaIsHighRealism(car)`;
+   when false the car uses the cheap swap. The keep-right float guard is likewise applied only where
+   `useCooperative` is true (high-realism), so low-realism cars keep the flow-preserving cheat.
+4. Determinism/parity unaffected: all host-side gating; every parity/bench golden leaves the underlying
+   engine flags OFF (byte-identical). The per-area classification must be a pure function of frozen
+   start-of-step state (no System.Random, order-independent) to keep serial==parallel byte-identical.
 
-So the initial cooperative-LC implementation ships the GLOBAL gate (correct default ON for the demo, off
-for parity); the per-area high/low-realism split is a documented follow-up so a distant/off-screen car can
-still take the cheap path for performance while on-screen cars never float.
+Landing order: the INITIAL cooperative-LC implementation ships the GLOBAL master gate only (default ON for
+the demo, off for parity) -- correct and sufficient to prove the mechanism. The AUTOMATIC per-area
+high/low-realism fallback (point 2) is the immediate follow-up so distant/off-screen cars auto-take the
+cheap path for performance while on-screen cars never float.
