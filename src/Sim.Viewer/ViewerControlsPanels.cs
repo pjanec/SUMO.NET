@@ -382,7 +382,10 @@ public static class ViewerControlsPanels
     // than a control. `renderHz` IS live: the slider pushes straight to Raylib.SetTargetFPS, exactly like
     // DrawControlsPanel's fpsCap radios do, clamped to the same [15,60] band ValidateRenderHz enforces at
     // startup so a runtime drag can't exceed the hard cap or undershoot the usability floor.
-    public static void DrawLiveCityRatePanel(int simHz, double dtSeconds, ref int renderHz)
+    // docs/LIVE-CITY-VISUALS-NOTES.md deliverable 2: `showZones` is the SAME flag Program.cs's `Z`-key
+    // handler mutates every frame -- this checkbox is just a second, discoverable entry point onto that
+    // one bool (the `Z` key keeps working whether or not this panel/checkbox is ever touched).
+    public static void DrawLiveCityRatePanel(int simHz, double dtSeconds, ref int renderHz, ref bool showZones)
     {
         ImGui.Separator();
         ImGui.Text($"sim tick rate: {simHz} Hz (dt={dtSeconds:F3}s) -- relaunch --sim-hz N to change");
@@ -391,5 +394,7 @@ public static class ViewerControlsPanels
             renderHz = Math.Clamp(renderHz, 15, 60);
             global::Raylib_cs.Raylib.SetTargetFPS(renderHz);
         }
+
+        ImGui.Checkbox("show zones (Z)", ref showZones);
     }
 }

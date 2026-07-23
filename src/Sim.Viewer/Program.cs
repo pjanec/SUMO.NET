@@ -108,6 +108,11 @@ int? renderHz = null;
 // knowing its concrete type. `--mode local` only; harmless everywhere else (RunLocal ignores it unless
 // set).
 var overlayTest = false;
+// docs/LIVE-CITY-VISUALS-NOTES.md deliverable 2: zones default OFF (owner decision: opt-in, not the
+// default wash) for `--mode live-city` (both the live and `--replay` flavors). `--show-zones` starts the
+// district ground tint visible; the runtime `Z` key (or the diagnostics panel's checkbox) toggles it from
+// there either way -- mirrors City3D's `--show-zones`/`Z` pair exactly.
+var showZones = false;
 
 for (var i = 0; i < args.Length; i++)
 {
@@ -193,6 +198,9 @@ for (var i = 0; i < args.Length; i++)
         case "--overlay-test":
             overlayTest = true;
             break;
+        case "--show-zones":
+            showZones = true;
+            break;
         default:
             inputPath ??= args[i];
             break;
@@ -247,12 +255,12 @@ if (mode == "live-city")
     {
         return liveCitySmoke
             ? RunLiveCityReplaySmoke(replayPath)
-            : RunLiveCityReplay(replayPath, screenshotPath, frames, resolvedRenderHz);
+            : RunLiveCityReplay(replayPath, screenshotPath, frames, resolvedRenderHz, showZones);
     }
 
     return liveCitySmoke
         ? RunLiveCitySmoke(Math.Max(frames, 120), recordPath, resolvedSimHz)
-        : RunLiveCity(screenshotPath, frames, delaySeconds, simRate, recordPath, resolvedSimHz, resolvedRenderHz);
+        : RunLiveCity(screenshotPath, frames, delaySeconds, simRate, recordPath, resolvedSimHz, resolvedRenderHz, showZones);
 }
 
 // docs/SUMOSHARP-VIEWER-DEMO-EVAC-DESIGN.md §5: `--mode local --demo "<name>"` needs NO <path> at all --
@@ -864,7 +872,7 @@ static int RunPedPublish(double? secondsCap)
 // from ValidateSimHz/ValidateRenderHz -- simHz sets cfg.SimHz (=> cfg.Dt, which both the engine's
 // step-length AND the ped-publish Dt derive from, keeping the live-city coupling invariant); renderHz
 // seeds the window's initial target FPS and the runtime-adjustable slider in the diagnostics panel below.
-static int RunLiveCity(string? screenshotPath, int frames, float delaySeconds, double? speedFactor, string? recordPath, int simHz, int renderHz)
+static int RunLiveCity(string? screenshotPath, int frames, float delaySeconds, double? speedFactor, string? recordPath, int simHz, int renderHz, bool showZones)
 {
     var repoRoot = DemoCatalog.RepoRoot();
     var cfg = LiveCityConfig.ForRepoRoot(repoRoot);
@@ -911,6 +919,14 @@ static int RunLiveCity(string? screenshotPath, int frames, float delaySeconds, d
         {
             frameStats.Add(dt);
 
+            // docs/LIVE-CITY-VISUALS-NOTES.md deliverable 2: runtime zone-tint toggle -- polled every
+            // frame (not just while the diagnostics panel is open) so it works identically to City3D's `Z`
+            // key regardless of the ImGui overlay's visibility.
+            if (global::Raylib_cs.Raylib.IsKeyPressed(global::Raylib_cs.KeyboardKey.Z))
+            {
+                showZones = !showZones;
+            }
+
             accumWall += dt * speed;
             while (accumWall >= cfg.Dt)
             {
@@ -934,9 +950,15 @@ static int RunLiveCity(string? screenshotPath, int frames, float delaySeconds, d
 
         DrawWorld = (camera, draws) =>
         {
-            // docs/LIVE-CITY-VISUALS-NOTES.md deliverable 2: zones drawn BEFORE the road/vehicle pass so
-            // the district tint sits under the streets, never over them.
-            LiveCityZonesLayer.Draw(camera, sim.Scene.Zones);
+            // docs/LIVE-CITY-VISUALS-NOTES.md deliverable 2: zones default OFF (owner decision) -- drawn
+            // only when `showZones` is set (via `--show-zones` or the runtime `Z` toggle above), and even
+            // then BEFORE the road/vehicle pass so the district tint sits under the streets, never over
+            // them.
+            if (showZones)
+            {
+                LiveCityZonesLayer.Draw(camera, sim.Scene.Zones);
+            }
+
             Renderer.DrawWorldDds(camera, sim.VehicleSource.Geometry, sim.VehicleSource.TlStateByLane, draws);
             overlay.DrawWorldOver(camera, SimulationSnapshot.Empty, draws);
         },
@@ -962,7 +984,7 @@ static int RunLiveCity(string? screenshotPath, int frames, float delaySeconds, d
                     ImGui.Text($"recording: {recordPath}");
                 }
 
-                ViewerControlsPanels.DrawLiveCityRatePanel(simHz, cfg.Dt, ref liveRenderHz);
+                ViewerControlsPanels.DrawLiveCityRatePanel(simHz, cfg.Dt, ref liveRenderHz, ref showZones);
                 ImGui.End();
             }
         },
@@ -1092,7 +1114,7 @@ static int RunLiveCitySmoke(int steps, string? recordPath, int simHz)
 // the runtime-adjustable slider in the playback panel below. Replay has no sim-hz CLI knob of its own --
 // the recording's own Dt (clock.Dt, read from the file) is displayed instead, exactly like the live
 // path's `--sim-hz` display line, just sourced from the file rather than a live LiveCityConfig.
-static int RunLiveCityReplay(string replayPath, string? screenshotPath, int frames, int renderHz)
+static int RunLiveCityReplay(string replayPath, string? screenshotPath, int frames, int renderHz, bool showZones)
 {
     var clock = new PlaybackClock();
     using var fileSource = new ReplicationFileSource(replayPath, clock);
@@ -1139,6 +1161,14 @@ static int RunLiveCityReplay(string replayPath, string? screenshotPath, int fram
         PumpFrame = (dt, draws) =>
         {
             frameStats.Add(dt);
+
+            // docs/LIVE-CITY-VISUALS-NOTES.md deliverable 2: runtime zone-tint toggle, replay flavor --
+            // same "polled every frame, not just while the ImGui overlay is open" shape as RunLiveCity's.
+            if (global::Raylib_cs.Raylib.IsKeyPressed(global::Raylib_cs.KeyboardKey.Z))
+            {
+                showZones = !showZones;
+            }
+
             clock.Tick(dt);
 
             fileSource.Pump();
@@ -1179,9 +1209,13 @@ static int RunLiveCityReplay(string replayPath, string? screenshotPath, int fram
 
         DrawWorld = (camera, draws) =>
         {
-            // docs/LIVE-CITY-VISUALS-NOTES.md deliverable 2: same "zones under roads" draw order as the
-            // live path (RunLiveCity).
-            LiveCityZonesLayer.Draw(camera, replayScene.Zones);
+            // docs/LIVE-CITY-VISUALS-NOTES.md deliverable 2: zones default OFF (owner decision), same
+            // `showZones`-gated "zones under roads when shown" draw order as the live path (RunLiveCity).
+            if (showZones)
+            {
+                LiveCityZonesLayer.Draw(camera, replayScene.Zones);
+            }
+
             Renderer.DrawWorldDds(camera, fileSource.Geometry, fileSource.TlStateByLane, draws);
             overlay.DrawWorldOver(camera, SimulationSnapshot.Empty, draws);
 
@@ -1196,7 +1230,7 @@ static int RunLiveCityReplay(string replayPath, string? screenshotPath, int fram
         DrawImGui = showDiagnostics =>
         {
             ViewerControlsPanels.DrawPlaybackPanel(clock, ref draggingSlider, ref wasPlayingBeforeDrag,
-                rateFooter: () => ViewerControlsPanels.DrawLiveCityRatePanel(replaySimHz, clock.Dt, ref replayRenderHz));
+                rateFooter: () => ViewerControlsPanels.DrawLiveCityRatePanel(replaySimHz, clock.Dt, ref replayRenderHz, ref showZones));
             overlay.DrawUi();
             if (showDiagnostics)
             {

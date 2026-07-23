@@ -232,6 +232,20 @@ public partial class Main : Node3D
     private OrbitCameraController? _orbitController;
     private Camera3D? _orbitCamera;
 
+    // Far-plane tracking (bug fix: the far plane used to be fixed at setup time -- roughly extent*4/500m
+    // for the overview camera or a flat 2000m for the close camera -- so dollying out past it clipped the
+    // road grid/cars into nothing). `_orbitBaseFar` is that ORIGINAL computed far distance (never shrunk
+    // below -- it's already sized to comfortably frame the initial view), and `_orbitSceneExtent` is the
+    // scene bbox's horizontal half-extent the camera was framed against (same quantity BuildCameraAndLight
+    // computes internally). Every ApplyOrbitCamera call recomputes Far as
+    // `Max(_orbitBaseFar, Distance * 2.5 + _orbitSceneExtent)`: the `distance * 2.5` term keeps the far
+    // plane comfortably beyond the camera regardless of orbit angle (2.5x covers the camera-to-focus
+    // distance plus enough slack for the focus-to-far-edge-of-scene distance from any yaw/pitch), and
+    // `+ sceneExtent` covers geometry that extends past the focus point in the direction the camera is
+    // looking. Both fields are set once in SetupOrbitCamera.
+    private float _orbitBaseFar;
+    private float _orbitSceneExtent;
+
     // Left-button-down/up drag-vs-click disambiguation (task requirement: "left-click *without drag* must
     // still pick a vehicle... < 5px -> click -> pick, else it was an orbit drag -- consume it, no pick").
     // `_leftButtonDown` doubles as "is the mouse currently orbiting" for InputEventMouseMotion; Shift+left
@@ -294,9 +308,11 @@ public partial class Main : Node3D
     // the toggle is a harmless no-op there.
     private MultiMeshInstance3D? _buildingsNode;
 
-    // docs/LIVE-CITY-VISUALS-NOTES.md deliverable 2: zone-tint visibility toggle (`--hide-zones` startup
-    // flag + runtime `Z` key), same shape as `_buildingsNode`/`B` above. Built by BuildZoneGround, wired
-    // into ReadyLiveCityLive/ReadyLiveCityReplay/BuildRemoteLiveCityScene -- every `--live-city` entry
+    // docs/LIVE-CITY-VISUALS-NOTES.md deliverable 2: zone-tint visibility toggle, same shape as
+    // `_buildingsNode`/`B` above, except zones default HIDDEN (owner decision: opt-in, not the default
+    // wash) -- BuildZoneGround starts `_zonesNode` invisible unconditionally; `--show-zones` startup flag
+    // + runtime `Z` key are the only ways to make it visible. Built by BuildZoneGround, wired into
+    // ReadyLiveCityLive/ReadyLiveCityReplay/BuildRemoteLiveCityScene -- every `--live-city` entry
     // point, since the zone tint is a live-city-only overlay (no `--scenario`/`--peds` dataset carries a
     // zones.json today). Null (harmless no-op toggle) wherever it wasn't built.
     private Node3D? _zonesNode;
@@ -794,10 +810,10 @@ public partial class Main : Node3D
         var liveCitySource = _liveCitySource;
         _placeSignalHeads = keys => TrafficLightPlacer.Place(liveCitySource!.Network, keys);
 
-        if (ParseHideZonesArg() && _zonesNode is not null)
+        if (ParseShowZonesArg() && _zonesNode is not null)
         {
-            _zonesNode.Visible = false;
-            GD.Print("Main: --hide-zones active (zone tint starts hidden; press Z to toggle).");
+            _zonesNode.Visible = true;
+            GD.Print("Main: --show-zones active (zone tint starts visible; press Z to toggle).");
         }
 
         if (_cameraMode == "close")
@@ -923,10 +939,10 @@ public partial class Main : Node3D
         // never actually replicated (it's read locally, same as the live path).
         _placeSignalHeads = keys => TrafficLightPlacer.Place(network, keys);
 
-        if (ParseHideZonesArg() && _zonesNode is not null)
+        if (ParseShowZonesArg() && _zonesNode is not null)
         {
-            _zonesNode.Visible = false;
-            GD.Print("Main: --hide-zones active (zone tint starts hidden; press Z to toggle).");
+            _zonesNode.Visible = true;
+            GD.Print("Main: --show-zones active (zone tint starts visible; press Z to toggle).");
         }
 
         if (_cameraMode == "close")
@@ -1094,6 +1110,12 @@ public partial class Main : Node3D
         catch (Exception ex)
         {
             GD.Print($"Main: zone-tint layer skipped (no local dataset access for remote subscriber): {ex.Message}");
+        }
+
+        if (ParseShowZonesArg() && _zonesNode is not null)
+        {
+            _zonesNode.Visible = true;
+            GD.Print("Main: --show-zones active (zone tint starts visible; press Z to toggle).");
         }
 
         var crop = new LiveCityConfig(); // pinned defaults only -- no dataset dir needed just for X0..Y1.
@@ -2401,10 +2423,11 @@ public partial class Main : Node3D
     // ZoneGroundBuilder.Build's own remark) material, so overlapping tints blend by DRAW ORDER, not a depth
     // fight.
     //
-    // Every zone lands under ONE parent Node3D (`_zonesNode`) so `--hide-zones` / the runtime `Z` key
-    // toggles the whole layer with a single Visible flip, mirroring `_buildingsNode`/`B`. A scene with no
-    // zones (a dataset that ships no zones.json) leaves `_zonesNode` null -- a harmless no-op toggle,
-    // exactly like `_buildingsNode` in every mode that never builds buildings.
+    // Every zone lands under ONE parent Node3D (`_zonesNode`) so `--show-zones` / the runtime `Z` key
+    // toggles the whole layer with a single Visible flip, mirroring `_buildingsNode`/`B` -- except the
+    // layer STARTS hidden here unconditionally (owner decision: zones are opt-in, not the default wash).
+    // A scene with no zones (a dataset that ships no zones.json) leaves `_zonesNode` null -- a harmless
+    // no-op toggle, exactly like `_buildingsNode` in every mode that never builds buildings.
     private void BuildZoneGround(LiveCityScene scene)
     {
         if (scene.Zones.Count == 0)
@@ -2424,6 +2447,12 @@ public partial class Main : Node3D
         built.Sort((a, b) => b.Mesh.Area.CompareTo(a.Mesh.Area));
 
         var root = new Node3D { Name = "Zones" };
+        // Owner decision (docs/LIVE-CITY-VISUALS-NOTES.md): zones are opt-in, not the default wash -- the
+        // layer starts hidden here (regardless of caller) so every `--live-city` entry point (local live,
+        // replay, and remote) is hidden-by-default without each needing its own default-visibility logic.
+        // `--show-zones` (checked by the caller right after this returns) and the runtime `Z` key
+        // (_UnhandledInput) are the only ways to make it visible.
+        root.Visible = false;
         AddChild(root);
         _zonesNode = root;
 
@@ -2988,6 +3017,15 @@ public partial class Main : Node3D
         _orbitCamera = activeCamera;
         var pos = activeCamera.Position;
         _orbitController = BuildOrbitController((pos.X, pos.Y, pos.Z), (focus.X, focus.Y, focus.Z));
+
+        // Capture the far-plane baseline (see the fields' doc comment): whatever Far the camera already
+        // has (BuildCameraAndLight's extent*4/500m floor, or CloseCamera's flat 2000f) is a floor we never
+        // shrink below, and the frameBbox's horizontal half-extent is the scene-size term ApplyOrbitCamera
+        // adds on top of the live orbit distance every frame.
+        _orbitBaseFar = activeCamera.Far;
+        var (bboxMin, bboxMax) = frameBbox;
+        _orbitSceneExtent = Mathf.Max(Mathf.Max(bboxMax.X - bboxMin.X, bboxMax.Z - bboxMin.Z), 10f);
+
         ApplyOrbitCamera(); // push the (possibly CLI-overridden) initial pose to the node right away
         GD.Print(
             $"Main: orbit camera ready on '{activeCamera.Name}' -- yaw={_orbitController.YawRad * 180f / Mathf.Pi:F1}deg " +
@@ -3031,6 +3069,10 @@ public partial class Main : Node3D
         _orbitCamera.Position = new Vector3(pos.X, pos.Y, pos.Z);
         var focus = _orbitController.Focus;
         _orbitCamera.LookAt(new Vector3(focus.X, focus.Y, focus.Z), Vector3.Up);
+
+        // Bug fix: track the far plane to the live orbit distance so dollying out never clips the scene
+        // (see the `_orbitBaseFar`/`_orbitSceneExtent` fields' doc comment for the formula's reasoning).
+        _orbitCamera.Far = Mathf.Max(_orbitBaseFar, (_orbitController.Distance * 2.5f) + _orbitSceneExtent);
     }
 
     // `--cam-yaw=<deg>`/`--cam-pitch=<deg>`/`--cam-dist=<m>` -- headless verification hooks (task
@@ -3100,14 +3142,17 @@ public partial class Main : Node3D
         return false;
     }
 
-    // docs/LIVE-CITY-VISUALS-NOTES.md deliverable 2: `--hide-zones` USER cmdline flag, same shape/mechanism
-    // as `--hide-buildings` above. Starts the zone-tint layer (`_zonesNode`, when built at all) hidden; the
-    // runtime `Z` key (_UnhandledInput) toggles it from there.
-    private static bool ParseHideZonesArg()
+    // Owner decision (docs/LIVE-CITY-VISUALS-NOTES.md): zones default OFF (hidden), opt-in via
+    // `--show-zones` USER cmdline flag -- replaces the earlier `--hide-zones` flag now that hidden is the
+    // default (a "hide" flag would be redundant). BuildZoneGround already starts the zone-tint layer
+    // (`_zonesNode`, when built at all) hidden unconditionally; this flag is what a caller checks right
+    // after to flip it visible at startup. The runtime `Z` key (_UnhandledInput) toggles it from there,
+    // regardless of how it started.
+    private static bool ParseShowZonesArg()
     {
         foreach (var arg in OS.GetCmdlineUserArgs())
         {
-            if (arg == "--hide-zones")
+            if (arg == "--show-zones")
             {
                 return true;
             }
