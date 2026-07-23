@@ -26,11 +26,11 @@ Re-capture fresh per task (other sessions may edit the engine).
 - [x] **C2** `ReplicationFileSource` (wraps InMemory bus, seekable via `PlaybackClock`) + `PedFrameTrack`; replay matches live arc-length within 0.05 m; SeekTo (interior + backward) == linear playthrough (3 dp + same lane). Opus-verified.
 - [x] **C3** Raylib playback panel (pause/restart/step/speed + drag-to-seek timeline) + `--record`/`--replay`. Xvfb screenshot shows the scrubbing timeline (t=22.62/75.00s). Additive only → ParityTests 654/4 + hash intact; Sim.Viewer.Tests 9/9. Opus-verified.
 
-## Stage D — City3D local (live + replay, click, Z)
-- [ ] **D1** drop cars-XOR-peds; `--live-city` renders cars + peds over demo_city/box (legacy modes intact)
-- [ ] **D2** honor Z on local road/car meshes; synthetic elevated-net test (non-zero Z→non-zero Y; flat→0)
-- [ ] **D3** Godot playback controls + `--live-city --replay <file>`
-- [ ] **D4** click ray-pick vehicle → highlight + id; scripted-pick test
+## Stage D — City3D local (live + replay, click, Z)  ✅ (commits 65d1db5, 900734c)
+- [x] **D1** `--live-city` renders cars + peds in one Godot process over demo_city/box (mutual exclusion dropped; `LiveCitySource` wraps the host; cars reuse the existing Reconstructor path; cropped road meshes). Legacy `--scenario`/`--peds` intact. Opus-verified via Xvfb screenshots (car box + crowd).
+- [x] **D2** honor Z: local path feeds Z-aware `LocalLanes`→`RoadMeshBuilder`; synthetic elevated-net fixture + CityLib test (ramp→non-constant Y, flat→Y≈0). Opus-verified (CityLib 61/61).
+- [x] **D3** Godot playback panel (Play/Pause/Restart/frame-step/speed + drag-to-seek `HSlider` + time label; Space/←/→) + `--live-city --replay <file>`. Opus-verified: Xvfb replay screenshot shows the panel scrubbing (t=10.1/75.0s) with cars from the `.simrec`.
+- [x] **D4** click ray-pick (screen-space `UnprojectPosition` + `VehiclePicker.PickNearestScreen`, 6/6 tests) → emissive ring + id label (live = real SUMO id, replay = handle until Stage E adds name on the wire). Polish: closer camera + cylinder peds for visibility. Opus-verified. ParityTests 654/4 + hash intact.
 
 ## Stage E — City3D remote (combined DDS)
 - [ ] **E1** Z on the replication wire (GeometryCodec + DDS geometry); round-trip on elevated net; hot path untouched
