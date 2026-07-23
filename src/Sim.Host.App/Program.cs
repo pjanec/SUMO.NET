@@ -304,9 +304,11 @@ static void SpawnAmbient(Engine engine, SimulationRunner runner, int count)
 
 // docs/LIVE-CITY-VIEWERS-DESIGN.md §7, -TASKS.md Stage E (E3) -- the combined cars+peds `--live-city`
 // producer. Builds ONE Sim.LiveCity.LiveCitySim (the shared coupled-sim host every other live-city
-// viewer/producer consumes) over a vehicle sink AND a ped sink for the chosen `--transport`, then loops
-// `sim.Step()` at `--hz`, respecting `--seconds`/`--steps` exactly like the --scenario loop above.
-// LiveCitySim's own internal in-memory bus is what the coupled sim uses to feed itself; the sinks passed
+// viewer/producer consumes) over a vehicle sink AND a ped sink for the chosen `--transport`, then steps
+// it on a WALL-CLOCK accumulator (Fix 5 -- sim-time tracks real elapsed wall time 1:1 regardless of
+// `--hz`; `--hz` only paces how often the loop polls/wakes, decoupled from the step-and-publish rate),
+// respecting `--seconds`/`--steps` exactly like the --scenario loop above. LiveCitySim's own internal
+// in-memory bus is what the coupled sim uses to feed itself; the sinks passed
 // here are the ADDITIVE `recordVehSink`/`recordPedSink` tee params (docs/LIVE-CITY-VIEWERS-DESIGN.md §2.2,
 // this task's own ped-tee addition) -- i.e. this producer captures BOTH streams without LiveCitySim ever
 // knowing about DDS. `--transport inmem` wires the SAME tee onto a same-process InMemoryReplicationBus/
@@ -366,16 +368,33 @@ static int RunLiveCity(string transport, double hz, double? secondsArg, int? ste
         // path's 30s default: the coupled sim ramps to peak density within a few seconds and this mode is
         // primarily exercised as a bounded self-test/demo run, not a long-lived service.
         const double defaultSeconds = 20.0;
-        var stepInterval = TimeSpan.FromSeconds(1.0 / hz);
+        var pollInterval = TimeSpan.FromSeconds(1.0 / hz);
         var startWall = Stopwatch.StartNew();
         var stepCount = 0;
-        var logEveryNSteps = Math.Max(1, (int)Math.Round(hz)); // ~once per sim second
+        // ~once per sim second -- keyed off cfg.Dt (the sim's own step length) now that --hz no longer
+        // dictates the step rate (see the wall-accumulator remark below).
+        var logEveryNSteps = Math.Max(1, (int)Math.Round(1.0 / cfg.Dt));
 
         Console.WriteLine(
             $"Sim.Host.App: --live-city publishing headless (Ctrl-C to stop" +
             (stepsArg is { } capSteps ? $"; capped at {capSteps} steps"
                 : secondsArg is { } capSeconds ? $"; capped at {capSeconds:F0}s"
                 : $"; capped at {defaultSeconds:F0}s") + ").");
+
+        // Fix 5 -- decouple the sim step from the publish/poll cadence. LiveCitySim.Step() BOTH advances
+        // the sim by cfg.Dt sim-seconds AND publishes that step onto the vehSink/pedSink tee (its own
+        // remarks) -- there is no separate "publish without stepping" call. The OLD loop called
+        // sim.Step() once per --hz poll tick, so it advanced `cfg.Dt * hz` sim-seconds per wall-second:
+        // at the documented `--hz 10` example that is 0.5 * 10 = 5 sim-seconds/wall-second (5x real-time,
+        // and the DDS subscriber saw a snap-on-correction sawtooth from the DrClock playout racing ahead
+        // of real time). Instead, accumulate REAL wall-clock elapsed time (via the Stopwatch below) and
+        // only call sim.Step() when at least one cfg.Dt of wall time is owed -- sim-time then tracks
+        // wall-time 1:1 regardless of --hz. `--hz` now governs only how often this outer loop wakes to
+        // check the accumulator / respond to Ctrl-C / pace CPU use -- a higher --hz polls more often but
+        // still only steps (and publishes) at the ~1/cfg.Dt cadence the accumulator owes, which is why
+        // both `--hz 10` and `--hz 2` converge on the same ~1.0 sim-time/wall-time ratio.
+        var simAccumSeconds = 0.0;
+        var lastWallSeconds = 0.0;
 
         while (!stopRequested)
         {
@@ -395,30 +414,42 @@ static int RunLiveCity(string transport, double hz, double? secondsArg, int? ste
 
             var tickStart = Stopwatch.GetTimestamp();
 
-            sim.Step();
-            stepCount++;
+            var nowWallSeconds = startWall.Elapsed.TotalSeconds;
+            simAccumSeconds += nowWallSeconds - lastWallSeconds;
+            lastWallSeconds = nowWallSeconds;
 
-            if (transport == "inmem")
+            while (simAccumSeconds >= cfg.Dt && (stepsArg is null || stepCount < stepsArg))
             {
-                vehBus!.Source.Pump();
-                pedBus!.Source.Pump();
+                sim.Step();
+                stepCount++;
+                simAccumSeconds -= cfg.Dt;
+
+                if (transport == "inmem")
+                {
+                    vehBus!.Source.Pump();
+                    pedBus!.Source.Pump();
+                }
+
+                if (stepCount % logEveryNSteps == 0)
+                {
+                    var ratio = nowWallSeconds > 0.0 ? sim.Time / nowWallSeconds : 0.0;
+                    Console.WriteLine(
+                        $"Sim.Host.App: --live-city t={sim.Time:F1}s step={stepCount} peakCars={sim.PeakCars} " +
+                        $"peakPeds={sim.PeakPeds} peakOccupiedCrossings={sim.PeakOccupiedCrossings} " +
+                        $"simTimeOverWallRatio={ratio:F2}" +
+                        (transport == "inmem"
+                            ? $" | consumer: vehiclesInHistory={vehBus!.Source.History.Count} " +
+                              $"latestPedCrowdFrame={pedBus!.Source.LatestCrowdFrame.Count} " +
+                              $"pedLifecyclesSeen={pedBus.Source.Lifecycles.Count}"
+                            : string.Empty));
+                }
             }
 
-            if (stepCount % logEveryNSteps == 0)
-            {
-                Console.WriteLine(
-                    $"Sim.Host.App: --live-city t={sim.Time:F1}s step={stepCount} peakCars={sim.PeakCars} " +
-                    $"peakPeds={sim.PeakPeds} peakOccupiedCrossings={sim.PeakOccupiedCrossings}" +
-                    (transport == "inmem"
-                        ? $" | consumer: vehiclesInHistory={vehBus!.Source.History.Count} " +
-                          $"latestPedCrowdFrame={pedBus!.Source.LatestCrowdFrame.Count} " +
-                          $"pedLifecyclesSeen={pedBus.Source.Lifecycles.Count}"
-                        : string.Empty));
-            }
-
-            // Pace to --hz: sleep off whatever time this iteration didn't use.
+            // Pace the outer poll loop to --hz: sleep off whatever time this iteration didn't use. This
+            // no longer paces the STEP rate (the wall accumulator above does that) -- only how often the
+            // loop wakes to check it.
             var elapsed = Stopwatch.GetElapsedTime(tickStart);
-            var toSleep = stepInterval - elapsed;
+            var toSleep = pollInterval - elapsed;
             if (toSleep > TimeSpan.Zero)
             {
                 Thread.Sleep(toSleep);

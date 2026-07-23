@@ -31,8 +31,15 @@ public partial class Main : Node3D
     // point of the DR (dead-reckoning) motion story (design "Data path").
     private const double SimStepSeconds = 1.0;
 
-    // Playout delay per design "Playout delay": a stable, small manual knob (~0.3-0.5s), not auto-driven.
-    private const double PlayoutDelaySeconds = 0.4;
+    // Playout delay per design "Playout delay": a stable, small manual knob. Fix 6 (Windows GPU testing
+    // session, docs/LIVE-CITY-WINDOWS-TESTING-BOOTSTRAP.md): was a const 0.4s (matched to the ~1Hz
+    // in-process vehicle publish cadence); on the adaptive per-vehicle DDS feed a car's packet gap can
+    // exceed 0.4s, so the DrClock query instant (renderSim - delay) races past the newest buffered
+    // packet into pure extrapolation, then snap-corrects when the next packet lands late -- the
+    // "extrapolate-then-correct back-jitter" the session measured. The 2D viewer already defaults to
+    // 1.0s; testing confirmed 1.0s is "way better" here too. Now a live field (not const) so
+    // BuildRateControlUi's slider can retune it at runtime without a relaunch.
+    private double _playoutDelaySeconds = 1.0;
 
     // Quit after this many rendered frames -- enough to observe several sim ticks and a non-zero vehicle
     // count on scenarios/09-traffic-light, while keeping the headless smoke run fast. At a fixed 60 FPS
@@ -459,10 +466,13 @@ public partial class Main : Node3D
     private double _liveCityDt = LiveCityTickSeconds;
 
     // The on-screen render-hz control (BuildRateControlUi) -- built once from ReadyLiveCityLive/
-    // ReadyLiveCityReplay, mirrors _playbackUi/_timelineSlider's own field shape.
+    // ReadyLiveCityReplay/ReadyLiveCityRemote (Fix 6), mirrors _playbackUi/_timelineSlider's own field
+    // shape. `_playoutDelayLabel`/`_playoutDelaySlider` are Fix 6's added third row.
     private CanvasLayer? _rateUi;
     private HSlider? _renderHzSlider;
     private Label? _rateLabel;
+    private HSlider? _playoutDelaySlider;
+    private Label? _playoutDelayLabel;
 
     // docs/LIVE-CITY-VIEWERS-DESIGN.md §2.3/§4, -TASKS.md D3 -- the `--live-city --replay <file.simrec>`
     // REPLAY path: swaps LiveCitySource for a PlaybackClock-driven ReplicationFileSource (cars) +
@@ -1225,6 +1235,12 @@ public partial class Main : Node3D
         _pedMultiMesh = BuildPedMultiMesh();
         BuildSelectionUi();
 
+        // Fix 6 (Windows GPU testing session) -- the remote path never called this before, so it had no
+        // rate panel / playout-delay slider at all. Mirrors ReadyLiveCityLive/ReadyLiveCityReplay's own
+        // call; the sim-hz label reads a bit generic here (no local LiveCitySim to report its own dt from),
+        // but the render-hz and playout-delay sliders both apply exactly as they do locally.
+        BuildRateControlUi();
+
         GD.Print(
             "Main: --live-city --transport=dds active; waiting for a Sim.Host.App --live-city publisher " +
             "(vehicle geometry + frames, ped crowd)...");
@@ -1555,7 +1571,7 @@ public partial class Main : Node3D
             _liveCityAccumulator -= _liveCityDt;
         }
 
-        var vehicles = _reconstructor.Reconstruct(_liveCitySource.Source, _liveCitySource.LocalLanes, PlayoutDelaySeconds);
+        var vehicles = _reconstructor.Reconstruct(_liveCitySource.Source, _liveCitySource.LocalLanes, _playoutDelaySeconds);
         UpdateCars(vehicles);
 
         // docs/LIVE-CITY-VIEWERS-DESIGN.md §3.1, -TASKS.md D4 -- the live Handle->Name table (LiveCityCar.
@@ -1649,7 +1665,7 @@ public partial class Main : Node3D
             BuildRemoteLiveCityScene();
         }
 
-        var vehicles = _reconstructor.Reconstruct(_ddsSource, _lanes!, PlayoutDelaySeconds);
+        var vehicles = _reconstructor.Reconstruct(_ddsSource, _lanes!, _playoutDelaySeconds);
         UpdateCars(vehicles);
 
         // Stage E2: the wire's Handle->name table, populated once per spawn lifecycle event -- accumulate
@@ -1660,10 +1676,20 @@ public partial class Main : Node3D
             _vehicleNames[kv.Key] = kv.Value;
         }
 
-        // Remote: no local sim to tick, so drive the ped reconstructor off the WIRE clock (newest
-        // crowd-frame sim-time), kept monotonic across frames -- identical pattern to ProcessPeds' own dds
-        // branch, just inline here since both domains share this one method.
-        _pedRemoteServerTime = Math.Max(_pedRemoteServerTime, _ddsPedSource.LatestCrowdTime);
+        // Fix 9 (Windows GPU testing session, docs/LIVE-CITY-WINDOWS-TESTING-BOOTSTRAP.md) -- remote peds
+        // were stepping visibly (~2Hz), the exact stepwise artifact cfd10bf fixed for the LOCAL live-city
+        // path. Root cause: querying the ped reconstructor at the DISCRETE newest-wire-crowd-frame time
+        // (`_ddsPedSource.LatestCrowdTime`) only advances the query instant once per incoming ped frame
+        // (~2Hz), so `PedRemoteReconstructor`'s internal per-frame smoothing (Smooth's dt-based chase) sees
+        // the SAME target position across many rendered frames in a row, then jumps -- the local fix's own
+        // "stepwise" diagnosis, just on the remote wire clock instead of the local tick clock. Fix: query
+        // at a CONTINUOUSLY-advancing render-time instead -- reuse `_reconstructor.LastQueryTime`, the car
+        // Reconstructor's own DrClock render instant (`_clock.RenderSim - delay`, pumped every real frame
+        // from a wall-clock Stopwatch inside Reconstruct just above), exactly the "car DR clock's render
+        // time" option and exactly the pattern `ProcessLiveCityReplay` already uses for its own peds
+        // (`_reconstructor.LastQueryTime` there too) -- so cars and peds share ONE render-time axis and
+        // stay in sync, remote and replay alike.
+        _pedRemoteServerTime = _reconstructor.LastQueryTime;
         var peds = _pedReconstructor.Reconstruct(_ddsPedSource, _pedRemoteServerTime);
         UpdatePeds(peds);
 
@@ -1730,9 +1756,9 @@ public partial class Main : Node3D
         // Reconstruct cars first -- it pumps _reconstructor's DrClock and sets LastQueryTime, the SAME
         // instant the ped query below reads (ped-smoothing fix: PedsAtInterpolated replaces the old
         // nearest-frame PedsAt, which stepped exactly like the live path used to). LastQueryTime tracks
-        // _clock.Now closely (delaySeconds=0.4 here is the SAME PlayoutDelaySeconds both car and ped
+        // _clock.Now closely (delaySeconds here is the SAME _playoutDelaySeconds both car and ped
         // queries are implicitly behind), so the two stay in lockstep by construction.
-        var vehicles = _reconstructor.Reconstruct(_replaySource, _lanes, PlayoutDelaySeconds);
+        var vehicles = _reconstructor.Reconstruct(_replaySource, _lanes, _playoutDelaySeconds);
         UpdateCars(vehicles);
 
         var peds = _pedTrack.PedsAtInterpolated(_reconstructor.LastQueryTime);
@@ -1794,7 +1820,7 @@ public partial class Main : Node3D
     // never branches on `_transport`.
     private void RenderFrame()
     {
-        var vehicles = _reconstructor!.Reconstruct(_source!, _lanes!, PlayoutDelaySeconds);
+        var vehicles = _reconstructor!.Reconstruct(_source!, _lanes!, _playoutDelaySeconds);
         UpdateCars(vehicles);
 
         var tlStateByLane = _source!.TlStateByLane;
@@ -2102,8 +2128,11 @@ public partial class Main : Node3D
     // label (sim-hz is baked into the engine's step-length at LiveCitySim construction time, so there is
     // no live knob to turn here -- "relaunch --sim-hz=N to change", same hint the Raylib panel gives) and
     // an HSlider that pushes render-hz straight to Godot.Engine.MaxFps INSTANTLY, clamped to the same
-    // [15,60] band ValidateRenderHz enforces at startup. Called once from ReadyLiveCityLive (and, for
-    // parity, ReadyLiveCityReplay) -- works in both live and replay live-city modes.
+    // [15,60] band ValidateRenderHz enforces at startup. Fix 6 (Windows GPU testing session) adds a THIRD
+    // row: a live [0,2]s playout-delay slider bound to `_playoutDelaySeconds` (every Reconstruct call site
+    // reads the field, so this takes effect on the very next frame, no relaunch). Called once from
+    // ReadyLiveCityLive/ReadyLiveCityReplay AND (Fix 6 -- previously missing) ReadyLiveCityRemote, so the
+    // panel (and this slider) shows in local live, replay, AND remote DDS live-city modes alike.
     private void BuildRateControlUi()
     {
         _rateUi = new CanvasLayer { Name = "RateUi" };
@@ -2114,7 +2143,7 @@ public partial class Main : Node3D
         panel.OffsetLeft = 16f;
         panel.OffsetTop = 16f;
         panel.OffsetRight = 316f;
-        panel.OffsetBottom = 100f;
+        panel.OffsetBottom = 136f;
         _rateUi.AddChild(panel);
 
         var vbox = new VBoxContainer();
@@ -2141,7 +2170,27 @@ public partial class Main : Node3D
         _renderHzSlider.ValueChanged += OnRenderHzSliderChanged;
         renderRow.AddChild(_renderHzSlider);
 
-        GD.Print("Main: rate control UI built (sim-hz display + render-hz slider).");
+        var delayRow = new HBoxContainer();
+        vbox.AddChild(delayRow);
+
+        _playoutDelayLabel = new Label { Text = $"playout delay: {_playoutDelaySeconds:F2}s" };
+        delayRow.AddChild(_playoutDelayLabel);
+
+        _playoutDelaySlider = new HSlider
+        {
+            MinValue = 0.0,
+            MaxValue = 2.0,
+            Step = 0.05,
+            Value = _playoutDelaySeconds,
+            CustomMinimumSize = new Vector2(180f, 20f),
+            SizeFlagsHorizontal = Control.SizeFlags.ExpandFill,
+        };
+        _playoutDelaySlider.ValueChanged += OnPlayoutDelaySliderChanged;
+        delayRow.AddChild(_playoutDelaySlider);
+
+        GD.Print(
+            "Main: rate control UI built (sim-hz display + render-hz slider + playout-delay slider, " +
+            $"default={_playoutDelaySeconds:F2}s).");
     }
 
     // Runtime render-hz change (task deliverable: "render-hz adjustable at runtime (instant)") -- pushes
@@ -2151,6 +2200,19 @@ public partial class Main : Node3D
     {
         _renderHz = Math.Clamp((int)value, 15, 60);
         Godot.Engine.MaxFps = _renderHz;
+    }
+
+    // Fix 6 -- runtime playout-delay change: every ProcessLiveCity*/ProcessPeds call site reads
+    // `_playoutDelaySeconds` fresh each frame (Reconstruct's `delaySeconds` parameter), so writing the
+    // field here takes effect on the very next reconstructed frame, no relaunch needed -- mirrors
+    // OnRenderHzSliderChanged's instant-apply pattern.
+    private void OnPlayoutDelaySliderChanged(double value)
+    {
+        _playoutDelaySeconds = Math.Clamp(value, 0.0, 2.0);
+        if (_playoutDelayLabel is not null)
+        {
+            _playoutDelayLabel.Text = $"playout delay: {_playoutDelaySeconds:F2}s";
+        }
     }
 
     // Called every live-city render frame (both live and replay). Repositions the ring above the selected
@@ -3975,9 +4037,11 @@ public partial class Main : Node3D
         return "overview";
     }
 
-    // docs/DEMO-CITY3D-DESIGN.md task T1.3 part C -- Xvfb screenshot pipeline. `--shot=<abs path>` is a
+    // docs/DEMO-CITY3D-DESIGN.md task T1.3 part C -- Xvfb screenshot pipeline. `--shot=<path>` is a
     // USER cmdline arg (everything after Godot's own `--`), read via OS.GetCmdlineUserArgs() so it never
-    // collides with Godot's own switches (--headless, --rendering-driver, ...).
+    // collides with Godot's own switches (--headless, --rendering-driver, ...). Fix 11 (Windows GPU
+    // testing session) -- a RELATIVE value is resolved against the true process working directory before
+    // any Godot res:// resolution can apply, see ResolveAgainstLaunchCwd's remarks.
     private static string? ParseShotArg()
     {
         const string prefix = "--shot=";
@@ -3985,11 +4049,41 @@ public partial class Main : Node3D
         {
             if (arg.StartsWith(prefix, StringComparison.Ordinal))
             {
-                return arg[prefix.Length..];
+                return ResolveAgainstLaunchCwd(arg[prefix.Length..]);
             }
         }
 
         return null;
+    }
+
+    // Fix 11 (Windows GPU testing session, docs/LIVE-CITY-WINDOWS-TESTING-BOOTSTRAP.md) -- `--replay
+    // out\lc.simrec` / `--shot=out\shot.png` were failing on Windows: a RELATIVE path/arg is resolved by
+    // Godot against `--path <project dir>` (e.g. `demos/City3D/Viewer`), not the shell's actual launch
+    // directory, so a plain `System.IO.File.Exists`/`FileStream.Open` on the raw string silently looked in
+    // the wrong place. Absolute paths are untouched (pass straight through -- Path.IsPathRooted is
+    // platform-correct for both `C:\...`/`\\host\share\...` on Windows and `/...` on Linux/macOS). A
+    // relative path is made absolute against the BEST AVAILABLE reading of the true process working
+    // directory: `PWD` (an environment variable the launching shell sets before exec/CreateProcess and
+    // which survives any internal chdir the engine performs afterward, since chdir(2)/SetCurrentDirectory
+    // never touches the environment block) when present and pointing at a directory that still exists,
+    // else `Directory.GetCurrentDirectory()` (correct whenever the engine hasn't actually redirected the
+    // process's OS-level cwd -- the common case, confirmed empirically on Linux with `--path`). Applied at
+    // the two USER-arg parse points (ParseReplayArg/ParseShotArg) so it runs before either arg is ever
+    // handed to a file API.
+    private static string ResolveAgainstLaunchCwd(string rawPath)
+    {
+        if (string.IsNullOrEmpty(rawPath) || Path.IsPathRooted(rawPath))
+        {
+            return rawPath;
+        }
+
+        var launchDir = OS.GetEnvironment("PWD");
+        if (string.IsNullOrEmpty(launchDir) || !Directory.Exists(launchDir))
+        {
+            launchDir = Directory.GetCurrentDirectory();
+        }
+
+        return Path.GetFullPath(rawPath, launchDir);
     }
 
     // BLOCKER fix -- true only under Godot's own `--headless` (no real/Xvfb display server backing the
@@ -4112,7 +4206,8 @@ public partial class Main : Node3D
     // path instead of a live LiveCitySource. `--replay=<file>` (the `=`-joined form, for consistency with
     // this file's other args/shell habits that quote a single token) is also accepted. Returns null when
     // absent -- ReadyLiveCity's `_replay = replayPath is not null` is the single source of truth for which
-    // branch runs.
+    // branch runs. Fix 11 -- a RELATIVE value is resolved against the true process working directory
+    // before any Godot res:// resolution can apply, see ResolveAgainstLaunchCwd's remarks.
     private static string? ParseReplayArg()
     {
         const string eqPrefix = "--replay=";
@@ -4123,12 +4218,12 @@ public partial class Main : Node3D
             if (arg.StartsWith(eqPrefix, StringComparison.Ordinal))
             {
                 var v = arg[eqPrefix.Length..].Trim();
-                return v.Length > 0 ? v : null;
+                return v.Length > 0 ? ResolveAgainstLaunchCwd(v) : null;
             }
 
             if (arg == "--replay" && i + 1 < args.Length)
             {
-                return args[i + 1];
+                return ResolveAgainstLaunchCwd(args[i + 1]);
             }
         }
 
