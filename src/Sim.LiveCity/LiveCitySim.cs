@@ -1,0 +1,397 @@
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Text.RegularExpressions;
+using Sim.Core;
+using Sim.Core.Bridge;
+using Sim.Core.Orca;
+using Sim.Host;
+using Sim.Ingest;
+using Sim.Pedestrians;
+using Sim.Pedestrians.Crossing;
+using Sim.Pedestrians.Demand;
+using Sim.Pedestrians.Lod;
+using Sim.Pedestrians.Navigation.Bake;
+using Sim.Replication;
+
+namespace Sim.LiveCity;
+
+// docs/LIVE-CITY-VIEWERS-DESIGN.md §1: `BuildLiveCity`'s wiring (src/Sim.Viz/SceneGen.cs) turned into a
+// real-time, steppable, publish-ready host. Constructs the SAME coupled sim (net parsed twice, navmesh
+// baked, CrosswalkSignals, CrossingOccupancySource, PedDemand/PedLodManager, InterestField pocket, Engine
+// tuned for the demo's step-length/lanechange/speeddev, CrowdSource = Composite(HighPowerFootprints,
+// crossingOccupancy)) and reproduces the reference's exact per-tick order in Step(). `LiveCitySim` does
+// not render; it only steps, samples (Sample()), and -- as of this task -- publishes onto the same
+// in-memory replication wire the local viewers already consume (CityLib/SimSource.cs, PedSimSource.cs).
+public sealed class LiveCitySim : IDisposable
+{
+    private readonly LiveCityConfig _cfg;
+    private readonly double _x0, _y0, _x1, _y1;
+
+    private readonly Engine _engine;
+    private readonly VTypeHandle _vtype;
+    private readonly List<(string Id, int Lane)> _cropEdges;
+    private ulong _rng;
+
+    private readonly PedPublisher _pedPublisher;
+    private readonly PedLodManager _manager;
+    private readonly PedDemand _demand;
+    private readonly InterestField _field;
+    private readonly Sim.Pedestrians.Crossing.CrossingOccupancySource _crossingOccupancy;
+    private readonly List<Vec2> _movingLowPowerPositions = new();
+    private static readonly WorldDisc[] NoEntities = Array.Empty<WorldDisc>();
+
+    // The car publish wire (mirrors CityLib/SimSource.cs).
+    private readonly ReplicationPublisher _vehPublisher = new();
+    private readonly InMemoryReplicationBus _vehBus = new();
+    private bool _vehGeometryPublished;
+
+    // The ped publish wire (mirrors CityLib/PedSimSource.cs).
+    private readonly PedReplicationPublisher _pedWirePublisher;
+    private readonly InMemoryPedReplicationBus _pedBus = new();
+
+    private double _now;
+    private SimulationSnapshot _lastSnapshot = SimulationSnapshot.Empty;
+
+    public LiveCitySim(LiveCityConfig cfg)
+    {
+        _cfg = cfg ?? throw new ArgumentNullException(nameof(cfg));
+        _x0 = cfg.X0; _y0 = cfg.Y0; _x1 = cfg.X1; _y1 = cfg.Y1;
+
+        var netPath = Path.Combine(cfg.DatasetDir, "net.xml");
+
+        // net parsed twice (once for the vehicle-side NetworkModel, once for the ped-side PedNetwork) --
+        // exactly as SceneGen.BuildLiveCity does; the two readers own disjoint models.
+        var model = NetworkParser.Parse(netPath);
+        Network = model;
+        LocalLanes = new NetworkLaneSource(model);
+
+        var pedNetwork = PedNetworkParser.Load(netPath);
+        var polygons = WalkablePolygonBaker.Bake(pedNetwork);
+        var nav = new SumoNavMesh(polygons, new SumoWalkableSpace(polygons), pedNetwork.PedConnections);
+
+        bool In(double x, double y) => x >= _x0 && x <= _x1 && y >= _y0 && y <= _y1;
+        bool InV(Vec2 p) => In(p.X, p.Y);
+
+        var cx = (_x0 + _x1) / 2.0;
+        var cy = (_y0 + _y1) / 2.0;
+
+        // Pedestrian O-D endpoints = sidewalk spine midpoints inside the crop.
+        var allEndpoints = new List<Vec2>();
+        foreach (var poly in polygons)
+        {
+            if (poly.Kind != BakedPolygonKind.SidewalkSegment) continue;
+            if (!InV(poly.Centroid)) continue;
+            var spine = poly.Spine;
+            var pt = spine is { Count: > 0 } ? spine[spine.Count / 2] : poly.Centroid;
+            if (InV(pt)) allEndpoints.Add(pt);
+        }
+
+        const int MaxEndpoints = 90;
+        var odPoints = new List<Vec2>();
+        if (allEndpoints.Count <= MaxEndpoints)
+        {
+            odPoints.AddRange(allEndpoints);
+        }
+        else
+        {
+            var stride = (double)allEndpoints.Count / MaxEndpoints;
+            for (var k = 0; k < MaxEndpoints; k++) odPoints.Add(allEndpoints[(int)(k * stride)]);
+        }
+
+        // Crop crossings, split by signalization -- SceneGen.BuildLiveCity's Phase 2b split.
+        var cropCrossingPolys = new List<BakedPolygon>();
+        foreach (var poly in polygons)
+        {
+            if (poly.Kind == BakedPolygonKind.Crossing && InV(poly.Centroid)) cropCrossingPolys.Add(poly);
+        }
+
+        var crosswalkSignals = CrosswalkSignals.FromNet(netPath, cropCrossingPolys);
+
+        var config = new PedDemandConfig
+        {
+            Origins = odPoints,
+            Destinations = odPoints,
+            SpawnRatePerSecond = 8.0,
+            PopulationCap = 160,
+            Seed = cfg.PedSeed,
+            MaxSpeed = 1.3,
+            Radius = 0.3,
+            ArrivalRadius = 0.6,
+            Liveliness = new PedLivelinessConfig
+            {
+                PauseProbability = 0.15,
+                MinPauseSeconds = 2.0,
+                MaxPauseSeconds = 5.0,
+                MaxPausesPerTrip = 1,
+                PauseAnimTag = "idle",
+            },
+            EnableWeave = true,
+            CrosswalkSignals = cfg.YieldEnabled ? crosswalkSignals : null,
+        };
+
+        _pedPublisher = new PedPublisher();
+        _manager = new PedLodManager(nav, _pedPublisher, arriveRadius: 0.3, dwellSeconds: 1.0);
+        _demand = new PedDemand(config, nav, _manager, startTime: 0.0);
+
+        // The high-realism pocket, anchored on the crop crossing nearest the crop centre (the same
+        // "peds actually walk here" anchoring SceneGen.BuildLiveCity uses).
+        var pocketCentre = new Vec2(cx, cy);
+        var bestD2 = double.PositiveInfinity;
+        foreach (var poly in cropCrossingPolys)
+        {
+            var d2 = (poly.Centroid.X - cx) * (poly.Centroid.X - cx) + (poly.Centroid.Y - cy) * (poly.Centroid.Y - cy);
+            if (d2 < bestD2) { bestD2 = d2; pocketCentre = poly.Centroid; }
+        }
+
+        _field = new InterestField();
+        _field.Register(new InterestSource(pocketCentre, promoteRadius: 70.0, demoteRadius: 100.0));
+
+        _crossingOccupancy = new Sim.Pedestrians.Crossing.CrossingOccupancySource(cropCrossingPolys, pedRadius: 0.3);
+
+        // ---- cars: real Engine on the full net; a dense LOCAL flow on the crop's drivable edges ----
+        _engine = new Engine();
+        var engineConfig = ScenarioConfigParser.ParseXml(
+            "<configuration><time><begin value=\"0\"/><end value=\"1000000000\"/><step-length value=\"0.5\"/></time>"
+            + "<processing><lanechange.duration value=\"2.0\"/><default.speeddev value=\"0.0\"/></processing></configuration>");
+        _engine.LoadNetwork(netPath, engineConfig);
+        _engine.LaneChangeMinSpeed = cfg.LaneChangeMinSpeed;
+        _vtype = _engine.DefineVType(new VTypeParams { VClass = "passenger", Sigma = 0.0 });
+
+        _engine.CrowdSource = cfg.YieldEnabled
+            ? new CompositeFootprintSource(_manager.HighPowerFootprints, _crossingOccupancy)
+            : _manager.HighPowerFootprints;
+
+        var routeEdges = ReadDrivableEdges(Path.Combine(cfg.DatasetDir, "scenario.rou.xml"));
+        _cropEdges = new List<(string Id, int Lane)>();
+        foreach (var eid in routeEdges)
+        {
+            if (!model.EdgesById.TryGetValue(eid, out var edge) || edge.Lanes.Count == 0) continue;
+            var carLane = edge.Lanes[^1];
+            if (carLane.Shape.Count == 0) continue;
+            var mid = carLane.Shape[carLane.Shape.Count / 2];
+            if (In(mid.X, mid.Y)) _cropEdges.Add((eid, carLane.Index));
+        }
+
+        _rng = cfg.CarRngSeed;
+
+        // ---- publish wires (mirrors CityLib/SimSource.cs + CityLib/PedSimSource.cs) ----
+        VehicleSource = _vehBus.Source;
+
+        var scheduler = new PedPublishScheduler(new PedDrErrorPublishPolicy());
+        var meter = new PedBandwidthMeter();
+        var governor = new PedBandwidthGovernor(scheduler, meter, maxMbitPerSecond: 500.0);
+        _pedWirePublisher = new PedReplicationPublisher(_pedBus.Sink, scheduler, governor, meter, stepDt: cfg.Dt);
+        PedSource = _pedBus.Source;
+    }
+
+    public NetworkModel Network { get; }
+
+    public NetworkLaneSource LocalLanes { get; }
+
+    public IReplicationSource VehicleSource { get; }
+
+    public IPedReplicationSource PedSource { get; }
+
+    public double Time => _now;
+
+    public int PeakCars { get; private set; }
+
+    public int PeakPeds { get; private set; }
+
+    public int OccupiedCrossings => _crossingOccupancy.OccupiedCount;
+
+    public int PeakOccupiedCrossings { get; private set; }
+
+    public int CarYieldObservations { get; private set; }
+
+    // Deterministic SplitMix64, seeded from LiveCityConfig.CarRngSeed -- identical constants/order to
+    // SceneGen.BuildLiveCity's `NextRng`, so two LiveCitySim instances with the same seed spawn the same
+    // sequence of cars.
+    private uint NextRng()
+    {
+        _rng += 0x9E3779B97F4A7C15UL;
+        var z = _rng;
+        z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9UL;
+        z = (z ^ (z >> 27)) * 0x94D049BB133111EBUL;
+        return (uint)(z ^ (z >> 31));
+    }
+
+    // Advances the coupled sim by one tick (Dt seconds, per LiveCityConfig.Dt), then publishes the
+    // resulting frame onto both wires. Reproduces SceneGen.BuildLiveCity's per-tick order exactly:
+    // (a) spawn cars up to the cap on crop drivable edges -> (b) step the ped demand -> (c) gather this
+    // tick's WALKING low-power ped positions -> (d) refresh the crossing-occupancy gate -> (e) step the
+    // engine (which queries the now-current CrowdSource).
+    public void Step()
+    {
+        var dt = _cfg.Dt;
+
+        // (a) spawn cars up to the cap on crop drivable edges.
+        if (_cropEdges.Count >= 2)
+        {
+            var live = _engine.VehicleHandles.Length;
+            for (var s = 0; s < _cfg.CarSpawnPerStep && live < _cfg.CarTargetConcurrent; s++)
+            {
+                var (fromId, _) = _cropEdges[(int)(NextRng() % (uint)_cropEdges.Count)];
+                var (toId, _) = _cropEdges[(int)(NextRng() % (uint)_cropEdges.Count)];
+                if (fromId == toId) continue;
+                try
+                {
+                    _engine.SpawnVehicle(_vtype, fromId, toId, departPos: 5.0, departSpeed: 0.0, departBestLane: true);
+                    live++;
+                }
+                catch (InvalidOperationException)
+                {
+                }
+            }
+        }
+
+        // (b) step the ped demand; capture the wire-event cursor first so the batch published this tick
+        // includes exactly what this Step call emits (mirrors PedSimSource.Tick).
+        var beforeCount = _pedPublisher.Events.Count;
+        _demand.Step(_now, dt, _field, NoEntities);
+        var tNext = _now + dt;
+
+        // (c) gather this tick's WALKING low-power ped positions.
+        _movingLowPowerPositions.Clear();
+        foreach (var id in _demand.LiveIds)
+        {
+            if (_manager.ModelOf(id) != PedDrModel.FreeKinematic
+                && _manager.AnimTagOf(id, tNext) == ActivityTimeline.WalkAnimTag)
+            {
+                _movingLowPowerPositions.Add(_manager.PositionOf(id, tNext));
+            }
+        }
+
+        // (d) refresh the crossing-occupancy gate from the current walking peds.
+        _crossingOccupancy.Update(_movingLowPowerPositions);
+        if (_crossingOccupancy.OccupiedCount > PeakOccupiedCrossings) PeakOccupiedCrossings = _crossingOccupancy.OccupiedCount;
+
+        // (e) step the engine -- its CrowdSource query now sees the current gates + promoted peds.
+        _engine.Step();
+        _now = tNext;
+
+        if (_engine.VehicleHandles.Length > PeakCars) PeakCars = _engine.VehicleHandles.Length;
+        if (_demand.LiveCount > PeakPeds) PeakPeds = _demand.LiveCount;
+
+        // Car-yield metric: for each occupied crossing disc, count it once if any car within 10 m has
+        // Speed < 2.0 m/s -- a car braking beside a ped-occupied crossing.
+        CarYieldObservations += CountYieldObservationsThisStep();
+
+        // ---- publish: capture the engine snapshot, then publish both wires ----
+        var snap = SimulationSnapshot.Capture(_engine);
+        _lastSnapshot = snap;
+
+        if (!_vehGeometryPublished)
+        {
+            _vehPublisher.PublishGeometryOnce(Network, _vehBus.Sink);
+            _vehGeometryPublished = true;
+        }
+
+        _vehPublisher.PublishStep(snap, _vehBus.Sink);
+        _vehBus.Source.Pump();
+
+        var newEvents = new List<PedEvent>(_pedPublisher.Events.Count - beforeCount);
+        for (var e = beforeCount; e < _pedPublisher.Events.Count; e++)
+        {
+            newEvents.Add(_pedPublisher.Events[e]);
+        }
+
+        _pedWirePublisher.Publish(newEvents);
+    }
+
+    private readonly WorldDisc[] _gateProbeScratch = new WorldDisc[4];
+
+    // Increment once per occupied crossing disc that has at least one car within 10 m braking (Speed <
+    // 2.0 m/s) beside it -- the "car stopped for a ped on a crosswalk" proxy. A ped's own moving-low-power
+    // position is confirmed to actually BE an occupied-crossing gate disc via crossingOccupancy's public
+    // QueryNear (a tiny-radius self-query returns >=1 iff that exact point was gated this tick), so this
+    // never double-counts a walking ped that is merely near -- not on -- a crossing.
+    private int CountYieldObservationsThisStep()
+    {
+        if (_crossingOccupancy.OccupiedCount == 0) return 0;
+
+        var count = 0;
+        var cpx = _engine.PosX;
+        var cpy = _engine.PosY;
+        var speed = _engine.Speed;
+        var carN = cpx.Length;
+
+        foreach (var p in _movingLowPowerPositions)
+        {
+            // Is this exact ped position an occupied-crossing gate disc (i.e. is the ped ON a crossing)?
+            var onCrossing = _crossingOccupancy.QueryNear(p.X, p.Y, 0.01, _gateProbeScratch) > 0;
+            if (!onCrossing) continue;
+
+            var near = false;
+            for (var i = 0; i < carN; i++)
+            {
+                var dx = cpx[i] - p.X;
+                var dy = cpy[i] - p.Y;
+                if ((dx * dx) + (dy * dy) > 100.0) continue; // 10 m radius
+                if (speed[i] < 2.0) { near = true; break; }
+            }
+
+            if (near) count++;
+        }
+
+        return count;
+    }
+
+    // Reads back one frame of the coupled scene: cars from the last captured snapshot (crop-filtered),
+    // peds from the demand's live ids (crop-filtered), and the crossing-occupancy peak.
+    public LiveCitySnapshot Sample()
+    {
+        var cars = new List<LiveCityCar>(_lastSnapshot.Count);
+        for (var i = 0; i < _lastSnapshot.Count; i++)
+        {
+            var x = _lastSnapshot.PosX[i];
+            var y = _lastSnapshot.PosY[i];
+            if (x < _x0 || x > _x1 || y < _y0 || y > _y1) continue;
+            cars.Add(new LiveCityCar(
+                _lastSnapshot.Handles[i], x, y, _lastSnapshot.PosZ[i], _lastSnapshot.Angle[i],
+                _lastSnapshot.Length[i], _lastSnapshot.Width[i], _lastSnapshot.VehicleId[i]));
+        }
+
+        var peds = new List<LiveCityPed>(_demand.LiveCount);
+        foreach (var id in _demand.LiveIds)
+        {
+            var p = _manager.PositionOf(id, _now);
+            if (p.X < _x0 || p.X > _x1 || p.Y < _y0 || p.Y > _y1) continue;
+            var model = _manager.ModelOf(id);
+            var animTag = _manager.AnimTagOf(id, _now);
+            var regime = model == PedDrModel.FreeKinematic ? PedRegime.HighPower
+                : animTag == ActivityTimeline.WalkAnimTag ? PedRegime.LowPowerWalking
+                : PedRegime.Paused;
+            peds.Add(new LiveCityPed(id, p.X, p.Y, 0.0, regime, animTag));
+        }
+
+        return new LiveCitySnapshot(cars, peds, _crossingOccupancy.OccupiedCount);
+    }
+
+    // Read the union of drivable edge ids from a committed car route file (every `edges="..."` token).
+    // Copied from SceneGen.ReadDrivableEdges.
+    private static IReadOnlyList<string> ReadDrivableEdges(string rouPath)
+    {
+        var edges = new List<string>();
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        if (!File.Exists(rouPath)) return edges;
+        foreach (Match m in Regex.Matches(File.ReadAllText(rouPath), "edges=\"([^\"]*)\""))
+        {
+            foreach (var tok in m.Groups[1].Value.Split(' ', StringSplitOptions.RemoveEmptyEntries))
+            {
+                if (seen.Add(tok)) edges.Add(tok);
+            }
+        }
+
+        return edges;
+    }
+
+    public void Dispose()
+    {
+        _vehBus.Sink.Dispose();
+        _vehBus.Source.Dispose();
+        _pedBus.Sink.Dispose();
+        _pedBus.Source.Dispose();
+    }
+}
