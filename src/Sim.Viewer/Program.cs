@@ -1256,26 +1256,27 @@ static int RunLiveCitySmoke(int steps, string? recordPath, int simHz)
                 if (witnessOn && sim.Time >= 60.0)
                 {
                     var w = sim.WitnessAuthoritative();
-                    var stuck = 0; var stuckGreenClear = 0; var stuckRed = 0; var stuckLeader = 0;
+                    var stuck = 0; var stuckMinorGreen = 0; var stuckMajorGreen = 0; var stuckRed = 0; var stuckLeader = 0;
                     foreach (var c in w)
                     {
                         if (c.Speed >= 0.3) continue;
                         stuck++;
-                        var green = c.Tl is 'G' or 'g';
-                        var clear = c.GapAhead > 15.0;
-                        if (green && clear) stuckGreenClear++;
-                        else if (!green && c.Tl != '\0') stuckRed++;
-                        else if (!clear) stuckLeader++;
+                        var clear = c.GapAhead > 15.0 && c.NextMouthGap > 15.0; // own lane AND exit mouth clear
+                        if (c.Tl == 'g' && clear) stuckMinorGreen++;            // yielding on permissive green
+                        else if (c.Tl == 'G' && clear) stuckMajorGreen++;       // ANOMALY: protected green, all clear
+                        else if (!(c.Tl is 'G' or 'g') && c.Tl != '\0') stuckRed++;
+                        else stuckLeader++;                                     // blocked by a leader / occupied exit
                     }
 
-                    Console.Write($"LIVECITY-WITNESS: {sim.Time,6:F0} stuck={stuck,3} stuckOnGreenClear={stuckGreenClear,3} " +
-                        $"stuckRed={stuckRed,3} stuckBehindLeader={stuckLeader,3} strandedDeadEnd={sim.StrandedOffRouteLastStep,3} | examples:");
+                    Console.Write($"LIVECITY-WITNESS: {sim.Time,6:F0} stuck={stuck,3} minorGreenYield={stuckMinorGreen,3} " +
+                        $"majorGreenSTUCK={stuckMajorGreen,3} red={stuckRed,3} behindLeader/exit={stuckLeader,3} strandedDeadEnd={sim.StrandedOffRouteLastStep,3} | examples:");
                     var shown = 0;
                     foreach (var c in w)
                     {
                         if (shown >= 4 || c.Speed >= 0.3 || !(c.Tl is 'G' or 'g') || c.GapAhead <= 15.0) continue;
                         var gapStr = double.IsPositiveInfinity(c.GapAhead) ? "inf" : c.GapAhead.ToString("F0");
-                        Console.Write($" [{c.LaneId} pos={c.Pos:F1} posLat={c.PosLat:F2} spd={c.Speed:F2} tl={c.Tl} gap={gapStr}]");
+                        var mouthStr = double.IsPositiveInfinity(c.NextMouthGap) ? "inf" : c.NextMouthGap.ToString("F0");
+                        Console.Write($" [{c.LaneId} pos={c.Pos:F1} spd={c.Speed:F2} tlLinks={c.TlLinks} gap={gapStr} exitMouth={mouthStr}]");
                         shown++;
                     }
                     Console.WriteLine();

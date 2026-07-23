@@ -477,8 +477,16 @@ public sealed class LiveCitySim : IDisposable
     // an env flag so normal runs pay nothing. GapAhead = longitudinal distance to the nearest same-lane
     // car ahead (PositiveInfinity if none); Tl = the controlling TL link's state char for the car's lane
     // ('\0' if the lane is not TL-controlled).
+    // Tl = the "any-green wins" summary char for the lane; TlLinks = the DISTINCT states of every TL link
+    // controlling this lane (e.g. "Gr" == one movement green, another red -> a car held by its own red
+    // turn-arrow under a lane that reads green for a different movement). NextMouthGap = pos of the nearest
+    // car on this car's NEXT lane (across the junction) measured from that lane's start (+inf if the exit
+    // lane is empty or unknown) -- a small value means the junction EXIT is occupied at its mouth, so the
+    // car holds even though its OWN lane is clear ahead (keep-clear / cross-junction car-following, which
+    // the same-lane GapAhead cannot see).
     public readonly record struct CarAuthWitness(
-        VehicleHandle Handle, string LaneId, double Pos, double PosLat, double Speed, char Tl, double GapAhead);
+        VehicleHandle Handle, string LaneId, double Pos, double PosLat, double Speed, char Tl, double GapAhead,
+        string TlLinks, double NextMouthGap);
 
     public IReadOnlyList<CarAuthWitness> WitnessAuthoritative()
     {
@@ -490,6 +498,7 @@ public sealed class LiveCitySim : IDisposable
         var speed = _engine.Speed;
         var tlLaneH = _engine.TlLaneHandles;
         var tlStates = _engine.TlStates;
+        var nextLaneH = _engine.NextLaneHandles;
         var n = handles.Length;
 
         var outList = new List<CarAuthWitness>(n);
@@ -504,21 +513,37 @@ public sealed class LiveCitySim : IDisposable
                 if (d > 0.0 && d < gap) gap = d;
             }
 
-            // TL char for the car's lane: any controlling link that is green wins ('G'/'g'), else the
-            // first controlling link's char, else '\0' (uncontrolled). Inlined (ReadOnlySpan can't be
-            // captured by a local function).
+            // TL for the car's lane: `tl` = any-green-wins summary; `tlLinks` = the distinct states of
+            // every link controlling this lane (so a car held by its OWN movement's red under a lane that
+            // is green for another movement is visible as e.g. "Gr").
             var tl = '\0';
+            var links = string.Empty;
             for (var k = 0; k < tlLaneH.Length; k++)
             {
                 if (tlLaneH[k] != laneH[i]) continue;
                 var c = (char)tlStates[k];
-                if (c is 'G' or 'g') { tl = c; break; }
-                if (tl == '\0') tl = c;
+                if (links.IndexOf(c) < 0) links += c;
+                if ((c is 'G' or 'g') && tl is not ('G' or 'g')) tl = c;
+                else if (tl == '\0') tl = c;
+            }
+
+            // NextMouthGap: nearest car on the car's NEXT lane (across the junction), measured from that
+            // lane's start -- a small value => the exit is occupied at its mouth (keep-clear / cross-
+            // junction leader), which the same-lane GapAhead misses.
+            var nextMouthGap = double.PositiveInfinity;
+            var nl = i < nextLaneH.Length ? nextLaneH[i] : -1;
+            if (nl >= 0)
+            {
+                for (var j = 0; j < n; j++)
+                {
+                    if (laneH[j] != nl) continue;
+                    if (pos[j] < nextMouthGap) nextMouthGap = pos[j];
+                }
             }
 
             outList.Add(new CarAuthWitness(
                 handles[i], i < laneIds.Length ? laneIds[i] : string.Empty,
-                pos[i], posLat[i], speed[i], tl, gap));
+                pos[i], posLat[i], speed[i], tl, gap, links, nextMouthGap));
         }
 
         return outList;
