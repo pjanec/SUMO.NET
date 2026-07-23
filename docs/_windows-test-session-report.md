@@ -6,6 +6,9 @@ grid / smoothness commits are pushed; the dev session's `becc224` is integrated)
 right/wrong. This is the handoff. All root causes below are **measured** (frame traces), not guessed —
 where a theory was refuted by data, that's called out.
 
+> **To run the harness (esp. for #15):** see `docs/LIVE-CITY-HARNESS-GUIDE.md` — headless run command,
+> env knobs, and the exact stopped-fraction / arrival-rate probe used to characterise the gridlock.
+
 > **UPDATE:** Most of the original findings are now RESOLVED. The dev session's `becc224` implemented
 > #5/#6/#9/#10/#11; this testing session pushed camera/grid/smoothness (#12–#14) + the TL-crop fix
 > (#16). **Open: #7, #8, #15 (DR-core/engine); #17 partially fixed (per-`Step` publish residual).** The detailed sections further down
