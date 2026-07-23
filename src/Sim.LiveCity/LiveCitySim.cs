@@ -215,6 +215,10 @@ public sealed class LiveCitySim : IDisposable
             + "<processing><lanechange.duration value=\"2.0\"/><default.speeddev value=\"0.0\"/>" + teleportXml + "</processing></configuration>");
         _engine.LoadNetwork(netPath, engineConfig);
         _engine.LaneChangeMinSpeed = cfg.LaneChangeMinSpeed;
+        // #15 into-occupied: active only under cooperative (high-realism) LC; low realism keeps the cheap
+        // tight merge. The engine helper is also caller-gated on CooperativeInformFollower, so this is
+        // belt-and-suspenders (0 => the veto is fully inert).
+        _engine.MergeStoppedMinGap = cfg.CooperativeLaneChange ? cfg.MergeStoppedMinGap : 0.0;
         _engine.JunctionYieldTimeoutSeconds = cfg.JunctionYieldTimeoutSeconds;
         _engine.DeadLaneDriveThrough = cfg.DeadLaneDriveThrough;
         _engine.WrongLaneRerouteAtApproach = cfg.WrongLaneRerouteAtApproach;
@@ -304,6 +308,7 @@ public sealed class LiveCitySim : IDisposable
     // and, per path, commits where a target-lane car <20m is stopped (swap into an occupied stretch).
     public System.ReadOnlySpan<long> LaneChangeByPathChangerSpeed => _engine.LaneChangeByPathChangerSpeed;
     public System.ReadOnlySpan<long> LaneChangeTargetNearStopped => _engine.LaneChangeTargetNearStopped;
+    public System.ReadOnlySpan<long> LaneChangeIntoStoppedDetail => _engine.LaneChangeIntoStoppedDetail;
 
     // #15 cooperative-LC diagnostic passthrough: cumulative count of SpeedAdvice writes issued from the
     // STRATEGIC informFollower path (Engine.TryStrategicLaneChange). >0 confirms cooperation actually

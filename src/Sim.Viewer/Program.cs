@@ -1343,6 +1343,12 @@ static int RunLiveCitySmoke(int steps, string? recordPath, int simHz)
                         // fired (cumulative). >0 confirms cooperation is actually sorting cars up-front.
                         Console.Write($" coopAdvice={sim.CoopAdviceIssued}");
                         Console.WriteLine();
+                        // #15 into-occupied detail: side(lead/follow) x gap bucket (<2/<5/<10/<20) for stopped-neighbor commits.
+                        var det = sim.LaneChangeIntoStoppedDetail;
+                        Console.Write("LIVECITY-LCDETAIL(cumulative):");
+                        for (var p = 0; p < 4; p++)
+                            Console.Write($" {pathNames[p]}[lead<2={det[p*8+0]},<5={det[p*8+1]},<10={det[p*8+2]},<20={det[p*8+3]}|foll<2={det[p*8+4]},<5={det[p*8+5]},<10={det[p*8+6]},<20={det[p*8+7]}]");
+                        Console.WriteLine();
                     }
 
                     // COMPREHENSIVE (owner request): analyze EVERY car stuck with a CLEAR road (speed<0.3,

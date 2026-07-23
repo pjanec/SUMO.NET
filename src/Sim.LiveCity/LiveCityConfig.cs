@@ -31,6 +31,14 @@ public sealed class LiveCityConfig
     // don't deadlock (any forward creep clears the gate). Overridable via LIVECITY_LCMIN.
     public double LaneChangeMinSpeed { get; set; } = 1.5;
 
+    // #15 into-occupied cut-in floor (Engine.MergeStoppedMinGap). A moving car must not slot into the target
+    // lane within this many metres AHEAD of a STANDING (near-stopped) follower there -- IsTargetLaneSafe is a
+    // braking-gap check that a stopped follower satisfies at ~any closeness, so without this floor cars cut in
+    // 2-5 m ahead of standing cars (the residual after the cooperative-LC float fix). Only active when
+    // CooperativeLaneChange is on (high realism); low realism keeps the cheap tight merge. 0 = off (parity).
+    // Overridable via LIVECITY_MERGEGAP. Default 5 m covers the measured 2-5 m follow-side cut-in band.
+    public double MergeStoppedMinGap { get; set; } = 5.0;
+
     // A/B switch: full crossing-yield gate + ped signal compliance vs the baseline (no coupling).
     // Overridable via LIVECITY_YIELD (0 = off).
     public bool YieldEnabled { get; set; } = true;
@@ -138,6 +146,11 @@ public sealed class LiveCityConfig
         if (double.TryParse(Environment.GetEnvironmentVariable("LIVECITY_LCMIN"), out var lcMin))
         {
             cfg.LaneChangeMinSpeed = lcMin;
+        }
+
+        if (double.TryParse(Environment.GetEnvironmentVariable("LIVECITY_MERGEGAP"), out var mergeGap) && mergeGap >= 0.0)
+        {
+            cfg.MergeStoppedMinGap = mergeGap;
         }
 
         cfg.YieldEnabled = Environment.GetEnvironmentVariable("LIVECITY_YIELD") != "0";

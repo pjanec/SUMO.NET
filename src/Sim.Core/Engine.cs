@@ -2029,7 +2029,21 @@ public sealed partial class Engine : IEngine
         {
             System.Threading.Interlocked.Increment(ref _lcTargetNearStopped[path]);
         }
+        // #15 into-occupied detail: split by side (lead vs follow) and tight gap buckets so the analysis
+        // targets true squeeze-ins (tight follow-side / small-gap) not benign queue-joins (merge behind a
+        // stopped leader). side 0=lead 1=follow; bucket 0:<2 1:<5 2:<10 3:<20. Gated by DiagLaneChangeLog.
+        RecordIntoStoppedDetail(path, 0, nLead is null ? double.PositiveInfinity : Math.Abs((nLead.Kinematics.Pos - nLead.VType.Length) - v.Kinematics.Pos), nLead?.Kinematics.Speed ?? -1.0);
+        RecordIntoStoppedDetail(path, 1, nFollow is null ? double.PositiveInfinity : Math.Abs((v.Kinematics.Pos - v.VType.Length) - nFollow.Kinematics.Pos), nFollow?.Kinematics.Speed ?? -1.0);
     }
+    private readonly long[] _lcIntoStoppedDetail = new long[4 * 2 * 4]; // [path*8 + side*4 + bucket]
+    private void RecordIntoStoppedDetail(int path, int side, double gap, double spd)
+    {
+        if (spd < 0.0 || spd >= 0.5 || double.IsPositiveInfinity(gap)) return;
+        int b = gap < 2.0 ? 0 : gap < 5.0 ? 1 : gap < 10.0 ? 2 : gap < 20.0 ? 3 : -1;
+        if (b < 0) return;
+        System.Threading.Interlocked.Increment(ref _lcIntoStoppedDetail[path * 8 + side * 4 + b]);
+    }
+    public System.ReadOnlySpan<long> LaneChangeIntoStoppedDetail => _lcIntoStoppedDetail;
     public System.ReadOnlySpan<long> LaneChangeByPathChangerSpeed => _lcByPathChangerSpeed;
     public System.ReadOnlySpan<long> LaneChangeTargetNearStopped => _lcTargetNearStopped;
 
@@ -10614,7 +10628,12 @@ public sealed partial class Engine : IEngine
                 // bare `IsTargetLaneSafe(...)` gate for scenario 12 and every other
                 // obstacle-free scenario/test.
                 var neighFollow = postMoveNeighbors.GetNeighborFollower(v, leftLane.Handle);
-                if (IsTargetLaneSafe(v, neighLead, neighFollow, dt) && !TargetLaneBlockedByObstacle(v, leftLane, time, dt) && !IsTargetLaneOverlapped(v, leftLane.Handle, postMoveNeighbors, dt))
+                // #15 into-occupied: don't cut in tight ahead of a STOPPED target-lane follower (a
+                // discretionary speed-gain overtake -- vetoing it just keeps ego's fine current lane; the
+                // accumulator keeps building and retries once the spot is no longer occupied). Gated on
+                // CooperativeInformFollower (high realism); inert on goldens (MergeStoppedMinGap 0).
+                if (IsTargetLaneSafe(v, neighLead, neighFollow, dt) && !TargetLaneBlockedByObstacle(v, leftLane, time, dt) && !IsTargetLaneOverlapped(v, leftLane.Handle, postMoveNeighbors, dt)
+                    && !(CooperativeInformFollower && WouldCutInAheadOfStoppedFollower(v, neighFollow, dt)))
                 {
                     RecordLaneChangeCommit(1, v, neighLead, neighFollow, bypassesMinSpeed: false); // #15 float analysis (speed-gain left)
                     targetLaneId = leftLane.Id;
@@ -10892,7 +10911,10 @@ public sealed partial class Engine : IEngine
             // inert). Inert on every golden regardless (CooperativeInformFollower AND LaneChangeMinSpeed
             // both off there) -> byte-identical.
             if ((!CooperativeInformFollower || LaneChangeMinSpeed <= 0.0 || v.Kinematics.Speed >= LaneChangeMinSpeed)
-                && IsTargetLaneSafe(v, neighLead, neighFollowKr, dt) && !IsTargetLaneOverlapped(v, rightLane.Handle, neighbors, dt))
+                && IsTargetLaneSafe(v, neighLead, neighFollowKr, dt) && !IsTargetLaneOverlapped(v, rightLane.Handle, neighbors, dt)
+                // #15 into-occupied: keep-right is discretionary -- don't return to the right lane by cutting
+                // in tight ahead of a STOPPED follower there; ego stays put and keeps flowing. Inert on goldens.
+                && !(CooperativeInformFollower && WouldCutInAheadOfStoppedFollower(v, neighFollowKr, dt)))
             {
                 // D5: deliberately kept INLINE, NOT routed through the command buffer. The caller
                 // (DecideSpeedGainChanges) re-reads `v.LaneHandle` immediately after this call
@@ -11117,6 +11139,18 @@ public sealed partial class Engine : IEngine
     // (no lateral movement at standstill) without porting the whole sublane model. Set by the live-city
     // demo; every parity scenario leaves it 0.
     public double LaneChangeMinSpeed { get; set; }
+
+    // Realism knob (NOT a SUMO default; 0 = off = byte-identical to every golden, so parity is untouched).
+    // docs/LIVE-CITY-15-INTO-OCCUPIED-DESIGN.md: the "into-occupied" cut-in fix. IsTargetLaneSafe is a
+    // BRAKING-GAP check, so a STOPPED target-lane follower needs ~no gap and the check passes no matter how
+    // close ego lands -- a moving ego then slots in tight AHEAD of a standing car (measured: the dominant
+    // residual after the cooperative-LC float fix, follow-side gap 2-5 m). When > 0, a lane-change commit
+    // is vetoed if it would put ego within this ABSOLUTE gap ahead of a nearly-stopped (<0.5 m/s)
+    // target-lane FOLLOWER -- the spot is treated as OCCUPIED. FOLLOWER side ONLY: merging BEHIND a stopped
+    // LEADER is joining the back of a queue (normal; vetoing it would strand cars). Callers additionally
+    // gate on CooperativeInformFollower (high realism), so low-realism areas keep the cheap tight merge.
+    // Set by the live-city demo; every parity/bench scenario leaves it 0 (inert -> byte-identical).
+    public double MergeStoppedMinGap { get; set; }
 
     // Realism knob (NOT a SUMO default; 0 = off = byte-identical to every golden, so parity is untouched).
     // docs/LIVE-CITY-15-YIELD-TIMEOUT-DESIGN.md: when > 0, a vehicle that has been WAITING at a junction
@@ -11425,6 +11459,14 @@ public sealed partial class Engine : IEngine
         // (LCA_URGENT's real blocker-cooperation machinery, `.cpp:1467-1517`, is not ported).
         var neighLead = neighbors.GetNeighborLeader(v, neighborLane.Handle);
         var neighFollow = neighbors.GetNeighborFollower(v, neighborLane.Handle);
+        // #15 into-occupied: the STRATEGIC path is a REQUIRED merge (ego's lane must reach the turn). It is
+        // deliberately NOT subject to the into-occupied veto: when the target turn lane is a SATURATED stopped
+        // queue, EVERY merge point is within the floor of a stopped follower, so vetoing here would strand ego
+        // at the approach -> it blocks its through lane -> the #15 gridlock reforms (measured directly:
+        // MergeStoppedMinGap on the strategic path collapsed arrivals 1085->361, stoppedFrac->1.00 by t=900).
+        // Cutting in to a required-and-saturated turn lane IS the realistic queue-join, not a gratuitous
+        // squeeze -- so it is allowed. Only the DISCRETIONARY paths (speed-gain, keep-right) get the veto,
+        // where declining simply keeps ego's already-fine lane. See docs/LIVE-CITY-15-INTO-OCCUPIED-DESIGN.md.
         if (!IsTargetLaneSafe(v, neighLead, neighFollow, dt) || TargetLaneBlockedByObstacle(v, neighborLane, time, dt) || IsTargetLaneOverlapped(v, neighborLane.Handle, neighbors, dt))
         {
             // #15 (docs/LIVE-CITY-15-COOPERATIVE-LC-DESIGN.md): NEW strategic-path informFollower --
@@ -11542,6 +11584,25 @@ public sealed partial class Engine : IEngine
         }
 
         return true;
+    }
+
+    // #15 into-occupied cut-in veto (docs/LIVE-CITY-15-INTO-OCCUPIED-DESIGN.md). IsTargetLaneSafe above is
+    // a BRAKING-GAP check: a STOPPED target-lane follower needs ~no secure gap, so the change passes no
+    // matter how tight ego lands ahead of it -- a moving ego then cuts in 2-5 m in front of a standing car
+    // (the measured dominant residual). This adds an absolute-distance floor: when MergeStoppedMinGap > 0
+    // (demo only; 0 on every golden => inert/byte-identical), a commit is vetoed if the target-lane
+    // FOLLOWER is nearly stopped (< ~0.5 m/s) AND ego's back bumper would land within MergeStoppedMinGap of
+    // it. FOLLOWER side ONLY -- merging BEHIND a stopped LEADER is joining the back of a queue (normal), and
+    // vetoing that would strand cars that must reach a queued turn lane. The same netto-gap convention as
+    // IsTargetLaneSafe's follower branch (ego back bumper - follower MinGap - follower pos); a negative gap
+    // (overlap) is < the floor and is vetoed too. Callers gate this on CooperativeInformFollower so it is
+    // active only where cooperation is (high realism).
+    private bool WouldCutInAheadOfStoppedFollower(VehicleRuntime ego, VehicleRuntime? neighFollow, double dt)
+    {
+        if (MergeStoppedMinGap <= 0.0 || neighFollow is null) return false;
+        if (neighFollow.Kinematics.Speed >= 0.5) return false;
+        var gap = (ego.Kinematics.Pos - ego.VType.Length) - neighFollow.VType.MinGap - neighFollow.Kinematics.Pos;
+        return gap < MergeStoppedMinGap;
     }
 
     // LANE-CHANGE-OVERLAP (docs/LANE-CHANGE-OVERLAP-DESIGN.md §3 Stage 1): SUMO's checkChange

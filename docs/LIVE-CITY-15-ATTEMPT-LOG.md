@@ -1001,3 +1001,88 @@ Parity **657/4** byte-identical + bench hash **`D96213B7BB4021A7`** -- both re-v
 1085, stuckInternal <=4) BECAUSE cooperation fires (coopAdvice 340); the guard ALONE (no coop) box-blocks
 (the control). The guard is GATED on cooperation, so `LIVECITY_COOP=0` correctly falls back to the cheap
 swap (working flow, float returns) -- the owner's "optionally OFF for low-realism" master switch.
+
+---
+
+# FOLLOW-UP: the "into-occupied" cut-ins (post-cooperative-LC residual)
+
+**Context.** After the cooperative-LC fix removed the pure-lateral float (keepRight stopped swaps 634->0),
+one residual remained on the owner's list: the rarer "into-occupied" cut-ins -- a car slots into the target
+lane close to a STANDING target-lane car. Owner framed it as "minor, can tighten later." This section is
+that tightening: solid repro, per-car analysis, a design, an implementation, a MEASURED failure, the
+re-analysis, and the shipped narrower fix.
+
+## Repro (identical to the cooperative-LC repro; deterministic, headless, no SUMO)
+```bash
+dotnet build src/Sim.Viewer -c Release
+LIVECITY_LCLOG=1 LIVECITY_WITNESS=1 LIVECITY_TELEPORT=0 LIVECITY_CARS=160 \
+  dotnet run --project src/Sim.Viewer -c Release --no-build -- --mode live-city --smoke --frames 2800 \
+  2>&1 | grep -E "LIVECITY-GRIDLOCK|LIVECITY-LCSWAP|LIVECITY-LCDETAIL"
+```
+`intoStoppedTgt` in LIVECITY-LCSWAP = a committed change with a target-lane neighbour (lead OR follow)
+within 20 m and nearly stopped (<0.5 m/s). That 20 m lumps together two very different things, so a TEMP
+diagnostic `LIVECITY-LCDETAIL` was added (Engine `_lcIntoStoppedDetail`, gated by DiagLaneChangeLog =>
+inert on goldens) that splits every stopped-neighbour commit by SIDE (lead vs follow) and GAP bucket
+(<2/<5/<10/<20 m). This is what turned "~28-70 cut-ins" into an actionable, precise picture.
+
+## Analysis (per-car, before touching anything) -- what the cut-ins ACTUALLY are
+Baseline LCDETAIL (t~1400, cumulative):
+```
+speedGain [lead <10=2 <20=2 | foll <5=11 <10=4]
+strategic [lead <10=3 <20=2 | foll <5=46 <10=2]
+keepRight [foll <5=3 <10=1 <20=1]
+```
+Findings, all verified in the per-car data:
+1. **Every into-occupied commit is by a MOVING changer** (LIVECITY-LCSWAP stop=0 across ALL paths). The
+   pure-lateral float is genuinely gone; these are forward+lateral diagonal merges -- the exact motion the
+   owner explicitly PERMITS ("forward+lateral, any speed incl. creeping, is fine").
+2. **The dominant pattern is FOLLOWER-side, gap 2-5 m** (strategic 46, speedGain 11, keepRight 3): a moving
+   ego slots in 2-5 m AHEAD of a STOPPED follower in the target lane. Lead-side tight is rare.
+3. **NOTHING lands within 2 m** of a stopped neighbour (all <2 buckets = 0). No car lands on top of another.
+4. **Root of the loophole:** `IsTargetLaneSafe` is a BRAKING-GAP check. A stopped follower needs ~no secure
+   gap, so the safety test passes no matter how close ego lands ahead of it -- that is precisely why a
+   stopped neighbour is the one that gets cut off.
+5. **Merging BEHIND a stopped LEADER is a normal queue-join**, not a cut-in -- must NOT be vetoed (doing so
+   would strand any car approaching the back of a stopped target-lane queue).
+
+## Design (docs/LIVE-CITY-15-INTO-OCCUPIED-DESIGN.md)
+Add `Engine.MergeStoppedMinGap` (double; 0 = OFF = byte-identical on every golden). When > 0, veto a commit
+that would put ego's back bumper within that absolute distance AHEAD of a nearly-stopped target-lane
+FOLLOWER (`WouldCutInAheadOfStoppedFollower`, same netto-gap convention as IsTargetLaneSafe's follower
+branch). FOLLOWER side only (never veto a behind-a-stopped-leader queue-join). Caller-gated on
+`CooperativeInformFollower` (high realism), so low-realism keeps the cheap tight merge. Demo default 5 m
+(covers the measured 2-5 m band), env `LIVECITY_MERGEGAP`.
+
+## Implementation ATTEMPT 1 -- veto ALL paths incl. strategic. RESULT: GRIDLOCK (rejected).
+Applied the veto at all four commit sites (speedGain, keepRight, strategic, overtake).
+- Cut-ins: `foll<5` -> **0** everywhere. The tightness genuinely vanished.
+- BUT flow COLLAPSED: `arrivals 1085 -> 361`, `stoppedFrac -> 1.00`, `meanSpd -> 0.00` by t~900. Full
+  terminal gridlock, cascading from ~t=400.
+- **Cause (same lesson as the keep-right-guard-alone failure):** the STRATEGIC path is a REQUIRED merge
+  (ego's lane must reach its turn). When the target turn lane is a SATURATED stopped queue, EVERY candidate
+  merge point is within the floor of a stopped follower -> the required change can NEVER commit -> ego
+  strands at the approach -> blocks its through lane -> #15 gridlock reforms. Vetoing a REQUIRED merge is
+  structurally the same mistake as suppressing the load-bearing keep-right sort. DeadLaneDriveThrough could
+  not outrun the cascade.
+
+## Re-analysis + Implementation ATTEMPT 2 (SHIPPED) -- veto the DISCRETIONARY paths only.
+Reverted the strategic veto; kept it on speedGain + keepRight only (overtake is EV give-way, measured 0).
+Rationale: a discretionary change that is declined simply leaves ego in its already-fine lane (zero strand
+risk), whereas a required strategic merge into a saturated queue IS the realistic queue-join and must be
+allowed. RESULT (verified first-hand):
+| metric | baseline | attempt-1 (all paths) | attempt-2 (discretionary only, SHIPPED) |
+|---|---|---|---|
+| arrivals @t~1400 | 1085 | 361 (GRIDLOCK) | **1060** (no regression) |
+| stoppedFrac late | 0.2-0.5 | 1.00 | **0.2-0.5** (healthy) |
+| speedGain foll<5 cut-ins | 11 | 0 | **0** (eliminated) |
+| keepRight foll<5 cut-ins | 3 | 0 | **0** (eliminated) |
+| strategic foll<5 cut-ins | 46 | 0 | 44 (LEFT -- required queue-joins) |
+Parity **657/4** byte-identical + bench hash **`D96213B7BB4021A7`** (parallel==single) re-verified first-hand.
+
+**Conclusion:** the gratuitous discretionary tight cut-ins (speedGain/keepRight, a moving car changing lane
+it did NOT have to, into a spot ahead of a standing car) are removed at zero flow cost. The remaining
+strategic follow-side merges are REQUIRED turn-lane queue-joins by a MOVING car (forward+lateral diagonal,
+never <2 m, owner-permitted) -- reducing them via a veto is proven to reform gridlock, so they are left as
+realistic forced merges. Next: investigate whether the strategic ones can be reduced *cooperatively*
+(urgency-gated deferral only where ample road remains to merge more cleanly) WITHOUT the strand -- separate,
+measured step; back off if it touches flow.
