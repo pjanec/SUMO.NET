@@ -786,3 +786,79 @@ FOLLOWER (gap otherwise fine), instead of bailing, have that follower brake to o
 changer merges into a genuinely free gap while moving => a physical diagonal, no float, and fewer wrong-
 lane cars needing the never-clamp reroute. Parity-safe (inert on every golden; gated by the same
 demo-only path). This supersedes any render-smoothing approach per rule #1.
+
+## LATERAL-SWAP / FLOAT — REPRO ESTABLISHED (headless, engine-proven) + how to reproduce
+Owner reported unrealistic lateral lane swaps in 3D: (1) a car standing at a red light "floats" sideways
+to the rightmost lane, and (2) swaps into an already-occupied lane. Analysis instrumentation
+(`Engine.DiagLaneChangeLog`, `LIVECITY-LCSWAP`, env `LIVECITY_LCLOG=1`) records every EXECUTED lane change
+by path + the changer's own speed at execution + whether a target-lane car within 20 m is stopped.
+
+### How to reproduce (headless, deterministic, no SUMO)
+```bash
+dotnet build src/Sim.Viewer -c Release
+LIVECITY_LCLOG=1 LIVECITY_WITNESS=1 LIVECITY_TELEPORT=0 LIVECITY_CARS=160 \
+  dotnet run --project src/Sim.Viewer -c Release --no-build -- --mode live-city --smoke --frames 2000 \
+  2>&1 | grep "LIVECITY-LCSWAP"
+```
+`LIVECITY-LCSWAP` columns per path (overtake/speedGain/strategic/keepRight):
+`[stop=<changer speed<0.5>, slow=<0.5-2>, move=<>=2>, intoStoppedTgt=<commits with a stopped target car <20m>]`.
+NOTE the counter records EXECUTED swaps: for the 3 paths that go through `CommitLaneChange` it applies the
+same `LaneChangeMinSpeed` suppression; keep-right (which commits INLINE) bypasses it -- so `bypassesMinSpeed`
+is true only for keep-right.
+
+### Result (t~1000 s) — PROVES the engine does stopped lateral swaps, and localizes them to KEEP-RIGHT
+```
+overtake  [stop=0,  slow=0,  move=0,    intoStoppedTgt=0]
+speedGain [stop=0,  slow=10, move=180,  intoStoppedTgt=1]
+strategic [stop=0,  slow=10, move=1691, intoStoppedTgt=8]
+keepRight [stop=448,slow=83, move=950,  intoStoppedTgt=19]
+```
+- **keep-right is the ONLY path that swaps while the car is STOPPED (448) or crawling (83)** = the owner's
+  "standing car floats to the rightmost lane". speedGain/strategic/overtake execute ZERO stopped swaps
+  (their `CommitLaneChange` path suppresses below `LaneChangeMinSpeed`=1.5 AND uses the held continuous
+  maneuver, so their flips only happen while moving -> a physical DIAGONAL, not a float).
+- **WHY keep-right:** `ApplyKeepRightDecision` (`Engine.cs` ~10822-10843) commits INLINE (sets `LaneHandle`
+  directly, NOT via `CommitLaneChange`) for a determinism/ordering reason (the same-iteration speed-gain
+  re-read). Consequence: it bypasses BOTH (a) the `LaneChangeMinSpeed` stopped-car suppression and (b) the
+  continuous maneuver -> an INSTANT lane flip while stopped -> the DR renders it as a pure-lateral float.
+- **Swaps into an occupied (stopped-target) lane** are real but rare: keepRight 19, strategic 8, speedGain
+  1 -- "safe" braking-gap cut-ins that slot in near a standing car (IsTargetLaneSafe is a braking-gap check,
+  not an "empty lane" check, so a stopped follower needs ~no gap).
+- My earlier "the engine enforces lane-change safety" was INCOMPLETE: all paths enforce gap SAFETY, but
+  keep-right alone skips the moving-only/maneuver discipline. Owner was right that the engine does the swap.
+
+### Fix (this session, below): route keep-right through the same moving-only discipline
+Apply the `LaneChangeMinSpeed` guard to the inline keep-right commit so a stopped/crawling car never
+keep-right-swaps (it only does so while moving -> forward+lateral diagonal, per the owner's physical rule).
+Parity-safe: inert when `LaneChangeMinSpeed==0` (every golden). The rarer into-occupied cut-in is a
+separate, smaller follow-up (a demo-gated minimum-clear-gap veto; cooperative gap-opening for the genuine
+must-merge case).
+
+## FIX ATTEMPT 1 (keep-right moving-only guard) — REVERTED: breaks flow (the stopped swap is load-bearing)
+Applied the LaneChangeMinSpeed guard to the inline keep-right commit (suppress keep-right while
+stopped/slow). RESULT: it DOES eliminate the stopped swaps (`keepRight stop=448 -> 0`, parity 657/4), BUT
+it REINTRODUCES the gridlock:
+| metric (cap 160, teleport off) | never-clamp (working) | + keep-right guard |
+|---|---|---|
+| arrivals @ ~t=1000-1380 | 1025 | **458 (flat)** |
+| stoppedFrac late | 0.2-0.5 | **0.98** |
+| stuckInternal (box-block) | 0-3 | **37-42** |
+| strandedDeadEnd | 0 | 0 (NOT a strand problem) |
+Mechanism: the stopped keep-right swap was SORTING cars into junction-compatible (right) lanes while they
+queued; suppressing it leaves cars in the wrong (left/inner) lane, so they enter junctions from a lane
+whose connection dumps them onto an internal lane they then can't clear -> box-blocking (`stuckInternal`
+0->42) -> gridlock. So the demo's throughput currently DEPENDS on this physically-unrealistic
+stopped lane-sort. Reverted the guard.
+
+### The genuine conflict (owner decision needed)
+Owner rule "no pure-lateral swap" vs owner priority "no gridlock" are in DIRECT tension here: the engine's
+flow relies on cars re-sorting lanes while stopped in queues. A scoped guard cannot satisfy both. The real
+cure is one of:
+- **(A) Couple lateral to forward (physical diagonals) AND port "don't enter a junction you can't clear"
+  (checkRewindLinkLanes).** Then cars need not sort while stopped (they don't box-block), and any change
+  is a moving diagonal. Biggest, most SUMO-faithful; real engine work.
+- **(B) Upstream cooperative/earlier lane sorting** so cars reach the correct lane WHILE MOVING before the
+  queue forms (LC2013 cooperative informFollower / revived CoopSpeedAdvice), removing the need for the
+  stopped sort. Also a real feature.
+- **(C) Accept the stopped keep-right as a demo compromise** (flow over realism) until (A)/(B) land.
+Recommendation: (A) or (B); both are multi-step design-first efforts. NOT a one-line guard.
