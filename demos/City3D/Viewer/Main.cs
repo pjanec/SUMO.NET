@@ -1616,8 +1616,9 @@ public partial class Main : Node3D
         // also read the name directly from LiveCitySim ... without the wire"). Entries are never removed,
         // so a car that despawns between this frame and a later click still resolves to its last-known name
         // rather than the raw handle.
-        var snap = _liveCitySource.Sample();
-        foreach (var car in snap.Cars)
+        // Cars-only readback (SampleCars, reused buffer) -- NOT Sample(), which also materialises the whole
+        // ped crowd every frame (the dominant GC pressure at large LIVECITY_PEDS; only Cars is used here).
+        foreach (var car in _liveCitySource.SampleCars())
         {
             _vehicleNames[car.Handle] = car.Name;
         }

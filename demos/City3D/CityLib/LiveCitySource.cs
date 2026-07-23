@@ -85,6 +85,10 @@ public sealed class LiveCitySource : IDisposable
     // the pre-D4 convenience accessor; callers that need both cars and peds this frame should prefer this.
     public LiveCitySnapshot Sample() => _sim.Sample();
 
+    // Cars-only readback into a reused buffer -- for the per-frame vehicle name/pose table without paying
+    // to materialise the whole ped crowd every frame (the GC-pressure fix at large LIVECITY_PEDS).
+    public IReadOnlyList<LiveCityCar> SampleCars() => _sim.SampleCars();
+
     // Advances the coupled sim one Dt=0.5s tick (LiveCityConfig.Dt) and publishes the resulting frame onto
     // the car wire (LiveCitySim.Step()'s own responsibility) -- mirrors SimSource.Tick()'s one-line shape.
     public void Tick() => _sim.Step();

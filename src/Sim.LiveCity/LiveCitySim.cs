@@ -431,6 +431,27 @@ public sealed class LiveCitySim : IDisposable
         return count;
     }
 
+    // Cars-only readback into a REUSED buffer, for callers that need just the vehicle Handle->Name/pose
+    // table every frame (e.g. the viewer's click-select name map) and must NOT pay to materialise the whole
+    // ped crowd. Sample() below builds a fresh cars+peds snapshot each call -- at a large LIVECITY_PEDS that
+    // per-frame ped-list allocation is the dominant GC pressure (measured), so this avoids it entirely.
+    private readonly List<LiveCityCar> _carSampleScratch = new();
+    public IReadOnlyList<LiveCityCar> SampleCars()
+    {
+        _carSampleScratch.Clear();
+        for (var i = 0; i < _lastSnapshot.Count; i++)
+        {
+            var x = _lastSnapshot.PosX[i];
+            var y = _lastSnapshot.PosY[i];
+            if (x < _x0 || x > _x1 || y < _y0 || y > _y1) continue;
+            _carSampleScratch.Add(new LiveCityCar(
+                _lastSnapshot.Handles[i], x, y, _lastSnapshot.PosZ[i], _lastSnapshot.Angle[i],
+                _lastSnapshot.Length[i], _lastSnapshot.Width[i], _lastSnapshot.VehicleId[i]));
+        }
+
+        return _carSampleScratch;
+    }
+
     // Reads back one frame of the coupled scene: cars from the last captured snapshot (crop-filtered),
     // peds from the demand's live ids (crop-filtered), and the crossing-occupancy peak.
     public LiveCitySnapshot Sample()
