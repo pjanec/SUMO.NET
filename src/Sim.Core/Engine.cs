@@ -1974,6 +1974,9 @@ public sealed partial class Engine : IEngine
     // priority bit. Meaningful only where BindingConstraints[i] == 10 (junctionYield).
     public ReadOnlySpan<byte> JunctionYieldArms => _readBuffer.JunctionYieldArm.AsSpan(0, _readBuffer.Count);
 
+    // DIAGNOSTIC (#15): the bound junction foe's speed (m/s; -1 none). Meaningful where a foe arm bound.
+    public ReadOnlySpan<float> JunctionYieldFoeSpeeds => _readBuffer.JunctionYieldFoeSpeed.AsSpan(0, _readBuffer.Count);
+
     // Per-vehicle generation for VehicleHandle staleness, indexed by EntityIndex. Presently a constant 1
     // (no vehicle slot is recycled yet); grown lazily off the hot creation path. When runtime despawn
     // lands it is bumped per-slot so a handle held across a despawn goes stale (TryGetVehicle rejects it).
@@ -2207,7 +2210,7 @@ public sealed partial class Engine : IEngine
             _readBuffer.Add(handle, v.EntityIndex, v.Def.Id, v.VType.Id,
                 v.LaneHandle, nextLane, prevLane, laneWindow, v.LaneId, v.Kinematics.Pos, v.Kinematics.Speed, v.Acceleration, v.Kinematics.LatOffset,
                 (float)x, (float)y, (float)z, (float)angle, (float)v.VType.Length, (float)v.VType.Width,
-                (byte)RegimeOf(v), v.LateralManoeuvre, v.BindingConstraint, v.JunctionYieldArm);
+                (byte)RegimeOf(v), v.LateralManoeuvre, v.BindingConstraint, v.JunctionYieldArm, v.JunctionYieldFoeSpeed);
         }
 
         DetectLifecycleEvents();
@@ -4941,6 +4944,7 @@ public sealed partial class Engine : IEngine
         // 12 obstacle, 13 crowd.
         byte binder = 0;
         double dc;
+        if (!prePass) v.JunctionYieldFoeSpeed = -1f; // diag (#15): reset; JunctionYieldConstraint sets it iff a foe arm binds
 
         // Leader car-following (MSCFModel_Krauss.cpp followSpeed -> MSCFModel.cpp
         // maximumSafeFollowSpeed): the REAL formula our resolved carFollowModel="Krauss"
@@ -6976,7 +6980,7 @@ public sealed partial class Engine : IEngine
             }
 
             constraint = Math.Min(constraint, thisConstraint);
-            if (constraint < jyBest) { jyBest = constraint; jyArm = thisArm; } // diag: on-junction / approaching
+            if (constraint < jyBest) { jyBest = constraint; jyArm = thisArm; if (!prePass) v.JunctionYieldFoeSpeed = (float)foe.Kinematics.Speed; } // diag: on-junction / approaching + foe speed
         }
 
         if (!prePass)

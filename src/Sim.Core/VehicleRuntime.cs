@@ -145,6 +145,11 @@ internal sealed class VehicleRuntime
     // 6 approachingCross) plus bit 0x80 = the ego link held a protected-green signal priority. Never read
     // by sim logic.
     public byte JunctionYieldArm;
+
+    // DIAGNOSTIC ONLY (#15): the speed (m/s) of the junction foe that bound this vehicle via
+    // JunctionYieldConstraint's foe arms (-1 = no foe arm bound this step). Tells a moving foe (real
+    // cross traffic -> legitimate wait) from a ~0 foe (a car stopped ON the junction -> box block).
+    public float JunctionYieldFoeSpeed = -1f;
     public bool KeepRightStaySuppress;
 
     // Turn-lane segregation fix (docs/GETBESTLANES-RESUME.md follow-up): the position-INDEPENDENT

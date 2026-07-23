@@ -234,6 +234,37 @@ compare our minor-movement / clearance discharge to SUMO on ONE saturated juncti
 per-junction throughput diff) to localize whether impatience/gap-acceptance or clearance timing is the
 gap — then design-first. This is a genuinely harder, subtler target than a one-line RoW gate.
 
+## 2026-07-23 — COMPREHENSIVE per-car dump of every "stuck with clear road": no phantom, no bug
+Owner: dump ALL cars stuck-with-clear-road and record full status to find what's wrong. Added the bound
+junction foe's SPEED (`VehicleRuntime.JunctionYieldFoeSpeed`) and a `LIVECITY-STUCKCLEAR` dump: every car
+with speed<0.3 AND own-lane gap>15 AND exit-mouth>15, broken down by binding constraint, and — for the
+junction-yield foe arms — the bound foe's speed bucket. **Parity 657/4 byte-identical; bench hash
+unchanged.** Result (`LIVECITY_CARS=300`, per interval):
+```
+byBinder: freeFlow=34-50  redLight=11-19  deadLaneMerge=6-8  junctionYield=2-17  leaderFollow=1-3
+JYfoe:    moving=ALL      slow=0          stopped=0          none=0-1
+```
+Reading each group with full per-car lines:
+- **`freeFlow` (the LARGEST group) are NOT stuck** — they are cars ACCELERATING away from a stop this
+  step (bound by their own desired speed = free to go). The speed<0.3 filter caught momentarily-slow
+  movers. Example lines confirm `tlLane=r` cars pulling away as their phase releases.
+- **`redLight`** = legitimately stopped at a red phase (`tlLane=r`). Normal.
+- **`junctionYield`** = yielding to a foe that is **MOVING** in EVERY case (foeSpd 1.3, 2.6, 7.94, 13.89
+  m/s; **stopped=0, none≈0**). So it is REAL cross traffic crossing the junction — NOT a phantom foe,
+  NOT a stopped foe blocking the box, NOT a stale detection. `egoPrio=-` confirms these are minor
+  movements (correctly yielding).
+- **`deadLaneMerge`** = a handful braking for a wrong-lane/dead-lane (GAP-1); the only "improvable"
+  engine-behaviour signal, and small.
+
+**DEFINITIVE CONCLUSION:** there is NO "stuck on green with a clear road" bug. A green car that is
+genuinely stopped is **correctly yielding to real, moving cross traffic** on the junction (its OWN road
+is clear; the perpendicular movers are what hold it — invisible looking down the ego's road). Therefore
+we CANNOT simply "detect and unblock" per-step: forcing such a car forward drives it through active
+cross traffic (a collision). The only safe unblock is an **escape valve that fires after a long wait**
+(SUMO's teleport / time-to-teleport), by which time the situation is a genuine deadlock, not an active
+yield. The residual ~26% vs SUMO is saturation standoffs SUMO breaks with teleport (+ its impatient
+gap-forcing) — behaviours we largely have EXCEPT teleport.
+
 ## Retired-machinery note (shelved, for the record — NOT to build now)
 Mechanism-gathering found the follower-cooperation channel was already built and RETIRED in `afec614`
 ("Retire the cooperative informFollower"): `VehicleRuntime.CoopSpeedAdvice` (+∞ default) +

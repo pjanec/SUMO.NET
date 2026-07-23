@@ -1311,17 +1311,44 @@ static int RunLiveCitySmoke(int steps, string? recordPath, int simHz)
                     }
                     Console.Write(" || JYarm:");
                     for (var a = 0; a < 7; a++) if (armCount[a] > 0) Console.Write($" {armNames[a]}={armCount[a]}(prio{armPrio[a]})");
-                    Console.Write(" | examples:");
-                    var shown = 0;
+                    Console.WriteLine();
+
+                    // COMPREHENSIVE (owner request): analyze EVERY car stuck with a CLEAR road (speed<0.3,
+                    // own-lane gap>15 AND exit-mouth>15), whatever its TL. Break down by binding constraint;
+                    // for the junction-yield foe arms, bucket the bound FOE's speed (moving cross traffic vs a
+                    // stopped foe on the junction vs no-foe), and dump full status for the first several so the
+                    // pattern is unambiguous.
+                    var clearStuck = 0; var byBinder = new int[14];
+                    var foeMoving = 0; var foeSlow = 0; var foeStopped = 0; var foeNone = 0;
+                    var dumped = 0;
+                    var sb = new System.Text.StringBuilder();
                     foreach (var c in w)
                     {
-                        if (shown >= 4 || c.Speed >= 0.3 || !(c.Tl is 'G' or 'g') || c.GapAhead <= 15.0) continue;
-                        var gapStr = double.IsPositiveInfinity(c.GapAhead) ? "inf" : c.GapAhead.ToString("F0");
-                        var mouthStr = double.IsPositiveInfinity(c.NextMouthGap) ? "inf" : c.NextMouthGap.ToString("F0");
-                        Console.Write($" [{c.LaneId} pos={c.Pos:F1} spd={c.Speed:F2} tlLinks={c.TlLinks} gap={gapStr} exitMouth={mouthStr}]");
-                        shown++;
+                        if (c.Speed >= 0.3 || !(c.GapAhead > 15.0 && c.NextMouthGap > 15.0)) continue; // road clear ahead
+                        clearStuck++;
+                        if (c.Binder < 14) byBinder[c.Binder]++;
+                        if (c.Binder == 10)
+                        {
+                            if (c.JyFoeSpeed < 0f) foeNone++;
+                            else if (c.JyFoeSpeed < 0.1f) foeStopped++;
+                            else if (c.JyFoeSpeed < 1.0f) foeSlow++;
+                            else foeMoving++;
+                        }
+                        if (dumped < 8)
+                        {
+                            var arm = c.JyArm & 0x0F; var prio = (c.JyArm & 0x80) != 0 ? "G" : "-";
+                            var gapS = double.IsPositiveInfinity(c.GapAhead) ? "inf" : c.GapAhead.ToString("F0");
+                            var mouthS = double.IsPositiveInfinity(c.NextMouthGap) ? "inf" : c.NextMouthGap.ToString("F0");
+                            sb.Append($"  CAR {c.LaneId} pos={c.Pos:F1} tlLane={c.TlLinks} bind={binderNames[Math.Min(c.Binder,(byte)13)]}");
+                            if (c.Binder == 10) sb.Append($" arm={armNames[Math.Min(arm,6)]} egoPrio={prio} foeSpd={c.JyFoeSpeed:F2}");
+                            sb.Append($" gap={gapS} exitMouth={mouthS}\n");
+                            dumped++;
+                        }
                     }
-                    Console.WriteLine();
+                    Console.Write($"LIVECITY-STUCKCLEAR: t={sim.Time,4:F0} clearStuck={clearStuck} byBinder:");
+                    for (var b = 0; b < 14; b++) if (byBinder[b] > 0) Console.Write($" {binderNames[b]}={byBinder[b]}");
+                    Console.WriteLine($" | JYfoe: moving={foeMoving} slow={foeSlow} stopped={foeStopped} none={foeNone}");
+                    Console.Write(sb.ToString());
                 }
             }
         }
