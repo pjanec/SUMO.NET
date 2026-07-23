@@ -959,3 +959,45 @@ Landing order: the INITIAL cooperative-LC implementation ships the GLOBAL master
 the demo, off for parity) -- correct and sufficient to prove the mechanism. The AUTOMATIC per-area
 high/low-realism fallback (point 2) is the immediate follow-up so distant/off-screen cars auto-take the
 cheap path for performance while on-screen cars never float.
+
+## HOW WE MEASURE IF COOPERATIVE LC "WORKS" (acceptance criteria) + VERIFIED RESULTS
+All headless, deterministic, no SUMO. Repro:
+```bash
+LIVECITY_LCLOG=1 LIVECITY_WITNESS=1 LIVECITY_TELEPORT=0 LIVECITY_CARS=160 \
+  dotnet run --project src/Sim.Viewer -c Release --no-build -- --mode live-city --smoke --frames 2800 \
+  2>&1 | grep -E "LIVECITY-GRIDLOCK:|LIVECITY-LCSWAP|LIVECITY-WITNESS:"
+```
+Cooperative LC is accepted ONLY if ALL of these hold (each targets a distinct failure mode):
+
+1. **Parity/bench gate (regression guard).** `dotnet test tests/Sim.ParityTests -c Release` = **657/4**
+   byte-identical AND `Sim.Bench` `deterministic=True`, `parallel==single`, hash **`D96213B7BB4021A7`**.
+   Proves the change is parity-safe (engine flags OFF on every golden => inert). A change that breaks this
+   is rejected regardless of how good the demo looks.
+2. **Float eliminated (the fix).** `LIVECITY-LCSWAP keepRight stop == 0`. The stopped keep-right swaps are
+   the MEASURED source of the pure-lateral float (they were the only path swapping at speed<0.5); zero of
+   them = the float is gone.
+3. **Cooperation actually FIRES (mechanism alive, not dead code).** `LIVECITY-LCSWAP coopAdvice > 0` and
+   GROWING. The strategic informFollower increments `Engine.CoopAdviceIssued` each time it issues a
+   gap-opening advice. A test that "passes" with coopAdvice=0 is a no-op passing by accident, NOT a working
+   cooperative LC -- this metric is what distinguishes "cooperation did the work" from "something else did".
+4. **Flow preserved -- NO gridlock/box-block regression (must-not-break).** From `LIVECITY-GRIDLOCK` +
+   `LIVECITY-WITNESS`: `arrivals` climbs (>= ~900 by t~1380; baseline ~1025, not flatlined); late
+   `stoppedFrac <= ~0.5` (not pinned near 1.0 = terminal); `stuckInternal` small (<= ~5, NOT the 37-50
+   box-block the naive guard-alone caused).
+5. **A/B control isolates cooperation as the CAUSE (not coincidence).** Compare THREE configs on the
+   identical demand: (a) naive guard WITHOUT coop = the failure control; (b) coop OFF (`LIVECITY_COOP=0`)
+   = cheap-swap fallback; (c) coop ON + guard = shipped. Only if (c) fixes the float AND keeps the flow
+   that (a) destroyed is cooperation proven load-bearing.
+
+### VERIFIED RESULTS (first-hand this session; not the subagent's report -- re-run by the orchestrator)
+| config | arrivals @t~1400 | keepRight stop | stuckInternal | coopAdvice | stoppedFrac late |
+|---|---|---|---|---|---|
+| baseline (never-clamp, pre-coop) | 1025 | 634 (FLOAT present) | 0-3 | n/a | 0.2-0.5 |
+| naive guard ALONE (coop off, guard on) — FAILURE CONTROL | 458 (terminal) | 0 | **50 (box-block)** | 0 | 1.00 |
+| coop OFF (LIVECITY_COOP=0; guard gated off) — LOW-REALISM FALLBACK | ~1000 (879@t1200) | present | small | 0 | 0.2-0.5 |
+| **coop ON + guard (SHIPPED default)** | **1085** | **0** | **0-4** | **340 (fires)** | **0.42** |
+Parity **657/4** byte-identical + bench hash **`D96213B7BB4021A7`** -- both re-verified first-hand.
+=> Cooperative LC WORKS: it removes the float (keepRight stop 634->0) AND preserves/improves flow (1025->
+1085, stuckInternal <=4) BECAUSE cooperation fires (coopAdvice 340); the guard ALONE (no coop) box-blocks
+(the control). The guard is GATED on cooperation, so `LIVECITY_COOP=0` correctly falls back to the cheap
+swap (working flow, float returns) -- the owner's "optionally OFF for low-realism" master switch.

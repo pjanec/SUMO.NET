@@ -1339,6 +1339,9 @@ static int RunLiveCitySmoke(int steps, string? recordPath, int simHz)
                         Console.Write("LIVECITY-LCSWAP(cumulative):");
                         for (var p = 0; p < 4; p++)
                             Console.Write($" {pathNames[p]}[stop={lcBy[p * 3]},slow={lcBy[p * 3 + 1]},move={lcBy[p * 3 + 2]},intoStoppedTgt={lcNear[p]}]");
+                        // #15 cooperative-LC diagnostic: how many strategic-path informFollower advices have
+                        // fired (cumulative). >0 confirms cooperation is actually sorting cars up-front.
+                        Console.Write($" coopAdvice={sim.CoopAdviceIssued}");
                         Console.WriteLine();
                     }
 

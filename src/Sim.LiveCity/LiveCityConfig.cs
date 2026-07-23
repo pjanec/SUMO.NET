@@ -75,6 +75,15 @@ public sealed class LiveCityConfig
     // leaves the underlying Engine property false (byte-identical). Overridable via LIVECITY_WRONGLANE.
     public bool WrongLaneRerouteAtApproach { get; set; } = true;
 
+    // docs/LIVE-CITY-15-COOPERATIVE-LC-DESIGN.md: cooperative lane change -- when a car needs a lane a
+    // neighbour occupies, the neighbour (follower) eases off (one gentle helpDecel step) to open a gap
+    // instead of the car stalling/floating. Sets BOTH Engine.CoordinatedLaneChange and
+    // Engine.CooperativeInformFollower. Default ON for the demo (a saturated grid, the good case for this
+    // mechanism -- see CooperativeInformFollower's own header comment for why it is organic-net poison
+    // but saturated-grid medicine); every parity/bench scenario leaves both underlying Engine properties
+    // false (byte-identical). Overridable via LIVECITY_COOP (0 = off).
+    public bool CooperativeLaneChange { get; set; } = true;
+
     public int CarSpawnPerStep { get; set; } = 5;
 
     // step-length 0.5 == the ped/frame Dt, so cars and peds advance the same sim-time per Step().
@@ -157,6 +166,14 @@ public sealed class LiveCityConfig
         if (driveThroughEnv != null)
         {
             cfg.DeadLaneDriveThrough = driveThroughEnv != "0";
+        }
+
+        // LIVECITY_COOP: cooperative lane change (Engine.CoordinatedLaneChange + CooperativeInformFollower).
+        // Only overrides when explicitly set.
+        var coopEnv = Environment.GetEnvironmentVariable("LIVECITY_COOP");
+        if (coopEnv != null)
+        {
+            cfg.CooperativeLaneChange = coopEnv != "0";
         }
 
         // LIVECITY_HZ: same env-knob convention as LIVECITY_CARS/LCMIN above, expressed in Hz (via

@@ -218,6 +218,10 @@ public sealed class LiveCitySim : IDisposable
         _engine.JunctionYieldTimeoutSeconds = cfg.JunctionYieldTimeoutSeconds;
         _engine.DeadLaneDriveThrough = cfg.DeadLaneDriveThrough;
         _engine.WrongLaneRerouteAtApproach = cfg.WrongLaneRerouteAtApproach;
+        // docs/LIVE-CITY-15-COOPERATIVE-LC-DESIGN.md: cooperative lane change -- both flags gate together,
+        // the informFollower is inert unless CoordinatedLaneChange is also on.
+        _engine.CoordinatedLaneChange = cfg.CooperativeLaneChange;
+        _engine.CooperativeInformFollower = cfg.CooperativeLaneChange;
         _engine.DiagSeqDesync = Environment.GetEnvironmentVariable("LIVECITY_SEQDESYNC") == "1"; // #15 prong-1
         _engine.DiagLaneChangeLog = Environment.GetEnvironmentVariable("LIVECITY_LCLOG") == "1"; // #15 float/swap analysis
         _vtype = _engine.DefineVType(new VTypeParams { VClass = "passenger", Sigma = 0.0 });
@@ -300,6 +304,11 @@ public sealed class LiveCitySim : IDisposable
     // and, per path, commits where a target-lane car <20m is stopped (swap into an occupied stretch).
     public System.ReadOnlySpan<long> LaneChangeByPathChangerSpeed => _engine.LaneChangeByPathChangerSpeed;
     public System.ReadOnlySpan<long> LaneChangeTargetNearStopped => _engine.LaneChangeTargetNearStopped;
+
+    // #15 cooperative-LC diagnostic passthrough: cumulative count of SpeedAdvice writes issued from the
+    // STRATEGIC informFollower path (Engine.TryStrategicLaneChange). >0 confirms cooperation actually
+    // fires; 0 on every parity/bench golden (both underlying Engine flags default false there).
+    public long CoopAdviceIssued => _engine.CoopAdviceIssued;
 
     // DIAGNOSTIC (#15 SUMO cross-check): when non-null, every successful car spawn is appended here
     // (departTime, fromEdge, toEdge) so the exact procedural demand can be exported to a SUMO .rou.xml
