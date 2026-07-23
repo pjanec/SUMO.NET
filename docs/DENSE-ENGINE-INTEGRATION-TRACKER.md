@@ -12,7 +12,7 @@ conflict-free, carries the branch's parity-tested test updates + dedicated tests
       hash **D96213B7BB4021A7 UNCHANGED**
 - [x] **#15 gridlock A/B** — @160: arrivals 38→**81**, end stoppedFrac 0.75→**0.38**, jam-and-recover;
       @70: arrivals 16→**36**, end stoppedFrac 0.82→**0.50** (meets success conditions)
-- [ ] **Commit + push** the merge (fetch+rebase-merges first)
+- [x] **Commit + push** the merge (merge commit `184fb31`, pushed to the live-city line)
 
 ## Follow-on (already landed by the merge, no separate task)
 - [x] **T7** — the branch's dedicated parity tests (`DenseFlowDeadLaneDrainTests`,
