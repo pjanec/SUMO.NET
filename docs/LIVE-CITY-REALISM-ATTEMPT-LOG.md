@@ -126,3 +126,19 @@ smooth AND mobile-friendly (718 frames, 4.8 MB vs 8 MB at 10 Hz). Sim.Viz now re
 `Sim.Viewer.Motion` + `Sim.LiveCity`; engine/goldens untouched (full build green, `Sim.LiveCity.Tests`
 23/23). near-collision RATE unchanged (129/3582 = 3.6% vs 43/1197 = 3.6% → defect #1 intact). **The HTML now
 shows the SAME DR-smoothed motion as the demos.**
+
+### DR replay CORRECTED per docs/IGBRIDGE-HTML-REPLAY-GUIDE.md (vendored from the poc branch)
+First DR attempt was wrong on the guide's headline gotchas — cars "wildly dancing", peds "caterpillar":
+- **§5.1 (the #1 cause):** emitted a 3-tuple without `useDataHeading`, so the player drew the jittery PATH
+  TANGENT, not the kinematic heading → "wildly dancing". FIX: added `ScenePayload.UseDataHeading`
+  (serialized camelCase → `scene.useDataHeading`), emit a **5-tuple `[x,y,headingDeg,len,wid]`**, set true.
+- **§5.4:** emitted the FRONT (`SmoothedFront`), not the **CENTER** (the IG pivot). FIX: emit
+  `result.CenterX/CenterY` + `result.HeadingDeg` + true per-vehicle dims.
+- **§5.3:** the look-ahead uses the engine's **UpcomingLanes** DR prediction (already carried on
+  `VehicleSource` history records) — anticipates junction turns.
+- **PEDS (not in the guide — my caterpillar):** was `LiveCitySim.SamplePedsAt(tau)` = querying the manager's
+  CURRENT arc at a LAGGED tau → fast-then-slow. FIX: reconstruct off the ped WIRE via
+  `PedRemoteReconstructor(sim.PedSource)` (`Pump(tau+pedDelay)` → `TryGetRenderPose`) — the analytic
+  PathArc/ActivityTimeline playout the viewers use, no tick kink. (Removed the SamplePedsAt approach.)
+Result: 796 frames, 5.7 MB, `useDataHeading` in the JSON, build green. Awaiting owner visual confirm; once
+confirmed, add a PED section to IGBRIDGE-HTML-REPLAY-GUIDE.md (owner request).

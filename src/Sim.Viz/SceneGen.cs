@@ -2377,7 +2377,7 @@ internal static class SceneGen
     // "same settings/data/params, no cheating"). Ped colour = the demo's own LOD regime (grey low-power /
     // orange promoted-ORCA / yellow paused). The camera-driven zone defaults to the static crop-centre
     // pocket here (no camera in a headless run) -- the demo's non-interactive baseline.
-    internal static ScenePayload BuildLiveCityDemo(string repoRoot, int steps = 240)
+    internal static ScenePayload BuildLiveCityDemo(string repoRoot, int steps = 160)
     {
         var cfg = LiveCityConfig.ForRepoRoot(repoRoot);
         var netPath = Path.Combine(cfg.DatasetDir, "net.xml");
@@ -2398,21 +2398,31 @@ internal static class SceneGen
         // render rate. So junction turns render as continuous arcs and lane changes glide -- no facet-snaps,
         // no instant lateral jumps. Peds are sampled at the SAME render instants (their DR is continuous in
         // time). Net: the HTML shows the SAME smoothed motion as the demos.
-        const double RenderHz = 6.0;                  // DR-reconstructed samples; the player Catmull-Rom
-                                                      // interpolates between them, so 6 Hz is smooth AND
+        const double RenderHz = 10.0;                 // DR-reconstructed samples; the player Catmull-Rom
+                                                      // interpolates between them, so 10 Hz is smooth AND
                                                       // mobile-friendly in file size (vs 30/60 Hz emit)
         var renderDt = 1.0 / RenderHz;
-        var delay = cfg.Dt;                           // one-step playout -> query instant sits between the two
-                                                      // newest samples (DrClock INTERPOLATE branch, arc turns)
+        var delay = cfg.Dt;                           // one-step vehicle playout -> query instant sits between
+                                                      // the two newest samples (DrClock INTERPOLATE branch)
         var drClock = new DrClock();
+        // Draw the EMITTED kinematic heading, not the path tangent (IGBRIDGE-HTML-REPLAY-GUIDE.md §5.1) and
+        // the vehicle CENTER, not the front (§5.4); the reconstruction's UpcomingLanes look-ahead anticipates
+        // junction turns (§5.3, the engine's DR prediction, carried on VehicleSource's history records).
         var recon = new KinematicReconstructor { CoarseFeed = true };
         var lanes = sim.LocalLanes;
+
+        // PEDS: reconstruct off the ped replication WIRE, exactly as the viewers do (Program.RunLiveCity ->
+        // PedRemoteReconstructor). HeadlessIg.ReconstructSample evaluates each ped's PathArc/ActivityTimeline
+        // leg as an analytic function of time at ANY render instant -- no tick-boundary kink. This replaces
+        // the earlier LiveCitySim.SamplePedsAt(tau) approach, which queried the manager's CURRENT arc at a
+        // lagged tau and produced the "caterpillar" (fast-then-slow) motion.
+        var pedRecon = new PedRemoteReconstructor(sim.PedSource);
+        var pedDelay = PedRemoteReconstructor.DefaultPlayoutDelaySeconds; // reconstructor renders at server-delay
 
         var slotByHandle = new Dictionary<uint, int>();
         var frames = new List<FramePayload>();
         var discsKeyedPerFrame = new List<List<(string Key, double[] Disc)>>();
         var lastTauByHandle = new Dictionary<uint, double>();
-        var pedScratch = new List<LiveCityPed>();
 
         var simTime = 0.0;   // sim clock (= LiveCitySim._now after each Step)
         var tau = 0.0;       // render query instant on the sim timeline, advanced at RenderHz
@@ -2426,8 +2436,8 @@ internal static class SceneGen
             var target = simTime - delay;
             while (tau <= target + 1e-9)
             {
-                // --- vehicles: DR-reconstructed continuous pose at tau (front bumper = SUMO's pose point) ---
-                var poses = new List<(uint Idx, double X, double Y, double Deg)>();
+                // --- vehicles: DR-reconstructed CENTER + emitted body HEADING at tau (5-tuple w/ true dims) ---
+                var poses = new List<(uint Idx, double X, double Y, double Deg, double Len, double Wid)>();
                 foreach (var kv in sim.VehicleSource.History)
                 {
                     var history = kv.Value;
@@ -2439,27 +2449,26 @@ internal static class SceneGen
                     var result = recon.Resolve(handle, resolved, lanes, dims, (float)realDt);
                     lastTauByHandle[handle.Index] = tau;
                     if (!result.Ok) continue;
-                    if (!In(result.SmoothedFrontX, result.SmoothedFrontY)) continue;
+                    if (!In(result.CenterX, result.CenterY)) continue;
                     if (!slotByHandle.ContainsKey(handle.Index)) slotByHandle[handle.Index] = slotByHandle.Count;
-                    poses.Add((handle.Index, result.SmoothedFrontX, result.SmoothedFrontY, result.HeadingDeg));
+                    poses.Add((handle.Index, result.CenterX, result.CenterY, result.HeadingDeg, dims.Item1, dims.Item2));
                 }
 
                 var v = new double[slotByHandle.Count][];
-                foreach (var (idx, x, y, deg) in poses) v[slotByHandle[idx]] = new[] { R(x), R(y), R(deg) };
+                foreach (var (idx, x, y, deg, len, wid) in poses)
+                    v[slotByHandle[idx]] = new[] { R(x), R(y), R(deg), R(len), R(wid) };  // 5-tuple -> useDataHeading
 
-                // --- peds: sampled at the SAME render instant tau (smooth, matching the viewers) ---
-                sim.SamplePedsAt(tau, pedScratch);
-                var discs = new List<(string, double[])>(pedScratch.Count);
-                foreach (var p in pedScratch)
+                // --- peds: reconstructed off the WIRE at the SAME render instant tau (analytic, no kink) ---
+                pedRecon.Pump(tau + pedDelay);   // reconstructor renders at (server - pedDelay) == tau
+                var discs = new List<(string, double[])>(pedRecon.KnownIds.Count);
+                foreach (var id in pedRecon.KnownIds)
                 {
-                    if (!In(p.X, p.Y)) continue;
-                    var kind = p.Regime switch
-                    {
-                        PedRegime.HighPower => KindPedHighPower,
-                        PedRegime.LowPowerWalking => KindPedLowPower,
-                        _ => KindPedPaused,
-                    };
-                    discs.Add(($"ped{p.Id}", new[] { R(p.X), R(p.Y), 0.3, (double)kind }));
+                    if (!pedRecon.TryGetRenderPose(id, out var pos, out var visible, out var animTag) || !visible) continue;
+                    if (!In(pos.X, pos.Y)) continue;
+                    var kind = pedRecon.Ig.ModelOf(id) == PedDrModel.FreeKinematic ? KindPedHighPower
+                        : animTag == ActivityTimeline.WalkAnimTag ? KindPedLowPower
+                        : KindPedPaused;
+                    discs.Add(($"ped{id}", new[] { R(pos.X), R(pos.Y), 0.3, (double)kind }));
                 }
 
                 frames.Add(new FramePayload(v, Array.Empty<double[]?>()));
@@ -2477,15 +2486,17 @@ internal static class SceneGen
             "Live-city DEMO (faithful, DR-smoothed): cars + peds, real LiveCityConfig",
             "The ACTUAL live-city demo sim (LiveCitySim + LiveCityConfig -- same net, demand and params as "
             + "the City3D/raylib demo: cooperative lane change, per-area realism LOD gate, crossing-occupancy "
-            + "yield), with the SAME dead-reckoning motion reconstruction the 2D/3D viewers use (DrClock + "
-            + "KinematicReconstructor: continuous junction arcs, gliding lane changes -- no facet-snaps). Grey "
-            + "= low-power ped, orange = promoted full-ORCA, yellow = paused; boxes = cars. A fix verified in "
-            + "this replay transfers directly to the demo.",
+            + "yield), with the SAME dead-reckoning reconstruction the 2D/3D viewers use -- vehicles via "
+            + "DrClock + KinematicReconstructor (center + emitted heading + upcoming-lane look-ahead: "
+            + "continuous junction arcs, no facet-snaps), peds via PedRemoteReconstructor (analytic playout, "
+            + "no tick kink). Grey = low-power ped, orange = promoted full-ORCA, yellow = paused; boxes = "
+            + "cars. A fix verified in this replay transfers directly to the demo.",
             new double[] { R(x0), R(y0), R(x1), R(y1) },
             cropNet,
             new double[] { 5.0, 1.8 },
             renderDt,
-            frames.ToArray());
+            frames.ToArray(),
+            UseDataHeading: true);
     }
 
     // Restrict a full-network payload to a crop rectangle: keep only lanes / junctions / crossings /
