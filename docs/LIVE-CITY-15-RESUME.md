@@ -66,10 +66,15 @@ In priority order:
    `InterestField`/`PedLodManager`/`Sim.Pedestrians.Lod` split. `useCoop = globalCoopEnabled &&
    areaIsHighRealism(car)`; the keep-right guard follows `useCoop`. Must stay deterministic (pure fn of
    frozen start-of-step state).
-3. **Liveness/throughput regression TEST in the suite.** The parity gate structurally CANNOT catch #15
-   (the bug was inert on every golden). Add a separate headless, no-SUMO test (fixed seeds): run the
-   live-city smoke ~1000s, assert `arrivals >= threshold` and late `stoppedFrac <= threshold`. Thresholds
-   from the post-cure baseline (arrivals ≥ ~900). Separate from parity.
+3. **DONE — Liveness/throughput regression TEST.** `tests/Sim.LiveCity.Tests/LiveCitySimTests.cs`
+   → `DenseFlow_OverAThousandSeconds_KeepsDischarging_NoGridlock`. Headless, no-SUMO, deterministic: runs
+   the coupled sim 2000 steps (1000 s) with the shipped dense-flow config PINNED (immune to `LIVECITY_*`
+   env), asserts final arrivals ≥ 450, arrivals-growth in the last 400 steps ≥ 40 (the anti-flatline — the
+   sharpest gridlock signal), and late stopped-fraction ≤ 0.85. Measured separation: healthy ≈736 arrivals /
+   +145 growth / 0.35 frac vs a #15 gridlock ≈360 / +2 / 1.0. **Non-vacuousness proven first-hand**: pointing
+   the pinned config at a veto-all setting (`MergeStoppedStrategicDeferDist=0.5`) reproduces the gridlock and
+   the test FAILS (`got 360`). ~11 s wall. The parity gate structurally cannot catch this class (inert on
+   every golden); this is the guard.
 4. **Visual confirm in the 3D viewer.** The engine now emits ZERO stopped lateral swaps, so the float
    source is gone at the source (not masked). Owner to confirm cars cooperatively merge instead of
    floating. Remaining keep-rights are all ≥1.5 m/s (forward+lateral diagonals, owner-accepted).
