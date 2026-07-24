@@ -142,3 +142,33 @@ First DR attempt was wrong on the guide's headline gotchas — cars "wildly danc
   PathArc/ActivityTimeline playout the viewers use, no tick kink. (Removed the SamplePedsAt approach.)
 Result: 796 frames, 5.7 MB, `useDataHeading` in the JSON, build green. Awaiting owner visual confirm; once
 confirmed, add a PED section to IGBRIDGE-HTML-REPLAY-GUIDE.md (owner request).
+
+---
+
+## DEFECT #1 (cars vs peds on crossings) — per-entity analysis (faithful sim)
+
+Tool: `Sim.Viz --live-city-yielddump <steps>` (new; runs the REAL `LiveCitySim`, classifies every
+car-within-2.5 m-of-a-crossing-ped from raw `Sample()` states using the MOTION direction as "forward" —
+convention-free). Exposed `LiveCitySim.CrossingCentroids` for it. Diagnostic-only, parity untouched.
+
+**Run (200 steps = 100 s):** pedOnCrossingSamples=7044, carsWithin2.5m=**152**, classified:
+- **stoppedYield (car <0.5 m/s near ped) = 56** — cars that DID stop/yield.
+- **moving BESIDE/behind = 70** — passing a ped crossing the other way; NOT a collision course (benign).
+- **moving IN-PATH = 26** — car driving AT a ped ahead in its corridor = **the real defect-#1 failures**.
+  Of these only **3 are fast (>=6 m/s)** → tunnelling is a MINOR factor.
+
+**So the 2.5 m proximity metric over-counts ~6x.** The real issue is ~26 in-path samples (≈5–10 distinct
+encounters/100 s — the same cars recur across ticks). The "worst" cars DECELERATE across consecutive ticks
+(veh45 5.2→0.7, veh81 2.6→1.6 m/s) yet stay in-path, nosing to `along≈0.2 m` (ped at the car's front).
+
+**Refined defect statement:** cars mostly DO react to crossing peds (56 stopped, 26 braking-in), but a few
+per ~100 s **brake too late / stop with too tight a margin — the front noses onto the ped** ("go over
+them"). The encroachment is SLOW, not fast tunnelling.
+
+**Leading hypothesis (VERIFY before designing):** `Engine.CrowdLongitudinalConstraint` only brakes when the
+ped disc is inside the car's NARROW wheel-path corridor (`|latOff - ego.LatOffset| < egoHalf + discR`,
+`Engine.cs:~8602`). For a ped walking ACROSS the road, it enters that corridor only when almost in front →
+the brake triggers late → the car noses in. A human yields for a ped ANYWHERE on the crossing ahead.
+NEXT: instrument WHEN the brake first engages vs the ped's lateral offset (confirm late-trigger), + confirm
+these peds are on GREEN (batch metric said ~97% ped-on-green). THEN design (likely: brake for a ped anywhere
+on a crossing polygon ahead, not just the wheel corridor — demo-gated, parity-safe).

@@ -152,6 +152,23 @@ public sealed class LiveCitySim : IDisposable
 
         var crosswalkSignals = CrosswalkSignals.FromNet(netPath, cropCrossingPolys);
 
+        // #realism-1 diagnostic: expose each in-crop crossing's centroid + an approximate half-extent (max
+        // vertex distance from the centroid), so a car-vs-crossing-ped yield analysis can tell which crossing
+        // a ped is on. Same polygons CrossingOccupancySource marks. Read-only; no behavioural effect.
+        var crossCentroids = new List<(double X, double Y, double HalfW)>(cropCrossingPolys.Count);
+        foreach (var poly in cropCrossingPolys)
+        {
+            var maxr = 0.0;
+            foreach (var vtx in poly.Vertices)
+            {
+                var dx = vtx.X - poly.Centroid.X; var dy = vtx.Y - poly.Centroid.Y;
+                var r = Math.Sqrt((dx * dx) + (dy * dy));
+                if (r > maxr) maxr = r;
+            }
+            crossCentroids.Add((poly.Centroid.X, poly.Centroid.Y, maxr));
+        }
+        CrossingCentroids = crossCentroids;
+
         var config = new PedDemandConfig
         {
             Origins = odPoints,
@@ -287,6 +304,10 @@ public sealed class LiveCitySim : IDisposable
     }
 
     public NetworkModel Network { get; }
+
+    // #realism-1: in-crop pedestrian-crossing centroids + approx half-extent (diagnostic; the polys
+    // CrossingOccupancySource marks). Used by the car-vs-crossing-ped yield analysis.
+    public IReadOnlyList<(double X, double Y, double HalfW)> CrossingCentroids { get; }
 
     // The static world-overlay scene (zones/buildings/pois) loaded once from cfg.DatasetDir in the ctor.
     public LiveCityScene Scene { get; }

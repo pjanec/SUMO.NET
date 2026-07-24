@@ -74,6 +74,7 @@ internal static class Program
             "--ped-dense-city" => RunPedDenseCity(args),
             "--live-city" => RunLiveCity(args),
             "--live-city-demo" => RunLiveCityDemo(args),
+            "--live-city-yielddump" => RunLiveCityYieldDump(args),
             "--ped-remote" => RunPedRemote(args),
             "--ped-subarea-fcd" => RunPedSubareaFcd(args),
             "--ped-weave-csv" => RunPedWeaveCsv(args),
@@ -279,6 +280,82 @@ internal static class Program
     // verified here transfers directly to the City3D/raylib demo (owner: "same settings/data/params, no
     // cheating"). Realism metrics are recomputed at the payload level (independent of BuildLiveCity's Last*
     // statics): near-collision = a (frame x ped-on-crossing) with a car within 2.5 m -- the defect-#1 repro.
+    // #realism-1 ANALYSIS (not a replay): run the REAL LiveCitySim and CLASSIFY every car-vs-crossing-ped
+    // near-collision from raw authoritative Sample() states -- to localize defect #1 (cars ignore peds on
+    // crossings). Key distinction the 2.5 m proximity metric can't make: is the car actually driving AT a ped
+    // in its path (a real yield failure) or merely passing beside a ped crossing the other way (benign)? And
+    // for the real ones: is the car MOVING FAST (coarse-tick tunnelling) or slow? Uses the motion direction
+    // (cur-prev) as "forward" -- convention-free, no reliance on the emitted heading.
+    private static int RunLiveCityYieldDump(string[] args)
+    {
+        var steps = args.Length >= 2 && int.TryParse(args[1], out var s) ? s : 160;
+        var cfg = Sim.LiveCity.LiveCityConfig.ForRepoRoot(RepoRoot());
+        using var sim = new Sim.LiveCity.LiveCitySim(cfg);
+        var dt = cfg.Dt;
+        var crossings = sim.CrossingCentroids;
+        const double PedR = 0.3, NearM = 2.5;
+
+        var prev = new Dictionary<Sim.Core.VehicleHandle, (double X, double Y)>();
+        long pedOnCrossingSamples = 0, nearCar = 0, stoppedYield = 0, inPathMoving = 0, besideMoving = 0;
+        long inPathFast = 0; // moving in-path AND speed>=6 m/s (tunnelling candidate)
+        var worst = new List<(double Spd, double Along, double Lat, string Car, int Ped, double Cx, double Cy)>();
+
+        for (var step = 0; step < steps; step++)
+        {
+            sim.Step();
+            var snap = sim.Sample();
+            // peds physically on a crossing this step
+            var onCross = new List<(int Id, double X, double Y)>();
+            foreach (var p in snap.Peds)
+            {
+                foreach (var (cx, cy, hw) in crossings)
+                {
+                    var dx = p.X - cx; var dy = p.Y - cy;
+                    if ((dx * dx) + (dy * dy) <= (hw + 0.5) * (hw + 0.5)) { onCross.Add((p.Id, p.X, p.Y)); break; }
+                }
+            }
+            pedOnCrossingSamples += onCross.Count;
+
+            foreach (var c in snap.Cars)
+            {
+                var moving = prev.TryGetValue(c.Handle, out var pp);
+                var spd = moving ? Math.Sqrt(((c.X - pp.X) * (c.X - pp.X)) + ((c.Y - pp.Y) * (c.Y - pp.Y))) / dt : 0.0;
+                var halfW = c.Width * 0.5;
+                foreach (var (pid, px, py) in onCross)
+                {
+                    var vx = px - c.X; var vy = py - c.Y;
+                    if ((vx * vx) + (vy * vy) > NearM * NearM) continue;   // not within 2.5 m
+                    nearCar++;
+                    if (spd < 0.5) { stoppedYield++; continue; }           // car stopped near the ped = it YIELDED
+                    // forward = motion direction; along = how far ahead, lat = perpendicular offset.
+                    var fx = (c.X - pp.X); var fy = (c.Y - pp.Y);
+                    var fn = Math.Sqrt((fx * fx) + (fy * fy)); if (fn < 1e-6) { besideMoving++; continue; }
+                    fx /= fn; fy /= fn;
+                    var along = (vx * fx) + (vy * fy);
+                    var lat = Math.Abs((vx * (-fy)) + (vy * fx));
+                    var inPath = along > -0.5 && lat < (halfW + PedR + 0.3);
+                    if (inPath)
+                    {
+                        inPathMoving++;
+                        if (spd >= 6.0) inPathFast++;
+                        if (worst.Count < 12) worst.Add((spd, along, lat, c.Name, pid, px, py));
+                    }
+                    else besideMoving++;
+                }
+            }
+
+            prev.Clear();
+            foreach (var c in snap.Cars) prev[c.Handle] = (c.X, c.Y);
+        }
+
+        Console.WriteLine($"LIVECITY-YIELDDUMP: steps={steps} pedOnCrossingSamples={pedOnCrossingSamples} carsWithin2.5m={nearCar}");
+        Console.WriteLine($"  stoppedYield(car <0.5 m/s near ped)={stoppedYield}  |  MOVING: inPath={inPathMoving} (of which fast>=6m/s={inPathFast})  beside/behind={besideMoving}");
+        Console.WriteLine($"  => in-path MOVING near-misses are the real defect-#1 yield failures; beside/stopped are benign/handled.");
+        foreach (var w in worst)
+            Console.WriteLine($"  worst: car={w.Car} spd={w.Spd:F1} along={w.Along:F1} lat={w.Lat:F2} ped={w.Ped} @({w.Cx:F0},{w.Cy:F0})");
+        return 0;
+    }
+
     private static int RunLiveCityDemo(string[] args)
     {
         if (args.Length < 2)
