@@ -996,7 +996,22 @@
     title.textContent = scene.name || "";
     captionEl.appendChild(title);
     if (scene.desc) {
-      captionEl.appendChild(document.createTextNode(scene.desc));
+      // Collapsible description: default collapsed on narrow/mobile viewports (a long blurb obscures the
+      // map on a phone), expanded on wide screens; a tap toggle flips it either way.
+      var descToggle = document.createElement("button");
+      descToggle.className = "descToggle";
+      var descBody = document.createElement("div");
+      descBody.className = "descBody";
+      descBody.textContent = scene.desc;
+      var descCollapsed = window.matchMedia("(max-width: 700px)").matches;
+      var applyDesc = function () {
+        descBody.style.display = descCollapsed ? "none" : "block";
+        descToggle.textContent = descCollapsed ? "▸ info" : "▾ info";
+      };
+      descToggle.addEventListener("click", function () { descCollapsed = !descCollapsed; applyDesc(); });
+      applyDesc();
+      captionEl.appendChild(descToggle);
+      captionEl.appendChild(descBody);
     }
 
     timeSlider.min = String(simStart);
