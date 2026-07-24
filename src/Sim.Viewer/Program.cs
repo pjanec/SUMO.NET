@@ -7,9 +7,12 @@ using Raylib_cs;
 using rlImGui_cs;
 using ImGuiNET;
 using Sim.Core;
+using Sim.Ingest;
+using Sim.LiveCity;
 using Sim.Pedestrians.Lod;
 using Sim.Replication;
 using Sim.Replication.Dds;
+using Sim.Replication.Recording;
 using Sim.Viewer;
 using Sim.Viewer.Core;
 using Sim.Viewer.Motion;
@@ -38,6 +41,17 @@ using Sim.Viewer.Raylib;
 // interactive slider's effect can be verified headlessly (can't be driven by mouse input under Xvfb).
 // `--seconds <n>` (P3): caps `--mode publish`'s otherwise-infinite loop to `n` wall-clock seconds, for
 // scripted/CI-style runs; omit it for a real long-lived headless publisher (Ctrl-C to stop).
+// `--mode live-city` (docs/LIVE-CITY-VIEWERS-DESIGN.md §1/§5-adjacent, -TASKS.md Stage B): the coupled
+// cars+pedestrians+crossing-yield "live city" scene, real-time, in this viewer. Deliberately NOT a
+// `DemoKind`/EngineHost path (see the design doc's rationale: LiveCitySim owns its own coupled Engine and
+// updates the crossing gate BEFORE Engine.Step() each tick, which EngineHost's post-step-only hook cannot
+// reproduce without going one tick stale) -- structurally a trimmed `RunLoopback`: LiveCitySim IS the
+// in-process replication source (its own `VehicleSource`/`LocalLanes`), reconstructed through the exact
+// same `KinematicReconstructor`/`RenderHelpers.PumpAndBuildVehicleDraws` path loopback uses, with a
+// `LiveCityOverlay` drawing the pedestrian crowd + click-selected vehicle on top. No scenario arg needed
+// (the dataset is fixed at `scenarios/_ped/demo_city/box` via `LiveCityConfig.ForRepoRoot`), so it
+// dispatches before the `inputPath is null` guard, like `ped-publish`. `--smoke` runs the same LiveCitySim
+// loop headlessly (no window) for the Stage B gating check.
 
 // Interactive viewer: prefer short, non-blocking GC pauses over throughput. SustainedLowLatency defers
 // blocking gen2 collections (trading some memory) so a background gen2 doesn't stall a render frame -- one
@@ -49,6 +63,13 @@ string? mode = null;
 string? inputPath = null;
 string? screenshotPath = null;
 string? selftestPath = null;
+// Optional window/screenshot resolution override (`--mode live-city` / `--replay`, verification tool only)
+// -- default null keeps ViewerHostConfig's own 1280x800 default, byte-identical to before this flag
+// existed. Higher resolution raises the SAME fit-to-view zoom's effective pixels-per-metre, which is what
+// makes fine detail (the seam-marking dashes, the crosswalk zebra stripes) legible in a screenshot without
+// changing the camera or the world in any way.
+int? screenshotWidth = null;
+int? screenshotHeight = null;
 // docs/SUMOSHARP-VIEWER-DEMO-EVAC-DESIGN.md §5/§1: pick the INITIAL demo from DemoCatalog.Resolve by name
 // (case-insensitive substring match), for `--mode local`. Omit it (with an ad-hoc <path> instead) to keep
 // today's behaviour exactly -- see RunLocal.
@@ -57,6 +78,17 @@ string? demoName = null;
 // SwitchTo an Evac demo, and exit -- no window, no --mode needed. Proves a live switch doesn't leak/hang
 // across scenario/sandbox/evac boundaries.
 var demoSmoke = false;
+// docs/LIVE-CITY-VIEWERS-TASKS.md Stage B success condition: `--mode live-city --smoke` runs the SAME
+// LiveCitySim step + reconstruct loop headlessly (no window, no raylib draw calls) and logs/asserts the
+// coupled-scene invariants, for CI/offline verification. Meaningless outside `--mode live-city`.
+var liveCitySmoke = false;
+// docs/LIVE-CITY-VIEWERS-TASKS.md Stage C (C3): `--mode live-city --record <file>` tees the live run's car
+// stream (via a RecordingReplicationSink handed into LiveCitySim's tee ctor param) and the ped stream
+// (written directly by the record loop each step) into one `.simrec`. `--replay <file>` (or `--mode
+// live-city --replay <file>`) plays a previously recorded file back through the SAME overlay/render path,
+// with a playback panel instead of the live sim controls -- see RunLiveCityReplay.
+string? recordPath = null;
+string? replayPath = null;
 var frames = 150;
 var delaySeconds = 1.0f; // default DR playout delay (s). The auto "always interpolate" delay is OFF by
                          // default -- it fluctuated and made rendered speed visibly pulse; a stable manual
@@ -68,12 +100,39 @@ var perf = false;
 double? simRate = null;
 double? stepLen = null;
 string? traceVeh = null;
+// docs/LIVE-CITY-VISUALS-NOTES.md (tick-rate task): `--mode live-city`'s two INDEPENDENT rate knobs.
+// `--sim-hz` (validated to {1,2,5,10,20}, see ValidateSimHz) sets LiveCityConfig.Dt = 1/Hz -- BOTH the
+// vehicle engine step-length and the ped demand Dt, which must stay equal (the coupling invariant).
+// `--render-hz` (clamped to [15,60]) sets Raylib's target FPS. Render rate is decoupled from sim rate
+// by design (the kinematic reconstructor interpolates smooth motion between sparse sim samples), so
+// these are two separate CLI flags, not one. Both default to null here and are resolved to a concrete
+// Hz (2 / 60) by ValidateSimHz/ValidateRenderHz right before dispatch, only for `--mode live-city`
+// (other modes have their own, older sim-rate/render-fps-cap knobs -- unchanged by this task).
+int? simHz = null;
+int? renderHz = null;
 // docs/SUMOSHARP-PACKAGING-DESIGN.md D10 (P3.1): hidden proof-of-seam flag -- installs a trivial
 // MarkerOverlay (a bright magenta dot at the net centre) through the generic IRenderOverlay hook, so a
 // screenshot can confirm a domain-agnostic overlay renders through the seam without the render loop
 // knowing its concrete type. `--mode local` only; harmless everywhere else (RunLocal ignores it unless
 // set).
 var overlayTest = false;
+// docs/LIVE-CITY-VISUALS-NOTES.md deliverable 2: zones default OFF (owner decision: opt-in, not the
+// default wash) for `--mode live-city` (both the live and `--replay` flavors). `--show-zones` starts the
+// district ground tint visible; the runtime `Z` key (or the diagnostics panel's checkbox) toggles it from
+// there either way -- mirrors City3D's `--show-zones`/`Z` pair exactly.
+var showZones = false;
+// docs/LIVE-CITY-VISUALS-NOTES.md "Buildings (data-driven)" row: buildings are a PRIMARY feature (unlike
+// the opt-in zone tint) -- default ON for `--mode live-city` (both live and `--replay` flavors).
+// `--hide-buildings` starts the footprint-fill layer off; mirrors City3D's own `--hide-buildings` flag
+// (no runtime toggle key on the 2D side -- optional per the task, not added since `--hide-buildings` alone
+// already covers the verification need).
+var hideBuildings = false;
+// docs/LIVE-CITY-VISUALS-NOTES.md OWNER-CONFIRMED "POI / area rendering" block: POIs/doors/areas are a
+// PRIMARY feature (default ON, same as buildings) -- but `parking_access` alone is 351 records, so a hide
+// flag is required (task's explicit "make sure the toggle works so it can be turned off"). `--hide-pois`
+// starts the WHOLE group (areas + markers + doors, one flag/one runtime `P` key) hidden; mirrors
+// `--hide-buildings`/`B`'s shape exactly.
+var hidePois = false;
 
 for (var i = 0; i < args.Length; i++)
 {
@@ -87,6 +146,12 @@ for (var i = 0; i < args.Length; i++)
             break;
         case "--screenshot":
             screenshotPath = args[++i];
+            break;
+        case "--width":
+            screenshotWidth = int.Parse(args[++i], CultureInfo.InvariantCulture);
+            break;
+        case "--height":
+            screenshotHeight = int.Parse(args[++i], CultureInfo.InvariantCulture);
             break;
         case "--frames":
             frames = int.Parse(args[++i]);
@@ -124,6 +189,17 @@ for (var i = 0; i < args.Length; i++)
         case "--trace-veh":
             traceVeh = args[++i];
             break;
+        // docs/LIVE-CITY-VISUALS-NOTES.md (tick-rate task): `--mode live-city`'s sim tick rate (Hz),
+        // validated/clamped to {1,2,5,10,20} by ValidateSimHz right before dispatch -- see the field's own
+        // comment above for the coupling-invariant rationale.
+        case "--sim-hz":
+            simHz = int.Parse(args[++i], CultureInfo.InvariantCulture);
+            break;
+        // docs/LIVE-CITY-VISUALS-NOTES.md (tick-rate task): `--mode live-city`'s render frame-rate cap
+        // (fps), clamped to [15,60] by ValidateRenderHz right before dispatch -- independent of --sim-hz.
+        case "--render-hz":
+            renderHz = int.Parse(args[++i], CultureInfo.InvariantCulture);
+            break;
         case "--drop-obstacle":
             var parts = args[++i].Split(',');
             dropObstacle = (
@@ -136,8 +212,26 @@ for (var i = 0; i < args.Length; i++)
         case "--demo-smoke":
             demoSmoke = true;
             break;
+        case "--smoke":
+            liveCitySmoke = true;
+            break;
+        case "--record":
+            recordPath = args[++i];
+            break;
+        case "--replay":
+            replayPath = args[++i];
+            break;
         case "--overlay-test":
             overlayTest = true;
+            break;
+        case "--show-zones":
+            showZones = true;
+            break;
+        case "--hide-buildings":
+            hideBuildings = true;
+            break;
+        case "--hide-pois":
+            hidePois = true;
             break;
         default:
             inputPath ??= args[i];
@@ -174,6 +268,31 @@ if (mode == "remote")
 if (mode == "ped-publish")
 {
     return RunPedPublish(secondsCap);
+}
+
+// docs/LIVE-CITY-VIEWERS-DESIGN.md §1/§5-adjacent, -TASKS.md Stage B: `--mode live-city` -- no scenario
+// arg (the dataset is fixed via `LiveCityConfig.ForRepoRoot`), so dispatched before the `inputPath is
+// null` guard, exactly like `ped-publish` above. `--smoke` diverts to the headless gating check.
+// Stage C: `--replay <file>` swaps the whole LIVE half (LiveCitySim + its real-time step pacing) for a
+// `.simrec` file source + PlaybackClock -- RunLiveCityReplay/RunLiveCityReplaySmoke, never RunLiveCity.
+// `--record <file>` stays a modifier of the LIVE path (RunLiveCity/RunLiveCitySmoke both accept it).
+if (mode == "live-city")
+{
+    // docs/LIVE-CITY-VISUALS-NOTES.md (tick-rate task): resolved ONCE, here, so every live-city entry
+    // point (live/replay/smoke) sees the same validated Hz regardless of which branch below runs.
+    var resolvedSimHz = ValidateSimHz(simHz);
+    var resolvedRenderHz = ValidateRenderHz(renderHz);
+
+    if (replayPath is not null)
+    {
+        return liveCitySmoke
+            ? RunLiveCityReplaySmoke(replayPath)
+            : RunLiveCityReplay(replayPath, screenshotPath, frames, resolvedRenderHz, showZones, hideBuildings, hidePois, screenshotWidth, screenshotHeight);
+    }
+
+    return liveCitySmoke
+        ? RunLiveCitySmoke(Math.Max(frames, 120), recordPath, resolvedSimHz)
+        : RunLiveCity(screenshotPath, frames, delaySeconds, simRate, recordPath, resolvedSimHz, resolvedRenderHz, showZones, hideBuildings, hidePois, screenshotWidth, screenshotHeight);
 }
 
 // docs/SUMOSHARP-VIEWER-DEMO-EVAC-DESIGN.md §5: `--mode local --demo "<name>"` needs NO <path> at all --
@@ -219,6 +338,59 @@ static string ResolveNetPath(string path)
     }
 
     return path;
+}
+
+// docs/LIVE-CITY-VISUALS-NOTES.md (tick-rate task): `--sim-hz` must be one of {1,2,5,10,20} -- these are
+// the discrete step-lengths (Dt = 1/Hz) LiveCitySim's engine config is built for; anything else still
+// runs (Engine.Step tolerates any positive step-length), but is outside the set the task pins, so an
+// unrecognized value is CLAMPED to its nearest neighbour with a reported message rather than silently
+// accepted or hard-failing the whole viewer over a typo'd flag. Omitted (null) -> the existing default,
+// 2 Hz (Dt=0.5), byte-identical to pre-task behaviour.
+static int ValidateSimHz(int? requested)
+{
+    const int defaultHz = 2;
+    if (requested is not { } hz)
+    {
+        return defaultHz;
+    }
+
+    var allowed = new[] { 1, 2, 5, 10, 20 };
+    if (Array.IndexOf(allowed, hz) >= 0)
+    {
+        return hz;
+    }
+
+    var nearest = allowed[0];
+    var bestDiff = Math.Abs(hz - nearest);
+    foreach (var candidate in allowed)
+    {
+        var diff = Math.Abs(hz - candidate);
+        if (diff < bestDiff)
+        {
+            nearest = candidate;
+            bestDiff = diff;
+        }
+    }
+
+    Console.Error.WriteLine(
+        $"Sim.Viewer: --sim-hz {hz} is not one of {{1,2,5,10,20}} -- clamped to {nearest} Hz.");
+    return nearest;
+}
+
+// docs/LIVE-CITY-VISUALS-NOTES.md (tick-rate task): `--render-hz` is clamped (not validated against a
+// discrete set) to [15,60] -- 60 is the hard cap (rendering faster than that is wasted GPU work for a
+// sparse-sample sim), 15 is a usability floor (below it panning/clicking feels broken). Omitted (null)
+// -> 60, the existing default.
+static int ValidateRenderHz(int? requested)
+{
+    var hz = requested ?? 60;
+    var clamped = Math.Clamp(hz, 15, 60);
+    if (clamped != hz)
+    {
+        Console.Error.WriteLine($"Sim.Viewer: --render-hz {hz} clamped to {clamped} (allowed 15..60).");
+    }
+
+    return clamped;
 }
 
 // docs/SUMOSHARP-VIEWER-DEMO-EVAC-DESIGN.md §5: `netPath` is the ad-hoc "(custom)" path (today's
@@ -711,6 +883,814 @@ static int RunPedPublish(double? secondsCap)
 
     Console.WriteLine($"Sim.Viewer: ped publish loop stopped after {publishedSteps} steps " +
         $"({sink.CrowdBytesPublished + sink.PathArcBytesPublished + sink.ActivityBytesPublished + sink.LifecycleBytesPublished} wire bytes).");
+    return 0;
+}
+
+// docs/LIVE-CITY-VIEWERS-DESIGN.md §1, -TASKS.md Stage B (B1/B2): `--mode live-city`'s windowed run --
+// structurally RunLoopback with LiveCitySim standing in for EngineHost+DdsPublisher+DdsSubscriber:
+// LiveCitySim already publishes onto its OWN in-process replication bus every Step() (VehicleSource is an
+// IReplicationSource), so this needs no DdsParticipant at all. Cars reconstruct through the SAME
+// KinematicReconstructor/RenderHelpers.PumpAndBuildVehicleDraws path loopback uses -- fed LiveCitySim's own
+// Z-aware `LocalLanes` (a NetworkLaneSource over the real, in-process NetworkModel) as the lane-shape
+// source instead of a wire-decoded 2-D one. `LiveCityOverlay` draws the pedestrian crowd + click-selected
+// vehicle identity on top, fed a fresh `sim.Sample()` every render frame.
+// docs/LIVE-CITY-VIEWERS-TASKS.md Stage C (C3): `recordPath` (from `--record <file>`) is an OPTIONAL tee --
+// null means "record nothing", byte-identical to Stage B's behaviour. When set, a RecordingReplicationSink
+// owns the `.simrec` file: it is handed into LiveCitySim's own tee ctor param for the car track (geometry +
+// lifecycle + frames, written once per LiveCitySim.Step()), and this loop writes one PEDFRAME per Step()
+// too (sim.Sample().Peds converted to the neutral tuple PedFrameTrack/SimRecWriter expect) -- both tracks
+// share the ONE writer/file so they interleave by time.
+// docs/LIVE-CITY-VISUALS-NOTES.md (tick-rate task): `simHz`/`renderHz` are the CLI-validated Hz values
+// from ValidateSimHz/ValidateRenderHz -- simHz sets cfg.SimHz (=> cfg.Dt, which both the engine's
+// step-length AND the ped-publish Dt derive from, keeping the live-city coupling invariant); renderHz
+// seeds the window's initial target FPS and the runtime-adjustable slider in the diagnostics panel below.
+static int RunLiveCity(string? screenshotPath, int frames, float delaySeconds, double? speedFactor, string? recordPath, int simHz, int renderHz, bool showZones, bool hideBuildings, bool hidePois, int? screenshotWidth = null, int? screenshotHeight = null)
+{
+    var repoRoot = DemoCatalog.RepoRoot();
+    var cfg = LiveCityConfig.ForRepoRoot(repoRoot);
+    cfg.SimHz = simHz;
+
+    RecordingReplicationSink? recorder = recordPath is not null
+        ? new RecordingReplicationSink(recordPath, cfg.Dt, datasetId: cfg.DatasetDir)
+        : null;
+
+    using var sim = new LiveCitySim(cfg, recorder);
+
+    // docs/LIVE-CITY-VISUALS-NOTES.md "Sidewalks"/"Crosswalk zebra"/"Lane markings" rows: built ONCE (the
+    // network is static for the whole run), off LiveCitySim.Network -- the SAME NetworkModel this local
+    // in-process sim parsed from net.xml, whose lane Handles line up with sim.VehicleSource.Geometry's own
+    // (both come from the identical parse).
+    var laneMeta = BuildLaneRenderMeta(sim.Network);
+
+    var overlay = new LiveCityOverlay();
+    var frameStats = new FrameStats();
+    var drClock = new DrClock();
+    // VIEWER-KINEMATIC-SMOOTHING §1.1/§2.2: CoarseFeed=true, same as loopback/remote -- this is a sparse
+    // (Dt=0.5s => 2 Hz) DR consumer, so the junction-turn-straddle discriminator must be active.
+    var recon = new KinematicReconstructor { CoarseFeed = true };
+    // Ped-smoothing fix (docs/LIVE-CITY-VISUALS-NOTES.md-adjacent), PIVOTED from snapshot-interpolation to
+    // wire reconstruction (mirrors demos/City3D/Viewer/Main.cs's ProcessLiveCity one-for-one): peds used to
+    // be drawn straight from sim.Sample().Peds (the raw per-tick snapshot) -- a step function at the render
+    // frame rate. An interim fix linearly interpolated those snapshots (PedInterpolator); this supersedes
+    // it by reconstructing off sim.PedSource -- the SAME in-memory replication wire the remote/DDS ped path
+    // already reconstructs from -- via Sim.Pedestrians.Lod.PedRemoteReconstructor's continuous
+    // HeadlessIg.ReconstructSample playout (a PathArc/ActivityTimeline leg is an analytic function of time,
+    // evaluated at whatever instant it's asked for -- no snapshot brackets, no tick-boundary kink).
+    var pedRecon = new PedRemoteReconstructor(sim.PedSource);
+
+    // Real-time step accumulator: LiveCitySim.Step() always advances exactly cfg.Dt of sim time -- pace it
+    // to WALL time (honoring `speedFactor`, the same knob `--sim-rate` drives for `--mode local`) instead
+    // of stepping once per render frame (which would run the sim at whatever fps raylib happens to deliver,
+    // i.e. not real-time). A render frame that arrives before a full Dt of wall time has accumulated simply
+    // redraws the last sampled frame; a frame that arrives late (or after a wall-clock stall) may step more
+    // than once to catch back up.
+    var speed = speedFactor is > 0.0 ? speedFactor.Value : 1.0;
+    var accumWall = 0.0;
+
+    // docs/LIVE-CITY-VISUALS-NOTES.md (tick-rate task): render-hz is runtime-adjustable (the diagnostics
+    // panel's slider below calls Raylib.SetTargetFPS directly, mirroring DrawControlsPanel's own fpsCap
+    // radios); sim-hz is CLI-only (cfg.Dt is already baked into the engine's step-length by the time this
+    // runs -- LiveCitySim's ctor -- so it is display-only here, per the task's explicit allowance).
+    var liveRenderHz = renderHz;
+
+    var cfgHost = new ViewerHostConfig
+    {
+        WindowTitle = "SumoSharp - native viewer (live city)",
+        ScreenshotPath = screenshotPath,
+        Frames = frames,
+        TargetFps = renderHz,
+        Width = screenshotWidth ?? new ViewerHostConfig().Width,
+        Height = screenshotHeight ?? new ViewerHostConfig().Height,
+
+        InitialCameraBounds = () => (cfg.X0, cfg.Y0, cfg.X1, cfg.Y1),
+
+        PumpFrame = (dt, draws) =>
+        {
+            frameStats.Add(dt);
+
+            // docs/LIVE-CITY-VISUALS-NOTES.md deliverable 2: runtime zone-tint toggle -- polled every
+            // frame (not just while the diagnostics panel is open) so it works identically to City3D's `Z`
+            // key regardless of the ImGui overlay's visibility.
+            if (global::Raylib_cs.Raylib.IsKeyPressed(global::Raylib_cs.KeyboardKey.Z))
+            {
+                showZones = !showZones;
+            }
+
+            // docs/LIVE-CITY-VISUALS-NOTES.md OWNER-CONFIRMED "POI / area rendering" block: runtime toggle
+            // for the WHOLE POI+doors+areas group, mirrors the Z/zones toggle immediately above.
+            if (global::Raylib_cs.Raylib.IsKeyPressed(global::Raylib_cs.KeyboardKey.P))
+            {
+                hidePois = !hidePois;
+            }
+
+            accumWall += dt * speed;
+            while (accumWall >= cfg.Dt)
+            {
+                sim.Step();
+                accumWall -= cfg.Dt;
+
+                // One ped snapshot per sim tick (matching the car track's own per-Step() cadence), not per
+                // render frame -- a stalled/late render frame that lets this loop run more than once must
+                // not silently drop the intermediate steps' ped positions from the recording. (Rendering no
+                // longer reads this snapshot at all -- see pedRecon below -- but the `--record` tee still
+                // wants one ground-truth PEDFRAME per sim tick.)
+                if (recorder is not null)
+                {
+                    recorder.WritePedFrame(sim.Time, ToPedTuples(sim.Sample().Peds));
+                }
+            }
+
+            // PumpAndBuildVehicleDraws pumps drClock (advances RenderSim) internally -- do this FIRST so the
+            // ped query below reads the SAME playout instant the cars just resolved against, keeping the two
+            // domains in lockstep (docs/LIVE-CITY-VISUALS-NOTES.md-adjacent fix's explicit requirement).
+            RenderHelpers.PumpAndBuildVehicleDraws(sim.VehicleSource, drClock, delaySeconds, smooth: true,
+                frameStats, recon, draws, paused: false, laneSource: sim.LocalLanes);
+
+            // Ped-smoothing fix: `sim.Time` (the sim's own tick clock) only advances once per `cfg.Dt` (0.5s
+            // @ the 2Hz default) -- feeding THAT raw value to the reconstructor every render frame would
+            // reproduce the exact stepwise jerk this fix targets (measured via a throwaway probe: positions
+            // frozen for the whole tick, then one large jump at the boundary). `sim.Time + accumWall` is a
+            // CONTINUOUSLY-advancing render clock instead: the tick loop above's `sim.Step()` (which
+            // advances sim.Time by cfg.Dt) / `accumWall -= cfg.Dt` pair is a net no-op on their SUM, so this
+            // expression is mathematically identical to a free-running clock advancing by `dt*speed` every
+            // frame, decoupled from the 2Hz tick boundary -- exactly what HeadlessIg.ReconstructSample's
+            // continuous PathArc/ActivityTimeline evaluation needs to render smoothly between ticks.
+            var pedNow = sim.Time + accumWall;
+            pedRecon.Pump(pedNow);
+            var raw = sim.Sample();
+            overlay.UpdateSnapshot(new LiveCitySnapshot(raw.Cars, BuildLiveCityPeds(pedRecon), raw.OccupiedCrossings));
+        },
+
+        DrawWorld = (camera, draws) =>
+        {
+            // docs/LIVE-CITY-VISUALS-NOTES.md deliverable 2: zones default OFF (owner decision) -- drawn
+            // only when `showZones` is set (via `--show-zones` or the runtime `Z` toggle above), and even
+            // then BEFORE the road/vehicle pass so the district tint sits under the streets, never over
+            // them.
+            if (showZones)
+            {
+                LiveCityZonesLayer.Draw(camera, sim.Scene.Zones);
+            }
+
+            // docs/LIVE-CITY-VISUALS-NOTES.md "Buildings (data-driven)" row: default ON (a primary
+            // feature, unlike the opt-in zone tint), drawn with the ground layers -- after zones, before
+            // the road/vehicle pass -- so footprints sit beside/behind the streets, never covering cars.
+            if (!hideBuildings)
+            {
+                LiveCityBuildingsLayer.Draw(camera, sim.Scene.Buildings);
+            }
+
+            // docs/LIVE-CITY-VISUALS-NOTES.md OWNER-CONFIRMED "POI / area rendering" block: default ON (a
+            // primary feature, same as buildings), drawn with the ground layers -- after buildings, before
+            // the road/vehicle pass -- so areas/markers/doors sit beside/behind the streets, never covering
+            // cars.
+            if (!hidePois)
+            {
+                LiveCityPoiLayer.Draw(camera, sim.Scene.Areas, sim.Scene.Pois);
+            }
+
+            Renderer.DrawWorldDds(camera, sim.VehicleSource.Geometry, sim.VehicleSource.TlStateByLane, draws, laneMeta);
+            overlay.DrawWorldOver(camera, SimulationSnapshot.Empty, draws);
+        },
+
+        OnWorldClick = (wx, wy) => overlay.OnWorldClick(wx, wy),
+
+        DrawImGui = showDiagnostics =>
+        {
+            overlay.DrawUi();
+            if (showDiagnostics)
+            {
+                var (min, avg, p99) = frameStats.Compute();
+                ImGui.SetNextWindowPos(new System.Numerics.Vector2(10, 410), ImGuiCond.FirstUseEver);
+                ImGui.SetNextWindowSize(new System.Numerics.Vector2(360, 210), ImGuiCond.FirstUseEver);
+                ImGui.Begin("SumoSharp - diagnostics");
+                ImGui.Text($"fps: {Raylib.GetFPS()}");
+                ImGui.Text($"frame ms  min {min * 1000f:F2}  avg {avg * 1000f:F2}  p99 {p99 * 1000f:F2}");
+                ImGui.Text($"sim time: {sim.Time:F1}s");
+                ImGui.Text($"renderSim(dr): {drClock.RenderSim:F2}s   simRate: {drClock.SimRate:F2}/s");
+                ImGui.Text($"GC gen0/1/2: {GC.CollectionCount(0)} / {GC.CollectionCount(1)} / {GC.CollectionCount(2)}");
+                if (recorder is not null)
+                {
+                    ImGui.Text($"recording: {recordPath}");
+                }
+
+                ViewerControlsPanels.DrawLiveCityRatePanel(simHz, cfg.Dt, ref liveRenderHz, ref showZones);
+                ImGui.End();
+            }
+        },
+    };
+
+    try
+    {
+        return ViewerHost.Run(cfgHost);
+    }
+    finally
+    {
+        recorder?.Dispose();
+    }
+}
+
+// docs/LIVE-CITY-VIEWERS-TASKS.md Stage C (C1): LiveCityPed -> the neutral tuple RecordingReplicationSink/
+// SimRecWriter/PedFrameTrack all use, so Sim.Replication.Recording never needs a Sim.LiveCity reference
+// (the design's explicit "no dependency on Sim.LiveCity" instruction for the ped track). PedRegime's
+// numeric values (LowPowerWalking=0, HighPower=1, Paused=2) are the wire's `Regime` byte verbatim -- the
+// replay side casts back with `(PedRegime)tuple.Regime`.
+static IReadOnlyList<(int Id, float X, float Y, float Z, byte Regime, string AnimTag)> ToPedTuples(
+    IReadOnlyList<LiveCityPed> peds)
+{
+    var arr = new (int Id, float X, float Y, float Z, byte Regime, string AnimTag)[peds.Count];
+    for (var i = 0; i < peds.Count; i++)
+    {
+        var p = peds[i];
+        arr[i] = (p.Id, (float)p.X, (float)p.Y, (float)p.Z, (byte)p.Regime, p.AnimTag);
+    }
+
+    return arr;
+}
+
+// Ped-smoothing fix (pivoted to wire reconstruction): PedRemoteReconstructor's known ids -> the
+// Sim.LiveCity.LiveCityPed shape LiveCityOverlay/DrawWorldOver expect. Z is always 0 (the ped net is flat,
+// matching LiveCitySim.Sample's own peds.Add(new LiveCityPed(..., 0.0, ...))). Regime collapses to the
+// two-state low/high-power split PedRemoteReconstructor's Ig.ModelOf reports -- no third "Paused" state
+// here (unlike LiveCitySim.Sample's own PedRegime), the SAME simplification ProcessLiveCityRemote's
+// CityLib.PedReconstructor already makes on the City3D side; a ped without a render pose yet (never
+// observed on the wire) is simply omitted this frame.
+static IReadOnlyList<LiveCityPed> BuildLiveCityPeds(PedRemoteReconstructor recon)
+{
+    var arr = new List<LiveCityPed>(recon.KnownIds.Count);
+    foreach (var id in recon.KnownIds)
+    {
+        if (!recon.TryGetRenderPose(id, out var pos, out var visible, out var animTag) || !visible)
+        {
+            continue;
+        }
+
+        var regime = recon.Ig.ModelOf(id) == PedDrModel.FreeKinematic
+            ? Sim.LiveCity.PedRegime.HighPower
+            : Sim.LiveCity.PedRegime.LowPowerWalking;
+        arr.Add(new LiveCityPed(id, pos.X, pos.Y, 0.0, regime, animTag));
+    }
+
+    return arr;
+}
+
+// docs/LIVE-CITY-VISUALS-NOTES.md "Sidewalks"/"Crosswalk zebra"/"Lane markings" rows -- builds the
+// per-Handle Renderer.LaneRenderMeta DrawWorldDds's live-city overlay layers need, off a NetworkModel this
+// process happens to have LOCALLY (LiveCitySim.Network for the live path; a best-effort net.xml re-parse
+// for replay -- see both call sites), keyed by the SAME dense lane Handle NetworkParser assigns (matching
+// whatever Handle the wire geometry itself carries for that lane, since both are parsed from the identical
+// net.xml in the identical deterministic order). `IsPed` = !AllowsRoadVehicle; `IsCrossing` = the
+// Renderer.IsCrossingLaneId regex on the lane's own id; `HasCarLeftNeighbor` = a car lane whose precomputed
+// LeftNeighbor (NetworkParser -- already excludes non-vehicular siblings) is present.
+static Dictionary<int, Renderer.LaneRenderMeta> BuildLaneRenderMeta(NetworkModel network)
+{
+    var meta = new Dictionary<int, Renderer.LaneRenderMeta>(network.LanesByHandle.Count);
+    foreach (var lane in network.LanesByHandle)
+    {
+        var isPed = !lane.AllowsRoadVehicle;
+        var isCrossing = Renderer.IsCrossingLaneId(lane.Id);
+        var hasCarLeftNeighbor = lane.AllowsRoadVehicle && lane.LeftNeighbor >= 0;
+        meta[lane.Handle] = new Renderer.LaneRenderMeta(isPed, isCrossing, hasCarLeftNeighbor);
+    }
+
+    return meta;
+}
+
+// docs/LIVE-CITY-VIEWERS-TASKS.md Stage B success condition ("headless smoke, the gating functional
+// check"): constructs LiveCitySim, steps it `steps` times, and after EVERY step reconstructs the car
+// draw-list through the SAME RenderHelpers.PumpAndBuildVehicleDraws call the windowed render loop uses (no
+// window, no raylib draw calls -- safe to run with no display at all). Asserts the coupled-scene
+// invariants from the FINAL step's own frame (reconstructedCars>0 && sampledPeds>0, "in the same frame")
+// plus the crossing-yield gate having fired at least once ACROSS the whole run (peakOccupiedCrossings>0 --
+// occupancy is transient/instantaneous, so gating on one arbitrary frame's snapshot would be flaky; "was
+// the gate ever proven live over the run" is the same invariant Stage A's own LiveCitySimTests asserts).
+// docs/LIVE-CITY-VIEWERS-TASKS.md Stage C (C1): `recordPath` (from `--record <file>` combined with
+// `--smoke`) is an OPTIONAL tee, identical in spirit to RunLiveCity's -- null reproduces Stage B's
+// behaviour byte-for-byte; set, it records the whole smoke run to a `.simrec` and reports its record
+// counts, giving a headless (no window, no Xvfb) way to produce+verify a recording end-to-end.
+// docs/LIVE-CITY-VISUALS-NOTES.md (tick-rate task): `simHz` (ValidateSimHz-resolved, default 2) sets
+// cfg.SimHz before construction so the headless smoke run exercises the SAME Dt->step-length plumbing
+// the windowed RunLiveCity does -- the printed LIVECITY-SMOKE line reports both simHz and the resulting
+// Dt so a scripted run can confirm the cadence actually changed (a finer Dt means `steps` covers less
+// sim-time, or -- held constant via `Math.Max(frames,120)` steps -- the SAME step count now spans a
+// different amount of sim-time; either is visible in the reported `dt=`/`simTime=`).
+static int RunLiveCitySmoke(int steps, string? recordPath, int simHz)
+{
+    var repoRoot = DemoCatalog.RepoRoot();
+    var cfg = LiveCityConfig.ForRepoRoot(repoRoot);
+    cfg.SimHz = simHz;
+
+    RecordingReplicationSink? recorder = recordPath is not null
+        ? new RecordingReplicationSink(recordPath, cfg.Dt, datasetId: cfg.DatasetDir)
+        : null;
+
+    using var sim = new LiveCitySim(cfg, recorder);
+
+    // #15 SUMO cross-check: LIVECITY_DUMPROUTES=<path> records every spawn so the exact procedural demand
+    // can be replayed through vanilla SUMO on the same net for an apples-to-apples throughput comparison.
+    var dumpRoutesPath = Environment.GetEnvironmentVariable("LIVECITY_DUMPROUTES");
+    if (!string.IsNullOrEmpty(dumpRoutesPath))
+    {
+        sim.SpawnLog = new List<(double, string, string)>();
+    }
+
+    var frameStats = new FrameStats();
+    var drClock = new DrClock();
+    var recon = new KinematicReconstructor { CoarseFeed = true };
+    var draws = new List<Renderer.DrVehicleDraw>();
+
+    var snap = sim.Sample();
+
+    // issue #15 gridlock probe (docs/LIVE-CITY-HARNESS-GUIDE.md "Reproducing / measuring #15"): per
+    // ~40-step interval, log stopped-fraction (cars whose step displacement is < 0.05 m == < 0.1 m/s),
+    // mean speed, aggregate metres moved (throughput proxy), and arrivals-so-far. A healthy sim keeps
+    // stoppedFrac low and ArrivedTotal climbing; the junction-discharge deadlock shows stoppedFrac
+    // marching to ~0.8-0.97 while arrivals flatline. Pure read-back off Sample()/ArrivedTotal -- no
+    // engine mutation, so it never perturbs what it measures. Interval chosen so a ~200 s (sim-hz 2)
+    // run prints ~10 lines.
+    var lastPos = new Dictionary<VehicleHandle, (double X, double Y)>();
+    var intervalSteps = 40;
+    var intMatched = 0;
+    var intStopped = 0;
+    var intSumSpd = 0.0;
+    var intAggMove = 0.0;
+    var dtProbe = cfg.Dt;
+    // issue #15 residual witness (docs/LIVE-CITY-15-RESIDUAL-REPRO.md): LIVECITY_WITNESS=1 dumps
+    // engine-authoritative state for cars stuck ON GREEN with a clear gap ahead -- the smoking gun for
+    // turn-lane segregation (a car that could discharge but sits jockeying laterally instead).
+    var witnessOn = Environment.GetEnvironmentVariable("LIVECITY_WITNESS") == "1";
+    Console.WriteLine("LIVECITY-GRIDLOCK: t(s) liveCars stoppedFrac meanSpd(m/s) aggMove(m) arrivals peds");
+
+    try
+    {
+        for (var i = 0; i < steps; i++)
+        {
+            sim.Step();
+            frameStats.Add(1f / 60f);
+            RenderHelpers.PumpAndBuildVehicleDraws(sim.VehicleSource, drClock, delaySeconds: 0.5f, smooth: true,
+                frameStats, recon, draws, paused: false, laneSource: sim.LocalLanes);
+            snap = sim.Sample();
+            recorder?.WritePedFrame(sim.Time, ToPedTuples(snap.Peds));
+
+            var cur = new Dictionary<VehicleHandle, (double X, double Y)>(snap.Cars.Count);
+            foreach (var c in snap.Cars)
+            {
+                cur[c.Handle] = (c.X, c.Y);
+                if (lastPos.TryGetValue(c.Handle, out var prev))
+                {
+                    var d = Math.Sqrt(((c.X - prev.X) * (c.X - prev.X)) + ((c.Y - prev.Y) * (c.Y - prev.Y)));
+                    intMatched++;
+                    intSumSpd += d / dtProbe;
+                    intAggMove += d;
+                    if (d < 0.05) intStopped++;
+                }
+            }
+
+            lastPos = cur;
+
+            if ((i + 1) % intervalSteps == 0)
+            {
+                var stoppedFrac = intMatched > 0 ? (double)intStopped / intMatched : 0.0;
+                var meanSpd = intMatched > 0 ? intSumSpd / intMatched : 0.0;
+                Console.WriteLine(
+                    $"LIVECITY-GRIDLOCK: {sim.Time,6:F0} {snap.Cars.Count,7} {stoppedFrac,10:F2} " +
+                    $"{meanSpd,11:F2} {intAggMove,9:F0} {sim.ArrivedTotal,8} {snap.Peds.Count,4}");
+                intMatched = 0; intStopped = 0; intSumSpd = 0.0; intAggMove = 0.0;
+
+                // Witness: once the jam has set in (t>=60), classify stopped cars by WHY they're stopped.
+                // stuckOnGreenClear = speed<0.3 & TL green for their lane & no leader within 15 m ahead ->
+                // they could discharge but don't = turn-lane/lane-selection failure (not the light, not a
+                // leader). If this is a large share of the stopped cars, the turn-lane hypothesis holds.
+                if (witnessOn && sim.Time >= 60.0)
+                {
+                    var w = sim.WitnessAuthoritative();
+                    var stuck = 0; var stuckMinorGreen = 0; var stuckMajorGreen = 0; var stuckRed = 0; var stuckLeader = 0;
+                    var renderedGreen = 0; var tlLie = 0; // wire(rendered) vs engine TL
+                    var onInternal = 0; var stuckInternal = 0; // cars ON an internal junction lane (blocking the box)
+                    var majorGreenBinder = new int[14]; // histogram of the binding constraint for majorGreenSTUCK cars
+                    foreach (var c in w)
+                    {
+                        var inJunction = c.LaneId.StartsWith(':');
+                        if (inJunction) { onInternal++; if (c.Speed < 0.3) stuckInternal++; }
+                        if (c.Speed >= 0.3) continue;
+                        stuck++;
+                        var clear = c.GapAhead > 15.0 && c.NextMouthGap > 15.0; // own lane AND exit mouth clear
+                        if (c.Tl == 'g' && clear) stuckMinorGreen++;            // yielding on permissive green
+                        else if (c.Tl == 'G' && clear) { stuckMajorGreen++; if (c.Binder < 14) majorGreenBinder[c.Binder]++; } // ANOMALY: protected green, all clear
+                        else if (!(c.Tl is 'G' or 'g') && c.Tl != '\0') stuckRed++;
+                        else stuckLeader++;                                     // blocked by a leader / occupied exit
+
+                        // What does the VIEWER show for this stopped car's light?
+                        var wireGreen = c.TlWire is 'G' or 'g';
+                        var engRed = !(c.Tl is 'G' or 'g') && c.Tl != '\0';
+                        if (wireGreen) renderedGreen++;                          // stopped under a green-rendered head
+                        if (wireGreen && engRed) tlLie++;                        // rendered green but engine RED = render lie
+                    }
+
+                    Console.Write($"LIVECITY-WITNESS: {sim.Time,6:F0} stuck={stuck,3} minorGreenYield={stuckMinorGreen,3} " +
+                        $"majorGreenSTUCK={stuckMajorGreen,3} red={stuckRed,3} behindLeader/exit={stuckLeader,3} strandedDeadEnd={sim.StrandedOffRouteLastStep,3} " +
+                        $"renderedGreen={renderedGreen,3} tlRenderLie={tlLie,3} onInternal={onInternal,3} stuckInternal={stuckInternal,3}");
+                    // Binding-constraint histogram for the majorGreenSTUCK cars (the no-innocent-explanation
+                    // stalls). Id map: 1 leaderFollow 2 crossJxnLeader 3 freeFlow 4 successiveLane
+                    // 5 deadLaneMerge 6 stopLine 7 redLight 8 railSignal 9 railCrossing 10 junctionYield
+                    // 11 keepClear 12 obstacle 13 crowd.
+                    string[] binderNames = { "none", "leaderFollow", "crossJxnLeader", "freeFlow", "successiveLane",
+                        "deadLaneMerge", "stopLine", "redLight", "railSignal", "railCrossing", "junctionYield",
+                        "keepClear", "obstacle", "crowd" };
+                    Console.Write("LIVECITY-BINDER(majorGreenSTUCK):");
+                    for (var b = 0; b < 14; b++) if (majorGreenBinder[b] > 0) Console.Write($" {binderNames[b]}={majorGreenBinder[b]}");
+                    // For the junctionYield-bound majorGreenSTUCK cars, which ARM + did the ego actually hold
+                    // protected-green priority (0x80 bit)? This distinguishes a real priority over-yield (prio=1)
+                    // from a witness mislabel (a minor-green movement under a lane green for another movement).
+                    string[] armNames = { "none", "cycleHold", "cautiousApproach", "sameTargetMerge", "externalAgent", "adaptToJxnLeader", "approachingCross" };
+                    var armCount = new int[7]; var armPrio = new int[7];
+                    foreach (var c in w)
+                    {
+                        if (c.Speed >= 0.3 || c.Tl != 'G' || !(c.GapAhead > 15.0 && c.NextMouthGap > 15.0) || c.Binder != 10) continue;
+                        var arm = c.JyArm & 0x0F; if (arm < 7) { armCount[arm]++; if ((c.JyArm & 0x80) != 0) armPrio[arm]++; }
+                    }
+                    Console.Write(" || JYarm:");
+                    for (var a = 0; a < 7; a++) if (armCount[a] > 0) Console.Write($" {armNames[a]}={armCount[a]}(prio{armPrio[a]})");
+                    Console.WriteLine();
+
+                    // #15 wrong-lane-strand REASON histogram (cumulative). Distinguishes "recovered"
+                    // (reResolveOK/rerouteOK -- car proceeded, NOT stranded) from the strand causes. If the
+                    // dominant STRAND cause is capSpent/waitGate -> a policy gate is freezing an otherwise
+                    // routable car; if noRouteToTarget/noOutgoingConn -> the lane genuinely can't reach the
+                    // dest (route-topology). Answers: are strands recoverable-but-gated, or truly dead?
+                    string[] srNames = { "reResolveOK", "rerouteOK", "onDestEdge", "waitGate", "capSpent",
+                        "noOutgoingConn", "noRouteToTarget", "reResolveThrew", "remainingLt2",
+                        "remainingCountLt2", "poolEdgeMismatch" };
+                    var srHist = sim.StrandReasonHistogram;
+                    Console.Write("LIVECITY-STRANDREASON(cumulative):");
+                    for (var r = 0; r < srHist.Length && r < srNames.Length; r++)
+                        if (srHist[r] > 0) Console.Write($" {srNames[r]}={srHist[r]}");
+                    Console.WriteLine();
+
+                    // #15 float/swap ANALYSIS (LIVECITY_LCLOG=1): committed lane changes by path + the
+                    // CHANGER's own speed at commit. A commit while the changer is STOPPED = a pure-lateral
+                    // swap (the float); intoStoppedTarget = a swap next to a standing target-lane car.
+                    var lcBy = sim.LaneChangeByPathChangerSpeed;
+                    var lcNear = sim.LaneChangeTargetNearStopped;
+                    string[] pathNames = { "overtake", "speedGain", "strategic", "keepRight" };
+                    var lcAny = false; for (var li = 0; li < lcBy.Length; li++) if (lcBy[li] > 0) lcAny = true;
+                    if (lcAny)
+                    {
+                        Console.Write("LIVECITY-LCSWAP(cumulative):");
+                        for (var p = 0; p < 4; p++)
+                            Console.Write($" {pathNames[p]}[stop={lcBy[p * 3]},slow={lcBy[p * 3 + 1]},move={lcBy[p * 3 + 2]},intoStoppedTgt={lcNear[p]}]");
+                        // #15 cooperative-LC diagnostic: how many strategic-path informFollower advices have
+                        // fired (cumulative). >0 confirms cooperation is actually sorting cars up-front.
+                        Console.Write($" coopAdvice={sim.CoopAdviceIssued}");
+                        Console.WriteLine();
+                        // #15 into-occupied detail: side(lead/follow) x gap bucket (<2/<5/<10/<20) for stopped-neighbor commits.
+                        var det = sim.LaneChangeIntoStoppedDetail;
+                        Console.Write("LIVECITY-LCDETAIL(cumulative):");
+                        for (var p = 0; p < 4; p++)
+                            Console.Write($" {pathNames[p]}[lead<2={det[p*8+0]},<5={det[p*8+1]},<10={det[p*8+2]},<20={det[p*8+3]}|foll<2={det[p*8+4]},<5={det[p*8+5]},<10={det[p*8+6]},<20={det[p*8+7]}]");
+                        Console.WriteLine();
+                    }
+
+                    // COMPREHENSIVE (owner request): analyze EVERY car stuck with a CLEAR road (speed<0.3,
+                    // own-lane gap>15 AND exit-mouth>15), whatever its TL. Break down by binding constraint;
+                    // for the junction-yield foe arms, bucket the bound FOE's speed (moving cross traffic vs a
+                    // stopped foe on the junction vs no-foe), and dump full status for the first several so the
+                    // pattern is unambiguous.
+                    var clearStuck = 0; var byBinder = new int[14];
+                    var foeMoving = 0; var foeSlow = 0; var foeStopped = 0; var foeNone = 0;
+                    var dumped = 0;
+                    var sb = new System.Text.StringBuilder();
+                    foreach (var c in w)
+                    {
+                        if (c.Speed >= 0.3 || !(c.GapAhead > 15.0 && c.NextMouthGap > 15.0)) continue; // road clear ahead
+                        clearStuck++;
+                        if (c.Binder < 14) byBinder[c.Binder]++;
+                        if (c.Binder == 10)
+                        {
+                            if (c.JyFoeSpeed < 0f) foeNone++;
+                            else if (c.JyFoeSpeed < 0.1f) foeStopped++;
+                            else if (c.JyFoeSpeed < 1.0f) foeSlow++;
+                            else foeMoving++;
+                        }
+                        if (dumped < 8)
+                        {
+                            var arm = c.JyArm & 0x0F; var prio = (c.JyArm & 0x80) != 0 ? "G" : "-";
+                            var gapS = double.IsPositiveInfinity(c.GapAhead) ? "inf" : c.GapAhead.ToString("F0");
+                            var mouthS = double.IsPositiveInfinity(c.NextMouthGap) ? "inf" : c.NextMouthGap.ToString("F0");
+                            sb.Append($"  CAR {c.LaneId} pos={c.Pos:F1} tlLane={c.TlLinks} bind={binderNames[Math.Min(c.Binder,(byte)13)]}");
+                            if (c.Binder == 10) sb.Append($" arm={armNames[Math.Min(arm,6)]} egoPrio={prio} foeSpd={c.JyFoeSpeed:F2}");
+                            sb.Append($" gap={gapS} exitMouth={mouthS}\n");
+                            dumped++;
+                        }
+                    }
+                    // Collision safety check: on each lane, are any two cars overlapping? (pos gap < 4 m,
+                    // cars ~5 m long). A non-zero count means the yield-timeout released a car into a foe --
+                    // the safety proof must stay 0.
+                    var overlaps = 0;
+                    var byLane = new Dictionary<string, List<double>>();
+                    foreach (var c in w)
+                    {
+                        if (!byLane.TryGetValue(c.LaneId, out var ps)) { ps = new List<double>(); byLane[c.LaneId] = ps; }
+                        ps.Add(c.Pos);
+                    }
+                    foreach (var ps in byLane.Values)
+                    {
+                        ps.Sort();
+                        for (var k = 1; k < ps.Count; k++) if (ps[k] - ps[k - 1] < 4.0) overlaps++;
+                    }
+                    Console.Write($"LIVECITY-STUCKCLEAR: t={sim.Time,4:F0} clearStuck={clearStuck} overlaps={overlaps} byBinder:");
+                    for (var b = 0; b < 14; b++) if (byBinder[b] > 0) Console.Write($" {binderNames[b]}={byBinder[b]}");
+                    Console.WriteLine($" | JYfoe: moving={foeMoving} slow={foeSlow} stopped={foeStopped} none={foeNone}");
+                    Console.Write(sb.ToString());
+                }
+            }
+        }
+    }
+    finally
+    {
+        recorder?.Dispose();
+    }
+
+    // #15 SUMO cross-check: emit the exact procedural demand as a SUMO .rou.xml (trips sorted by depart,
+    // matching depart pos/speed/lane + sigma-0 vType) so vanilla SUMO can be run on the SAME net + demand.
+    if (!string.IsNullOrEmpty(dumpRoutesPath) && sim.SpawnLog is { } spawns)
+    {
+        var sorted = spawns.OrderBy(s => s.Depart).ToList();
+        using var wtr = new StreamWriter(dumpRoutesPath);
+        wtr.WriteLine("<routes>");
+        wtr.WriteLine("  <vType id=\"c\" vClass=\"passenger\" sigma=\"0\"/>");
+        for (var k = 0; k < sorted.Count; k++)
+        {
+            var (dep, from, to) = sorted[k];
+            wtr.WriteLine(string.Format(CultureInfo.InvariantCulture,
+                "  <trip id=\"v{0}\" type=\"c\" depart=\"{1:F2}\" from=\"{2}\" to=\"{3}\" departPos=\"5\" departSpeed=\"0\" departLane=\"best\"/>",
+                k, dep, from, to));
+        }
+        wtr.WriteLine("</routes>");
+        Console.WriteLine($"LIVECITY-SMOKE: dumped {sorted.Count} trips to '{dumpRoutesPath}' (engine arrivals={sim.ArrivedTotal}).");
+    }
+
+    var reconstructedCars = draws.Count;
+    var sampledPeds = snap.Peds.Count;
+    var sampledCars = snap.Cars.Count;
+
+    Console.WriteLine(
+        $"LIVECITY-SMOKE: simHz={simHz} dt={cfg.Dt.ToString(CultureInfo.InvariantCulture)} steps={steps} " +
+        $"simTime={sim.Time.ToString("F2", CultureInfo.InvariantCulture)} sampledCars={sampledCars} " +
+        $"reconstructedCars={reconstructedCars} sampledPeds={sampledPeds} " +
+        $"occupiedCrossings(final)={snap.OccupiedCrossings} " +
+        $"peakOccupiedCrossings={sim.PeakOccupiedCrossings} carYieldObservations={sim.CarYieldObservations} " +
+        $"peakCars={sim.PeakCars} peakPeds={sim.PeakPeds}");
+
+    if (reconstructedCars <= 0 || sampledPeds <= 0 || sim.PeakOccupiedCrossings <= 0)
+    {
+        Console.Error.WriteLine(
+            "LIVECITY-SMOKE: FAILED -- expected reconstructedCars>0 && sampledPeds>0 && peakOccupiedCrossings>0.");
+        return 1;
+    }
+
+    if (recordPath is not null)
+    {
+        var fileInfo = new System.IO.FileInfo(recordPath);
+        Console.WriteLine($"LIVECITY-SMOKE: recorded '{recordPath}' ({fileInfo.Length} bytes).");
+    }
+
+    Console.WriteLine("LIVECITY-SMOKE: OK.");
+    return 0;
+}
+
+// docs/LIVE-CITY-VIEWERS-DESIGN.md §2/§4, -TASKS.md Stage C (C3): the live-city REPLAY windowed run --
+// structurally `--mode remote` with a `.simrec` ReplicationFileSource standing in for the DdsSubscriber:
+// no EngineHost/LiveCitySim anywhere in this process, just the file source + a PedFrameTrack + a
+// PlaybackClock driving both. Cars reconstruct through the SAME RenderHelpers.PumpAndBuildVehicleDraws path
+// every other mode uses (fed the file source directly -- it implements IReplicationSource, so nothing
+// downstream can tell); geometry has no Z on the wire yet, so (unlike the live path) the lane source is
+// omitted and PumpAndBuildVehicleDraws falls back to its own DdsGeometryLaneSource over the file's decoded
+// 2-D geometry, exactly like loopback/remote already do. LiveCityOverlay is reused UNCHANGED (design §5) --
+// only the LiveCitySnapshot it is fed differs (built from the reconstructed draws' Handle + the
+// PedFrameTrack's frame at Clock.Now, rather than from LiveCitySim.Sample()).
+// docs/LIVE-CITY-VISUALS-NOTES.md (tick-rate task): `renderHz` seeds the window's initial target FPS and
+// the runtime-adjustable slider in the playback panel below. Replay has no sim-hz CLI knob of its own --
+// the recording's own Dt (clock.Dt, read from the file) is displayed instead, exactly like the live
+// path's `--sim-hz` display line, just sourced from the file rather than a live LiveCityConfig.
+static int RunLiveCityReplay(string replayPath, string? screenshotPath, int frames, int renderHz, bool showZones, bool hideBuildings, bool hidePois, int? screenshotWidth = null, int? screenshotHeight = null)
+{
+    var clock = new PlaybackClock();
+    using var fileSource = new ReplicationFileSource(replayPath, clock);
+    clock.Duration = fileSource.Duration;
+    clock.Dt = fileSource.Dt > 0.0 ? fileSource.Dt : 0.5;
+
+    var pedTrack = new PedFrameTrack(replayPath);
+
+    // docs/LIVE-CITY-VISUALS-NOTES.md deliverable 2: replay has no LiveCitySim (no `.Scene` to read off) --
+    // the zone tint is purely static world data, unrelated to the recorded car/ped frames, so it is loaded
+    // directly off the SAME pinned demo_city/box dataset dir every live-city path uses. Best-effort: a
+    // `.simrec` played back without the dataset checked out (or the box companion files absent) just
+    // renders with an empty zones list rather than failing the whole replay.
+    var replayScene = LiveCityScene.Empty;
+    // docs/LIVE-CITY-VISUALS-NOTES.md "Sidewalks"/"Crosswalk zebra"/"Lane markings" rows: same best-effort
+    // reasoning as the zone tint just above -- replay has no LiveCitySim (no `.Network` to read off either),
+    // so the per-Handle Renderer.LaneRenderMeta DrawWorldDds's overlay layers need is built off a fresh
+    // NetworkParser.Parse of the SAME pinned net.xml (its lane Handles match the recording's wire geometry
+    // 1:1, since both trace back to the identical net.xml parsed in the identical deterministic order).
+    // Empty (no overlay layers, road ribbons unchanged) when the dataset isn't locally available.
+    var replayLaneMeta = new Dictionary<int, Renderer.LaneRenderMeta>();
+    try
+    {
+        var replayCfg = LiveCityConfig.ForRepoRoot(DemoCatalog.RepoRoot());
+        replayScene = LiveCityScene.Load(replayCfg.DatasetDir);
+        replayLaneMeta = BuildLaneRenderMeta(NetworkParser.Parse(Path.Combine(replayCfg.DatasetDir, "net.xml")));
+    }
+    catch (Exception ex)
+    {
+        Console.Error.WriteLine($"RunLiveCityReplay: zone-tint/sidewalk/crosswalk/lane-marking layers skipped ({ex.Message}).");
+    }
+
+    var overlay = new LiveCityOverlay();
+    var frameStats = new FrameStats();
+    var drClock = new DrClock();
+    var recon = new KinematicReconstructor { CoarseFeed = true };
+
+    var draggingSlider = false;
+    var wasPlayingBeforeDrag = false;
+    var cameraFitted = false;
+    var replayRenderHz = renderHz;
+    var replaySimHz = clock.Dt > 0.0 ? (int)Math.Round(1.0 / clock.Dt) : 0;
+
+    var cfgHost = new ViewerHostConfig
+    {
+        WindowTitle = "SumoSharp - native viewer (live city replay)",
+        ScreenshotPath = screenshotPath,
+        Frames = frames,
+        TargetFps = renderHz,
+        Width = screenshotWidth ?? new ViewerHostConfig().Width,
+        Height = screenshotHeight ?? new ViewerHostConfig().Height,
+
+        InitialCameraBounds = () => null,
+
+        PumpFrame = (dt, draws) =>
+        {
+            frameStats.Add(dt);
+
+            // docs/LIVE-CITY-VISUALS-NOTES.md deliverable 2: runtime zone-tint toggle, replay flavor --
+            // same "polled every frame, not just while the ImGui overlay is open" shape as RunLiveCity's.
+            if (global::Raylib_cs.Raylib.IsKeyPressed(global::Raylib_cs.KeyboardKey.Z))
+            {
+                showZones = !showZones;
+            }
+
+            // docs/LIVE-CITY-VISUALS-NOTES.md OWNER-CONFIRMED "POI / area rendering" block: runtime toggle,
+            // replay flavor -- same "polled every frame" shape as RunLiveCity's.
+            if (global::Raylib_cs.Raylib.IsKeyPressed(global::Raylib_cs.KeyboardKey.P))
+            {
+                hidePois = !hidePois;
+            }
+
+            clock.Tick(dt);
+
+            fileSource.Pump();
+
+            RenderHelpers.PumpAndBuildVehicleDraws(fileSource, drClock, delaySeconds: 0f, smooth: true,
+                frameStats, recon, draws, paused: !clock.Playing);
+
+            // Build the LiveCitySnapshot LiveCityOverlay expects from what replay actually has: the
+            // reconstructed cars' Handle+pose (identity label falls back to the handle's own ToString --
+            // the wire carries no vehicle NAME yet, docs/LIVE-CITY-VIEWERS-DESIGN.md §3.1 is a separate,
+            // not-yet-landed stage) and the PedFrameTrack frame INTERPOLATED at the SAME instant the cars
+            // above just resolved against (drClock.RenderSim, delaySeconds=0 here) -- not the raw
+            // nearest-frame PedsAt, which stepped exactly like the live path used to (docs/LIVE-CITY-VISUALS-
+            // NOTES.md-adjacent fix). drClock.RenderSim tracks clock.Now closely (delay=0, same file-sourced
+            // LatestVehicleSampleTime feeds both), but querying it directly keeps peds and cars in lockstep
+            // by construction rather than by coincidence.
+            var cars = new List<LiveCityCar>(draws.Count);
+            foreach (var d in draws)
+            {
+                cars.Add(new LiveCityCar(d.Handle, d.FrontX, d.FrontY, 0.0, d.HeadingDeg, d.Length, d.Width, d.Handle.ToString()));
+            }
+
+            var pedFrame = pedTrack.PedsAtInterpolated(drClock.RenderSim);
+            var peds = new List<LiveCityPed>(pedFrame.Count);
+            foreach (var p in pedFrame)
+            {
+                peds.Add(new LiveCityPed(p.Id, p.X, p.Y, p.Z, (Sim.LiveCity.PedRegime)p.Regime, p.AnimTag));
+            }
+
+            overlay.UpdateSnapshot(new LiveCitySnapshot(cars, peds, occupiedCrossings: 0));
+        },
+
+        RefitCameraBounds = () =>
+        {
+            if (!cameraFitted && fileSource.Geometry.Count > 0)
+            {
+                cameraFitted = true;
+                return RenderHelpers.ComputeGeometryBounds(fileSource.Geometry);
+            }
+
+            return null;
+        },
+
+        DrawWorld = (camera, draws) =>
+        {
+            // docs/LIVE-CITY-VISUALS-NOTES.md deliverable 2: zones default OFF (owner decision), same
+            // `showZones`-gated "zones under roads when shown" draw order as the live path (RunLiveCity).
+            if (showZones)
+            {
+                LiveCityZonesLayer.Draw(camera, replayScene.Zones);
+            }
+
+            // docs/LIVE-CITY-VISUALS-NOTES.md "Buildings (data-driven)" row: replay flavor, same
+            // default-ON/`--hide-buildings`-gated draw as the live path (RunLiveCity).
+            if (!hideBuildings)
+            {
+                LiveCityBuildingsLayer.Draw(camera, replayScene.Buildings);
+            }
+
+            // docs/LIVE-CITY-VISUALS-NOTES.md OWNER-CONFIRMED "POI / area rendering" block: replay flavor,
+            // same default-ON/`--hide-pois`-gated draw as the live path (RunLiveCity).
+            if (!hidePois)
+            {
+                LiveCityPoiLayer.Draw(camera, replayScene.Areas, replayScene.Pois);
+            }
+
+            Renderer.DrawWorldDds(camera, fileSource.Geometry, fileSource.TlStateByLane, draws, replayLaneMeta);
+            overlay.DrawWorldOver(camera, SimulationSnapshot.Empty, draws);
+
+            if (!fileSource.GeometryComplete)
+            {
+                Renderer.DrawWaitingOverlay(Raylib.GetScreenWidth(), Raylib.GetScreenHeight(), "loading recording...");
+            }
+        },
+
+        OnWorldClick = (wx, wy) => overlay.OnWorldClick(wx, wy),
+
+        DrawImGui = showDiagnostics =>
+        {
+            ViewerControlsPanels.DrawPlaybackPanel(clock, ref draggingSlider, ref wasPlayingBeforeDrag,
+                rateFooter: () => ViewerControlsPanels.DrawLiveCityRatePanel(replaySimHz, clock.Dt, ref replayRenderHz, ref showZones));
+            overlay.DrawUi();
+            if (showDiagnostics)
+            {
+                var (min, avg, p99) = frameStats.Compute();
+                ImGui.SetNextWindowPos(new System.Numerics.Vector2(10, 410), ImGuiCond.FirstUseEver);
+                ImGui.SetNextWindowSize(new System.Numerics.Vector2(360, 170), ImGuiCond.FirstUseEver);
+                ImGui.Begin("SumoSharp - diagnostics");
+                ImGui.Text($"fps: {Raylib.GetFPS()}");
+                ImGui.Text($"frame ms  min {min * 1000f:F2}  avg {avg * 1000f:F2}  p99 {p99 * 1000f:F2}");
+                ImGui.Text($"replay: {replayPath}");
+                ImGui.Text($"cars in view: {fileSource.History.Count}   peds: {pedTrack.PedsAtInterpolated(drClock.RenderSim).Count}");
+                ImGui.End();
+            }
+        },
+    };
+
+    return ViewerHost.Run(cfgHost);
+}
+
+// docs/LIVE-CITY-VIEWERS-TASKS.md Stage C (C3) success condition ("a --replay <file> --smoke that steps
+// through the whole recording and asserts reconstructedCars>0 && peds>0 sourced FROM THE FILE"). No window,
+// no ViewerHost -- drives the SAME ReplicationFileSource/PedFrameTrack/PlaybackClock/RenderHelpers path
+// RunLiveCityReplay uses, just headlessly, stepping the clock across the whole recorded duration.
+static int RunLiveCityReplaySmoke(string replayPath)
+{
+    var clock = new PlaybackClock();
+    using var fileSource = new ReplicationFileSource(replayPath, clock);
+    clock.Duration = fileSource.Duration;
+    clock.Dt = fileSource.Dt > 0.0 ? fileSource.Dt : 0.5;
+
+    var pedTrack = new PedFrameTrack(replayPath);
+
+    var frameStats = new FrameStats();
+    var drClock = new DrClock();
+    var recon = new KinematicReconstructor { CoarseFeed = true };
+    var draws = new List<Renderer.DrVehicleDraw>();
+
+    var stepDt = clock.Dt > 0.0 ? clock.Dt : 0.5;
+    var reconstructedCars = 0;
+    var peds = 0;
+
+    for (var t = 0.0; t <= clock.Duration + 1e-6; t += stepDt)
+    {
+        clock.SeekTo(t);
+        fileSource.Pump();
+        frameStats.Add((float)stepDt);
+        RenderHelpers.PumpAndBuildVehicleDraws(fileSource, drClock, delaySeconds: 0.5f, smooth: true,
+            frameStats, recon, draws, paused: false);
+        reconstructedCars = Math.Max(reconstructedCars, draws.Count);
+        peds = Math.Max(peds, pedTrack.PedsAtInterpolated(t).Count);
+    }
+
+    Console.WriteLine(
+        $"LIVECITY-REPLAY-SMOKE: duration={clock.Duration:F1} frames={pedTrack.FrameCount} " +
+        $"reconstructedCars={reconstructedCars} peds={peds}");
+
+    if (reconstructedCars <= 0 || peds <= 0)
+    {
+        Console.Error.WriteLine(
+            "LIVECITY-REPLAY-SMOKE: FAILED -- expected reconstructedCars>0 && peds>0.");
+        return 1;
+    }
+
+    Console.WriteLine("LIVECITY-REPLAY-SMOKE: OK.");
     return 0;
 }
 

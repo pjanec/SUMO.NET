@@ -6,7 +6,9 @@ using CityLib;
 using Godot;
 using Sim.Core;
 using Sim.Ingest;
+using Sim.LiveCity;
 using Sim.Replication;
+using Sim.Replication.Recording;
 #if CITY3D_REMOTE
 using CycloneDDS.Runtime;
 using Sim.Replication.Dds;
@@ -29,8 +31,15 @@ public partial class Main : Node3D
     // point of the DR (dead-reckoning) motion story (design "Data path").
     private const double SimStepSeconds = 1.0;
 
-    // Playout delay per design "Playout delay": a stable, small manual knob (~0.3-0.5s), not auto-driven.
-    private const double PlayoutDelaySeconds = 0.4;
+    // Playout delay per design "Playout delay": a stable, small manual knob. Fix 6 (Windows GPU testing
+    // session, docs/LIVE-CITY-WINDOWS-TESTING-BOOTSTRAP.md): was a const 0.4s (matched to the ~1Hz
+    // in-process vehicle publish cadence); on the adaptive per-vehicle DDS feed a car's packet gap can
+    // exceed 0.4s, so the DrClock query instant (renderSim - delay) races past the newest buffered
+    // packet into pure extrapolation, then snap-corrects when the next packet lands late -- the
+    // "extrapolate-then-correct back-jitter" the session measured. The 2D viewer already defaults to
+    // 1.0s; testing confirmed 1.0s is "way better" here too. Now a live field (not const) so
+    // BuildRateControlUi's slider can retune it at runtime without a relaunch.
+    private double _playoutDelaySeconds = 1.0;
 
     // Quit after this many rendered frames -- enough to observe several sim ticks and a non-zero vehicle
     // count on scenarios/09-traffic-light, while keeping the headless smoke run fast. At a fixed 60 FPS
@@ -43,6 +52,19 @@ public partial class Main : Node3D
     // MeshInstance3D reuses it (a single StandardMaterial3D resource, not one per lane).
     private static readonly Color AsphaltColor = new(0.08f, 0.085f, 0.09f);
 
+    // docs/LIVE-CITY-VISUALS-NOTES.md "Sidewalks" row / DESIGN-live-city-2d-viz.md §2 layer 2b -- a
+    // pedestrian-only lane (Sim.Ingest.Lane.AllowsRoadVehicle == false) renders as a lighter "concrete"
+    // band, matching the reference renderer's own `#8a8f99` (138,143,153) vs `#4a4d55` car-asphalt hex
+    // exactly (normalized to 0..1), so the two viewers read the same footpath-vs-road contrast even though
+    // this 3D path's own AsphaltColor above is a much darker absolute tone than the reference's.
+    private static readonly Color ConcreteColor = new(138f / 255f, 143f / 255f, 153f / 255f);
+
+    // docs/LIVE-CITY-VISUALS-NOTES.md "Lane markings" / "Crosswalk zebra" rows -- unshaded near-white paint
+    // for both the seam dashes (CityLib.LaneMarkingBuilder) and the zebra stripes (CityLib.CrosswalkBuilder)
+    // so they read as bright road paint regardless of the scene's DirectionalLight3D angle, matching the
+    // reference renderer's own near-opaque white strokes (`rgba(255,255,255,0.85)` / `rgba(255,255,255,0.6)`).
+    private static readonly Color RoadPaintColor = new(0.92f, 0.92f, 0.94f);
+
     // Small seeded grey palette (design "Buildings": "variety without assets = scale + a small palette of
     // seeded materials") -- picked by instance index, which is itself a deterministic function of
     // (edge, step, side) via BuildingPlacer, so the palette assignment is reproducible too.
@@ -53,6 +75,74 @@ public partial class Main : Node3D
         new(0.47f, 0.49f, 0.52f),
         new(0.58f, 0.56f, 0.51f),
     };
+
+    // docs/LIVE-CITY-VISUALS-NOTES.md deliverable 2 -- district ground-tint palette, matching the reference
+    // renderer's ZONE_FILL table (docs/reference/live-city-viz/renderer/templates/template.js:93-105) by
+    // hue: downtown neutral grey, retail amber, dining pink, residential blue, park green, arterial faint
+    // grey. Alpha is bumped from the reference's raw canvas-overlay values (0.05-0.14) into the ~0.18-0.25
+    // band the task calls for -- a flat unlit 3D ground plane at overview-camera range reads much fainter
+    // than the same alpha painted directly onto a 2D canvas, so a straight channel copy would be nearly
+    // invisible here. Arterial is kept the faintest of the six (matches the reference's own relative
+    // ordering: it is described as "faint grey" there too), unknown zone types fall back to ZoneFillDefault.
+    private static readonly Dictionary<string, Color> ZoneFillPalette = new(StringComparer.Ordinal)
+    {
+        ["downtown"] = new Color(148f / 255f, 163f / 255f, 184f / 255f, 0.20f),
+        ["retail"] = new Color(245f / 255f, 158f / 255f, 11f / 255f, 0.22f),
+        ["dining"] = new Color(244f / 255f, 114f / 255f, 182f / 255f, 0.22f),
+        ["residential"] = new Color(96f / 255f, 165f / 255f, 250f / 255f, 0.20f),
+        ["park"] = new Color(34f / 255f, 197f / 255f, 94f / 255f, 0.22f),
+        ["arterial"] = new Color(148f / 255f, 163f / 255f, 184f / 255f, 0.10f),
+    };
+
+    private static readonly Color ZoneFillDefault = new(156f / 255f, 163f / 255f, 175f / 255f, 0.15f);
+
+    // docs/LIVE-CITY-VISUALS-NOTES.md "Buildings (data-driven)" row -- matches the reference renderer's
+    // BUILDING_FILL exactly (docs/reference/live-city-viz/renderer/templates/template.js:114-121),
+    // channels only (the reference's own alpha is dropped here: these buildings are OPAQUE solid massing,
+    // not a translucent ground wash like ZoneFillPalette above): mall amber, office blue, residential
+    // teal, restaurant red, garage grey; unknown types fall back to BuildingFillDefault (the reference's
+    // BUILDING_FILL_DEFAULT channels).
+    private static readonly Dictionary<string, Color> BuildingFillPalette = new(StringComparer.Ordinal)
+    {
+        ["mall"] = new Color(245f / 255f, 158f / 255f, 11f / 255f),
+        ["office"] = new Color(59f / 255f, 130f / 255f, 246f / 255f),
+        ["residential"] = new Color(45f / 255f, 212f / 255f, 191f / 255f),
+        ["restaurant"] = new Color(248f / 255f, 113f / 255f, 113f / 255f),
+        ["garage"] = new Color(107f / 255f, 114f / 255f, 128f / 255f),
+    };
+
+    private static readonly Color BuildingFillDefault = new(156f / 255f, 163f / 255f, 175f / 255f);
+
+    // docs/LIVE-CITY-VISUALS-NOTES.md OWNER-CONFIRMED "POI / area rendering" block -- "Same color palette
+    // in 2D and 3D so they read identically" -- these hex values are duplicated verbatim in
+    // src/Sim.Viewer/LiveCityPoiLayer.cs (the 2D side; mirrors ZoneFillPalette/BuildingFillPalette's own
+    // cross-viewer duplication, since the two viewers don't share a rendering-side assembly). Flat, opaque
+    // ground-marker colours by POI kind: venue=amber, dwell_spot=pink, transit_stop=cyan,
+    // parking_access=light-blue. `building_entrance` is deliberately absent -- that kind renders as a DOOR
+    // (DoorColor below), never a ground marker (PoiGroundBuilder.Build already excludes it).
+    private static readonly Dictionary<string, Color> PoiMarkerPalette = new(StringComparer.Ordinal)
+    {
+        ["venue"] = new Color(245f / 255f, 158f / 255f, 11f / 255f),
+        ["dwell_spot"] = new Color(244f / 255f, 114f / 255f, 182f / 255f),
+        ["transit_stop"] = new Color(34f / 255f, 211f / 255f, 238f / 255f),
+        ["parking_access"] = new Color(96f / 255f, 165f / 255f, 250f / 255f),
+    };
+
+    private static readonly Color PoiMarkerDefault = new(200f / 255f, 200f / 255f, 200f / 255f);
+
+    // "building_entrance = the ONE vertical element ... Different color (green) so it reads as a door."
+    private static readonly Color DoorColor = new(34f / 255f, 197f / 255f, 94f / 255f);
+
+    // POI AREAS (parking_lot/park, pois.json records that carry a `polygon`): "parking = grey, park =
+    // green" -- reuses ZoneGroundBuilder's flat-ground-mesh math (same polygon -> tinted-plane pipeline as
+    // the zones layer), just with its own palette and ground offset (see BuildPoiAreas).
+    private static readonly Dictionary<string, Color> PoiAreaFillPalette = new(StringComparer.Ordinal)
+    {
+        ["parking_lot"] = new Color(148f / 255f, 163f / 255f, 184f / 255f, 0.35f),
+        ["park"] = new Color(34f / 255f, 197f / 255f, 94f / 255f, 0.30f),
+    };
+
+    private static readonly Color PoiAreaFillDefault = new(156f / 255f, 163f / 255f, 175f / 255f, 0.20f);
 
     // Small seeded car-body palette (design "Cars" / task T1.5, mirrors BuildingPalette's "variety without
     // assets" pattern) -- picked deterministically by VehicleHandle.Index (stable across frames for a given
@@ -82,13 +172,77 @@ public partial class Main : Node3D
     private static readonly Color PedLowPowerColor = new(0.58f, 0.64f, 0.72f);   // slate  -- low-power PathArc
     private static readonly Color PedHighPowerColor = new(0.22f, 0.74f, 0.97f);  // cyan   -- high-power FreeKinematic
 
+    // docs/LIVE-CITY-VIEWERS-DESIGN.md §6, -TASKS.md D1 -- the `--live-city` ped regime palette (distinct
+    // from the plaza `--peds` palette above, since Sim.LiveCity.PedRegime has a THIRD state, Paused, the
+    // plaza's two-state PedRegime doesn't): grey = low-power weave, orange = promoted full-ORCA high-power,
+    // yellow = paused/dwell.
+    private static readonly Color LiveCityPedLowPowerColor = new(0.55f, 0.55f, 0.55f);  // grey
+    private static readonly Color LiveCityPedHighPowerColor = new(0.92f, 0.55f, 0.12f); // orange
+    private static readonly Color LiveCityPedPausedColor = new(0.92f, 0.85f, 0.20f);    // yellow
+
+    // When true (set in the live-city ready paths), UpdatePeds uses the live-city palette (grey low-power /
+    // orange high-power ORCA) instead of the plaza slate/cyan -- orange pops far more clearly so the tester
+    // can SEE which peds are promoted to full ORCA. The plaza `--peds` path leaves this false.
+    private bool _liveCityPedPalette;
+
+    // docs/LIVE-CITY-VIEWERS-DESIGN.md §5, -TASKS.md D4 -- the click-to-identify highlight ring/label
+    // colour (a distinct cyan, unused by any car/ped/TL palette above so a selected vehicle never blends
+    // into its own body colour) and the pick radius in SCREEN pixels (mirrors LiveCityOverlay's world-space
+    // `DefaultPickRadius`, just in screen units since Main.cs has no physics colliders to ray-pick against
+    // -- design §5: "camera ray -> nearest instance").
+    private static readonly Color SelectionColor = new(0.20f, 0.85f, 0.95f);
+    private const float PickPixelRadius = 24f;
+
+    // docs/LIVE-CITY-VIEWERS-TASKS.md D1 -- the coupled sim's own tick length (Sim.LiveCity.LiveCityConfig.Dt
+    // default). The live-city accumulator advances LiveCitySource.Tick() in this many whole increments,
+    // exactly like AdvanceLocalSim/ProcessPeds' own fixed sim-cadence accumulators, just on ITS OWN fields
+    // (design §6: "the shared per-frame accumulator/frame counter are split per-domain").
+    private const double LiveCityTickSeconds = 0.5;
+
+    // Half-extent (metres) of the tight box the `--live-city` OVERVIEW camera frames, centred on the crop
+    // (see ReadyLiveCity's remark): small enough that cars/peds are legible in a fixed-resolution
+    // screenshot, large enough to still show several intersections' worth of the coupled scene.
+    //
+    // Visibility polish (docs/LIVE-CITY-VIEWERS-TASKS.md Stage D "visibility polish"): the original 180m
+    // half-extent (360m box) put a 4.5m car at a few dozen pixels and a person at sub-pixel scale in a
+    // fixed-resolution screenshot. Halved to a ~180m box (a "mid-zoom that frames ~150-200m of the crop",
+    // the task's stated alternative to switching the default `--camera` mode itself) -- `--camera=close`/
+    // `--camera=overview` both keep working unchanged, this only tightens what "overview" frames.
+    private const float LiveCityFrameHalfExtentMeters = 90f;
+
+    // Visibility polish (docs/LIVE-CITY-VIEWERS-TASKS.md Stage D) -- the live-city overview camera's own
+    // (heightFactor, backFactor) pair, LOWER/more-oblique than the whole-network CameraHeightFactor/
+    // CameraBackFactor above (1.1/0.9, a near-vertical "satellite" angle where a true-scale car/ped is a
+    // sub-pixel dot regardless of zoom): a lower angle actually shows their silhouette height, while still
+    // framing the WHOLE tightened crop box (LiveCityFrameHalfExtentMeters), unlike `--camera=close` (which
+    // tracks a single vehicle/signal up close, not the crowd as a whole).
+    private const float LiveCityCameraHeightFactor = 0.55f;
+    private const float LiveCityCameraBackFactor = 1.15f;
+
+    // Local live-city INTERACTIVE initial framing: unlike the tight/shallow screenshot overview above, this
+    // frames the WHOLE cropped road net from an elevated ~55deg-tilted bird's-eye (atan(0.95/0.65)), so the
+    // opening view shows the entire central area at once -- no flying up/turning down before you can see the
+    // city. The orbit camera can zoom/tilt freely afterwards. Padding gives the road net a small margin.
+    private const float LiveCityOverviewHeightFactor = 0.95f;
+    private const float LiveCityOverviewBackFactor = 0.65f;
+    private const float LiveCityOverviewPadMeters = 40f;
+
     // Viewer-only LEGIBILITY render scale for the ped avatars (docs/DEMO-CITY3D-DESIGN.md "#### Pedestrians
     // (P7-3)"): the tested CityLib.PedTransform keeps the true ~0.5x1.8 m avatar, but at plaza camera range a
     // 0.5 m figure is barely a pixel, so the Viewer draws a scaled-up slim avatar purely for on-screen
     // legibility -- the exact same idea src/Sim.Viewer/RemotePedOverlay.cs uses (it renders peds at a 1.2 m
     // disc vs the 0.3 m physical radius). Proportions stay slim/upright so it still reads as a pedestrian.
-    private const float PedRenderHeightMeters = 3.2f;
-    private const float PedRenderWidthMeters = 1.1f;
+    //
+    // docs/LIVE-CITY-VISUALS-NOTES.md-adjacent fix (ped-size task): was bumped to an oversized 4.0m tall /
+    // 1.6m wide (docs/LIVE-CITY-VIEWERS-TASKS.md Stage D) purely so the `--live-city` crowd stayed legible
+    // at TOWN zoom with no interactive camera. Now that the orbit camera can get close (see
+    // LiveCityFrameHalfExtentMeters above), that size reads as absurdly oversized next to the ~4.5m cars --
+    // shrunk to a realistic human scale (~1.8m tall, ~0.55m shoulder-width/diameter). Still a CylinderMesh
+    // (BuildPedMultiMesh) shared by the plaza `--peds` path. The Raylib 2D peds (LiveCityOverlay.PedRadius,
+    // a flat 0.3m disc) are a DIFFERENT, unrelated constant -- deliberately left alone (2D discs read fine
+    // at their existing size; this is a 3D-only fix).
+    private const float PedRenderHeightMeters = 1.8f;
+    private const float PedRenderWidthMeters = 0.55f;
 
     // The ped camera frames a tight box around the crossing plaza (peds only ever cross the central ~40 m;
     // the road arms extend ~240 m, so framing the whole road bbox -- as the vehicle path does -- would leave
@@ -116,6 +270,32 @@ public partial class Main : Node3D
     // look-through-the-building-wall problem a full 90deg offset has.
     private const float CloseCameraLateralMeters = 12f;
 
+    // Interactive camera controller (docs/LIVE-CITY-VIEWERS-DESIGN.md camera-controller deliverable) --
+    // input sensitivities + the click-vs-drag disambiguation threshold. Orbit/pan are proportional to
+    // pixel motion (Godot InputEventMouseMotion.Relative); pan is additionally scaled by the controller's
+    // CURRENT Distance (below) so the pan speed feels consistent whether zoomed in close or far out.
+    private const float OrbitYawRadPerPixel = 0.006f;
+    private const float OrbitPitchRadPerPixel = 0.006f;
+    private const float PanMetersPerPixelPerDistance = 0.0016f;
+    private const float ZoomStepFactor = 0.9f; // one wheel notch: *0.9 to zoom in, /0.9 to zoom out
+    private const float ClickDragThresholdPixels = 5f;
+    // Unity-Scene-view camera scheme (RMB look+WASD/QE fly, MMB pan, Alt+LMB orbit, scroll dolly, F frame).
+    private const float FlyMetersPerSecond = 45f;            // WASD/QE fly speed -- FIXED m/s (NOT distance-scaled)
+    private const float FlyShiftMultiplier = 4f;             // Shift = 4× faster fly (Unity's "sprint")
+
+    // Wheel zoom: each notch multiplies a TARGET distance by ZoomStepFactor (so the step is proportional to
+    // distance -- big far out, gentle near the ground -- and asymptotes at the focus instead of a constant
+    // fly-through step), and the actual distance eases toward that target each frame (frame-rate-independent
+    // exponential smoothing at ZoomSmoothRate) so the zoom glides instead of jumping.
+    private const float ZoomSmoothRate = 12f;
+    private float _zoomTargetDistance;
+    private bool _zoomInit;
+
+    // Infinite ground-grid reference (a Unity-editor-like floor grid, so empty ground reads as a plane).
+    private const float GridSpacingMeters = 25f;    // line every 25 m
+    private const float GridHalfExtentMeters = 2500f; // 5 km grid, recentered under the camera each frame => "infinite"
+    private const float GridGroundY = -0.1f;        // just below zone tint (-0.05) and roads (0) so both draw on top
+
     // Task T3.1 -- video-wall channel tile pixel height (each channel's SubViewport). Width is derived per
     // channel so its aspect matches what that channel's frustum actually needs (screen-corners mode derives
     // aspect from the geometry itself; offset+fov mode uses WallDefaultAspect below), never distorted/
@@ -137,9 +317,49 @@ public partial class Main : Node3D
     private double _accumulator;
     private int _frame;
     private string? _shotPath;
+
+    // BLOCKER fix (see ShouldAutoQuit): whether the in-code QuitAfterFrames auto-quit is even armed this
+    // run, and the explicit `--frames=N` override that supersedes it either way. Both resolved ONCE at the
+    // top of _Ready(), before any mode dispatch, exactly like _simHz/_renderHz above.
+    private bool _isHeadless;
+    private int? _framesOverride;
     private string _cameraMode = "overview";
     private (Vector3 Min, Vector3 Max) _sceneBbox;
     private Camera3D? _closeCamera;
+
+    // Interactive camera controller (docs/LIVE-CITY-VIEWERS-DESIGN.md camera-controller deliverable):
+    // `--camera=overview|close` (above) picks the INITIAL framing, exactly as before; `_orbitController`
+    // (CityLib, Godot-free pure math) then owns the camera's pose every frame from there on, and
+    // `_orbitCamera` is whichever Camera3D node it drives -- the overview `FramingCamera` normally, or
+    // `_closeCamera` when `--camera=close` was requested. Left null in video-wall mode (N simultaneous
+    // Current cameras -- an orbit model over "the" camera doesn't apply there, out of scope for this
+    // deliverable) and stays inert with no input wired up in headless `--shot` runs (no InputEvent ever
+    // fires under Xvfb without a real user), so `--shot` renders the untouched initial framing either way.
+    private OrbitCameraController? _orbitController;
+    private Camera3D? _orbitCamera;
+
+    // Far-plane tracking (bug fix: the far plane used to be fixed at setup time -- roughly extent*4/500m
+    // for the overview camera or a flat 2000m for the close camera -- so dollying out past it clipped the
+    // road grid/cars into nothing). `_orbitBaseFar` is that ORIGINAL computed far distance (never shrunk
+    // below -- it's already sized to comfortably frame the initial view), and `_orbitSceneExtent` is the
+    // scene bbox's horizontal half-extent the camera was framed against (same quantity BuildCameraAndLight
+    // computes internally). Every ApplyOrbitCamera call recomputes Far as
+    // `Max(_orbitBaseFar, Distance * 2.5 + _orbitSceneExtent)`: the `distance * 2.5` term keeps the far
+    // plane comfortably beyond the camera regardless of orbit angle (2.5x covers the camera-to-focus
+    // distance plus enough slack for the focus-to-far-edge-of-scene distance from any yaw/pitch), and
+    // `+ sceneExtent` covers geometry that extends past the focus point in the direction the camera is
+    // looking. Both fields are set once in SetupOrbitCamera.
+    private float _orbitBaseFar;
+    private float _orbitSceneExtent;
+
+    // Left-button-down/up drag-vs-click disambiguation (task requirement: "left-click *without drag* must
+    // still pick a vehicle... < 5px -> click -> pick, else it was an orbit drag -- consume it, no pick").
+    // `_leftButtonDown` doubles as "is the mouse currently orbiting" for InputEventMouseMotion; Shift+left
+    // or a middle-button drag pans instead (`_middleButtonDown`).
+    private Vector2? _leftButtonDownPos;
+    private bool _leftButtonDown;
+    private bool _middleButtonDown;
+    private bool _rightButtonDown; // Unity RMB flythrough: held = FPS look + WASD/QE fly
 
     // docs/DEMO-CITY3D-DESIGN.md "Data path -> Remote mode" / task T2.2b -- `--transport=local|dds`.
     // "local" (default) preserves today's behavior byte-for-byte. "dds" only works in a build compiled
@@ -170,6 +390,14 @@ public partial class Main : Node3D
     // server clock is wire-authoritative (newest crowd-frame time), kept monotonic across frames.
     private DdsPedReplicationSource? _ddsPedSource;
     private double _pedRemoteServerTime;
+
+    // docs/LIVE-CITY-VIEWERS-DESIGN.md §7, -TASKS.md Stage E (E4) -- true only for the combined
+    // `--live-city --transport=dds` path (ReadyLiveCityRemote): distinguishes it from the plain vehicle
+    // remote (ReadyRemote, which ALSO sets `_ddsSource`) and the plaza ped remote (ReadyPeds' dds branch,
+    // which ALSO sets `_ddsPedSource`) so ProcessLiveCity can dispatch to ProcessLiveCityRemote without
+    // guessing from field nullity alone (a bare `_liveCity` flag is not enough since `_transport` also
+    // varies, and `_ddsSource is not null` alone is ambiguous with ReadyRemote's own non-live-city path).
+    private bool _liveCityRemote;
 #endif
 
     // Task T1.6 Part B -- built LAZILY on the first _Process frame `sim.Source.TlStateByLane` is
@@ -179,6 +407,64 @@ public partial class Main : Node3D
     // split RoadMeshBuilder (static) / BuildCarMultiMesh+UpdateCars (per frame) already establish.
     private readonly List<(int LaneHandle, MeshInstance3D HeadInstance, StandardMaterial3D HeadMaterial)> _signalHeads = new();
     private bool _signalHeadsBuilt;
+
+    // Buildings visibility toggle (`--hide-buildings` startup flag + runtime `B` key). `ReadyLocal`'s
+    // `--scenario` path calls BuildBuildings (procedural BuildingPlacer, one MultiMeshInstance3D); every
+    // `--live-city` entry point (local live, replay, remote) calls BuildLiveCityBuildings, which is
+    // DATA-DRIVEN FIRST (BuildDataDrivenBuildings off LiveCityScene.Buildings -- one Node3D parenting a
+    // MeshInstance3D per building, docs/LIVE-CITY-VISUALS-NOTES.md's "data over defaults" standing
+    // directive) and falls back to the SAME procedural BuildBuildings only when the scene has no
+    // buildings.json data. Typed as the common base `Node3D` (MultiMeshInstance3D IS a Node3D) so one
+    // field/one toggle covers both shapes -- `--peds` builds neither, leaving this null (harmless no-op
+    // toggle there).
+    private Node3D? _buildingsNode;
+
+    // docs/LIVE-CITY-VISUALS-NOTES.md deliverable 2: zone-tint visibility toggle, same shape as
+    // `_buildingsNode`/`B` above, except zones default HIDDEN (owner decision: opt-in, not the default
+    // wash) -- BuildZoneGround starts `_zonesNode` invisible unconditionally; `--show-zones` startup flag
+    // + runtime `Z` key are the only ways to make it visible. Built by BuildZoneGround, wired into
+    // ReadyLiveCityLive/ReadyLiveCityReplay/BuildRemoteLiveCityScene -- every `--live-city` entry
+    // point, since the zone tint is a live-city-only overlay (no `--scenario`/`--peds` dataset carries a
+    // zones.json today). Null (harmless no-op toggle) wherever it wasn't built.
+    private Node3D? _zonesNode;
+
+    // docs/LIVE-CITY-VISUALS-NOTES.md OWNER-CONFIRMED "POI / area rendering" block: ONE parent Node3D for
+    // the whole "POI + doors + areas" group (per the task's explicit "one toggle for the whole ... group is
+    // fine") -- parents three children (BuildLiveCityPois): "PoiAreas" (parking_lot/park ground tint),
+    // "PoiMarkers" (the flat venue/transit_stop/dwell_spot/parking_access ground discs), "Doors" (the
+    // vertical building_entrance boxes). Default VISIBLE (a primary feature, same as `_buildingsNode`/`B`)
+    // -- `--hide-pois` starts it hidden; the runtime `P` key (_UnhandledInput) toggles it from there. Null
+    // (harmless no-op toggle) wherever it wasn't built (e.g. `--peds`, `--scenario`).
+    private Node3D? _poisNode;
+
+    // Infinite ground grid (built once in SetupOrbitCamera, recentered on the camera each frame in
+    // ApplyOrbitCamera so it reads as infinite). Runtime `G` key toggles it; default visible.
+    private MeshInstance3D? _gridNode;
+
+    // The high-realism LC-realism zone highlight, drawn as ONE ground ring (docs/LIVE-CITY-CAMERA-
+    // REALISM-ZONE-DESIGN.md). `_highRealismNode` is the transform-driven parent (repositioned + XZ-scaled
+    // each frame to the live zone so Follow moves without rebuilding the mesh); `_lcZoneRing` is the unit-
+    // radius ring child. `H` cycles the mode; the ring tint reflects it.
+    private Node3D? _highRealismNode;
+    private MeshInstance3D? _lcZoneRing;
+
+    // #15 camera-driven LC-realism zone (docs/LIVE-CITY-CAMERA-REALISM-ZONE-DESIGN.md). Central = the
+    // static crop-centre pocket (default; == prior behaviour); Follow = zone tracks the camera look-at;
+    // Locked = frozen at the camera zone captured when Locked was entered. `H` cycles; the OptionButton in
+    // the rate panel mirrors it. LOCAL live path only (remote runs LiveCitySim in the producer).
+    private enum LcZoneMode { Central, Follow, Locked }
+    private LcZoneMode _lcZoneMode = LcZoneMode.Central;
+    private double _lcZoneLockedX, _lcZoneLockedY, _lcZoneLockedR; // captured on entering Locked
+    private OptionButton? _lcZoneModeDropdown;
+    private Label? _lcZoneModeLabel;
+
+    // Follow/Locked zone geometry: centre = camera->ground raycast (respects orientation); radius =
+    // slant-distance * tan(halfFov) * fill, so a WIDER FOV (or nearer look-point) gives a LARGER zone that
+    // fits inside the ground frustum trapezoid. LcZoneDistanceFactor is the horizon fallback only.
+    private const double LcZoneFovFillFactor = 1.0;
+    private const double LcZoneDistanceFactor = 0.55;
+    private const double LcZoneMinRadius = 30.0;
+    private const double LcZoneMaxRadius = 600.0;
 
     // Task T1.5 -- ONE MultiMeshInstance3D for every car, built once in _Ready and reused every frame:
     // only the per-instance transforms/colors are rewritten each _Process; the underlying buffer
@@ -198,10 +484,131 @@ public partial class Main : Node3D
     private PedReconstructor? _pedReconstructor;
     private MultiMesh? _pedMultiMesh;
 
+    // docs/LIVE-CITY-VIEWERS-DESIGN.md §6, -TASKS.md Stage D (D1) -- the `--live-city` LOCAL combined
+    // cars+peds path. When set, ReadyLiveCity/ProcessLiveCity render BOTH a car MultiMesh (via the SAME
+    // Reconstructor/UpdateCars the --scenario path uses, over LiveCitySource.Source/LocalLanes) AND a ped
+    // MultiMesh (UpdatePeds, fed by LiveCitySource.PedSource via CityLib.PedReconstructor) in ONE scene -- no `if(_peds){...return;}`
+    // mutual exclusion. Its own accumulator/frame fields (below) are SEPARATE from _accumulator/_frame (the
+    // vehicle/ped-plaza paths' own) so both domains can advance in the same tick without a field collision
+    // (design §6).
+    private bool _liveCity;
+    private LiveCitySource? _liveCitySource;
+    private double _liveCityAccumulator;
+    private int _liveCityFrame;
+
+    // Ped-smoothing fix (docs/LIVE-CITY-VISUALS-NOTES.md-adjacent), PIVOTED from snapshot-interpolation to
+    // wire reconstruction: peds used to be drawn straight from LiveCitySource.Sample().Peds (the raw
+    // per-sim-tick snapshot) every render frame -- a step function at the render frame rate. An interim fix
+    // linearly interpolated those snapshots (PedInterpolator); this superseded it by reconstructing off the
+    // SAME in-memory replication wire the remote/DDS ped path already reconstructs from
+    // (LiveCitySource.PedSource -> CityLib.PedReconstructor -> Sim.Pedestrians.Lod.PedRemoteReconstructor's
+    // continuous HeadlessIg.ReconstructSample playout), exactly like ProcessLiveCityRemote/ProcessPeds's
+    // dds branch already do. This is velocity-continuous by construction (no snapshot brackets, no tick
+    // boundary at all) and unifies local live-city ped rendering with the remote path's proven pipeline.
+    // Shared with the replay path is NOT needed -- replay still interpolates via
+    // PedFrameTrack.PedsAtInterpolated (its own frame-track history, a separate later task). A SEPARATE
+    // CityLib.PedReconstructor instance from `_pedReconstructor` (used by ReadyPeds/ReadyLiveCityRemote):
+    // PedReconstructor binds to its FIRST source and throws if reused against a different one, and the
+    // local live path's source (LiveCitySource.PedSource, an in-memory bus) is never the same instance as
+    // the `--peds`/remote paths' own.
+    private CityLib.PedReconstructor? _liveCityPedReconstructor;
+
+    // docs/LIVE-CITY-VISUALS-NOTES.md (tick-rate task): the two INDEPENDENT tick-rate knobs, resolved once
+    // at the top of _Ready (ValidateSimHz/ValidateRenderHz, mirroring src/Sim.Viewer/Program.cs's own
+    // helpers) so every downstream path (local live, remote, replay) sees the same values. `_simHz` is
+    // CLI-only/display -- `_liveCityDt` (the value ProcessLiveCity's accumulator actually loops on, in
+    // place of the old hardcoded `LiveCityTickSeconds` const) is set from it once in ReadyLiveCityLive,
+    // after building the LiveCityConfig the Hz maps through (Dt = 1/Hz). `_renderHz` IS live -- the
+    // on-screen slider (BuildRateControlUi) pushes straight to Godot.Engine.MaxFps at runtime.
+    private int _simHz = 2;
+    private int _renderHz = 60;
+    private double _liveCityDt = LiveCityTickSeconds;
+
+    // The on-screen render-hz control (BuildRateControlUi) -- built once from ReadyLiveCityLive/
+    // ReadyLiveCityReplay/ReadyLiveCityRemote (Fix 6), mirrors _playbackUi/_timelineSlider's own field
+    // shape. `_playoutDelayLabel`/`_playoutDelaySlider` are Fix 6's added third row.
+    private CanvasLayer? _rateUi;
+    private HSlider? _renderHzSlider;
+    private Label? _rateLabel;
+    private HSlider? _playoutDelaySlider;
+    private Label? _playoutDelayLabel;
+
+    // docs/LIVE-CITY-VIEWERS-DESIGN.md §2.3/§4, -TASKS.md D3 -- the `--live-city --replay <file.simrec>`
+    // REPLAY path: swaps LiveCitySource for a PlaybackClock-driven ReplicationFileSource (cars) +
+    // PedFrameTrack (peds), both from the packaged SumoSharp.Replication (Sim.Replication.Recording).
+    // Live vs. replay differ ONLY in the source (design tenet 2) -- ProcessLiveCity dispatches to
+    // ProcessLiveCityReplay below, which still drives the SAME _reconstructor/UpdateCars/UpdateReplayPeds-
+    // shaped rendering, just off these fields instead of `_liveCitySource`.
+    private bool _replay;
+    private PlaybackClock? _clock;
+    private ReplicationFileSource? _replaySource;
+    private PedFrameTrack? _pedTrack;
+
+    // docs/LIVE-CITY-VIEWERS-TASKS.md D3 -- the Godot playback UI (Play/Pause, Restart, frame-step, speed,
+    // timeline slider + a "t = .../..." label), built ONLY in replay mode (BuildPlaybackUi, called from
+    // ReadyLiveCityReplay) and updated every ProcessLiveCityReplay frame (UpdatePlaybackUi).
+    private CanvasLayer? _playbackUi;
+    private HSlider? _timelineSlider;
+    private Label? _timeLabel;
+    private Button? _playPauseButton;
+    private bool _sliderDragging;
+    private bool _wasPlayingBeforeDrag;
+
+    // docs/LIVE-CITY-VIEWERS-DESIGN.md §5, -TASKS.md D4 -- the stable instance-index -> VehicleHandle map
+    // (design §5: "Maintain a stable instance-index -> VehicleHandle map in UpdateCars") plus each car's
+    // last-known WORLD position (for the click-pick's screen projection and for positioning the selection
+    // ring/label every frame without a second Reconstruct pass) -- both rebuilt every UpdateCars call, in
+    // the SAME order as the car MultiMesh's own instance indices, so index i here always means "car
+    // MultiMesh instance i" for exactly one frame. `_vehicleNames` is the separate Handle->SUMO-id table
+    // (design §5's "resolves handle -> human-readable id"): populated from LiveCitySource.Sample().Cars
+    // each live-mode frame (the LIVE path has real names on LiveCitySnapshot -- design §3.1 note); left
+    // empty in replay (the wire carries no name yet, Stage E) so NameFor's handle-string fallback applies.
+    private readonly List<VehicleHandle> _carHandles = new();
+    private readonly List<Vector3> _carWorldPositions = new();
+    private readonly Dictionary<VehicleHandle, string> _vehicleNames = new();
+
+    // The click-latched selection (design §5: "latch its VehicleHandle") + the highlight ring/label nodes,
+    // built once (BuildSelectionUi, called from both ReadyLiveCityLive/ReadyLiveCityReplay) and repositioned
+    // every frame by UpdateSelectionHighlight -- works in BOTH live and replay modes (task D4).
+    private VehicleHandle? _selectedHandle;
+    private MeshInstance3D? _selectionRing;
+    private CanvasLayer? _selectionLabelLayer;
+    private Label? _selectionLabelNode;
+
     public override void _Ready()
     {
+        // docs/LIVE-CITY-VISUALS-NOTES.md (tick-rate task): resolved FIRST, before any mode dispatch, so
+        // every path (local/dds, live/replay/remote) sees the same validated values. `_renderHz` is applied
+        // to Godot's global frame-rate cap immediately (render-hz is a general viewer knob, not scoped to
+        // `--live-city`, exactly like the Raylib viewer's own render-fps-cap default of 60 applies to every
+        // mode); `_simHz` only has an effect inside the live-city path (ReadyLiveCityLive), so it is display-
+        // only elsewhere.
+        _simHz = ValidateSimHz(ParseSimHzArg());
+        _renderHz = ValidateRenderHz(ParseRenderHzArg());
+        // Smoothness fix (Windows GPU testing session): by DEFAULT leave the render FPS UNCAPPED
+        // (Engine.MaxFps = 0, i.e. vsync-paced at the display's native refresh). The old fixed 60fps cap
+        // caused visible judder while panning/flying on a high-refresh panel (measured on a 240Hz display):
+        // the engine's variable frame time made 60fps frames land on 3/4/5 of the 240Hz refreshes unevenly.
+        // Rendering at native refresh removed it. A user who WANTS a cap can still pass --render-hz (honored
+        // below) or drag the rate-panel slider at runtime (OnRenderHzSliderChanged re-applies MaxFps).
+        Godot.Engine.MaxFps = ParseRenderHzArg() is null ? 0 : _renderHz;
+        GD.Print($"Main: tick rates -- sim-hz={_simHz} (live-city only) render-hz={_renderHz} (Engine.MaxFps={Godot.Engine.MaxFps}; 0=uncapped/vsync).");
+
+        // BLOCKER fix: the in-code QuitAfterFrames=200 auto-quit used to fire unconditionally, closing an
+        // interactive windowed run after ~3.3s at 60fps on a real GPU. It is REDUNDANT outside headless --
+        // run-smoke.sh already bounds the headless run with Godot's own `--quit-after 400`, and `--shot`
+        // owns its own quit via CaptureScreenshotAsync (the `_shotPath is null` half of every guard below).
+        // So: arm it only under Godot's own --headless, UNLESS the user explicitly opts into a bound via
+        // `--frames=N`, which applies regardless of headless/windowed (e.g. for scripted windowed capture).
+        _isHeadless = IsHeadlessDisplay();
+        _framesOverride = ParseFramesArg();
+        GD.Print(
+            $"Main: auto-quit -- headless={_isHeadless} framesOverride={(_framesOverride?.ToString() ?? "none")} " +
+            $"defaultCap={QuitAfterFrames} (armed only when headless or an override is set).");
+
         _transport = ParseTransportArg();
         _peds = ParsePedsArg();
+        _liveCity = ParseLiveCityArg();
 
         switch (_transport)
         {
@@ -211,10 +618,19 @@ public partial class Main : Node3D
 
             case "dds":
 #if CITY3D_REMOTE
+                // docs/LIVE-CITY-VIEWERS-DESIGN.md §7, -TASKS.md Stage E (E4): `--live-city --transport=dds`
+                // takes its OWN dedicated combined-remote path (dual subscriber: DdsSubscriber + a
+                // DdsPedReplicationSource on the SAME participant, rendering both) -- checked BEFORE the
+                // `--peds` fork below so the two never collide.
+                //
                 // D3b: `--peds` over live DDS reuses the ped scene setup (local plaza net for the backdrop)
                 // but swaps the local byte-loopback ped-sim for a DdsPedReplicationSource fed by a separate
                 // `--mode ped-publish` process; the vehicle remote path (ReadyRemote) is unchanged.
-                if (_peds)
+                if (_liveCity)
+                {
+                    ReadyLiveCityRemote();
+                }
+                else if (_peds)
                 {
                     string pedRepoRoot;
                     try
@@ -266,6 +682,17 @@ public partial class Main : Node3D
         {
             GD.PrintErr($"Main: could not locate repo root (searched upward for Traffic.sln): {ex.Message}");
             GetTree().Quit(1);
+            return;
+        }
+
+        // docs/LIVE-CITY-VIEWERS-DESIGN.md §6, -TASKS.md D1: `--live-city` takes its OWN dedicated LOCAL
+        // path (a LiveCitySource over the coupled cars+peds+crossing-yield host, rendering both a car and a
+        // ped MultiMesh in one scene) -- checked BEFORE the `--peds` fork below so the two never collide;
+        // the vehicle-SimSource setup further down is never touched in live-city mode either.
+        _liveCity = ParseLiveCityArg();
+        if (_liveCity)
+        {
+            ReadyLiveCity(repoRoot);
             return;
         }
 
@@ -339,7 +766,7 @@ public partial class Main : Node3D
         // run-smoke.sh relies on) -- `--camera=close`/wall mode just leave it non-Current in favour of the
         // close camera / video-wall channel cameras built below, rather than forking the
         // environment/light setup.
-        BuildCameraAndLight(bbox, makeCurrent: !wallMode && _cameraMode != "close");
+        var overviewCamera = BuildCameraAndLight(bbox, makeCurrent: !wallMode && _cameraMode != "close");
         _carMultiMesh = BuildCarMultiMesh();
 
         if (wallMode)
@@ -347,12 +774,23 @@ public partial class Main : Node3D
             BuildVideoWallChannels(channels);
             GD.Print($"Main: video wall — {channels.Count} channel(s).");
         }
-        else if (_cameraMode == "close")
+        else
         {
-            _closeCamera = new Camera3D { Name = "CloseCamera", Current = true, Far = 2000f };
-            AddChild(_closeCamera);
-            UpdateCloseCameraFraming(_closeCamera, null);
-            GD.Print("Main: --camera=close active (low angled close-up framing).");
+            if (_cameraMode == "close")
+            {
+                _closeCamera = new Camera3D { Name = "CloseCamera", Current = true, Far = 2000f };
+                AddChild(_closeCamera);
+                UpdateCloseCameraFraming(_closeCamera, null);
+                GD.Print("Main: --camera=close active (low angled close-up framing).");
+            }
+
+            SetupOrbitCamera(overviewCamera, bbox);
+        }
+
+        if (ParseHideBuildingsArg() && _buildingsNode is not null)
+        {
+            _buildingsNode.Visible = false;
+            GD.Print("Main: --hide-buildings active (buildings start hidden; press B to toggle).");
         }
 
         _shotPath = ParseShotArg();
@@ -424,7 +862,7 @@ public partial class Main : Node3D
         var pedBbox = (
             Min: roadCenter - new Vector3(h, 0f, h),
             Max: roadCenter + new Vector3(h, 8f, h));
-        BuildCameraAndLight(pedBbox, makeCurrent: _cameraMode != "close");
+        var pedOverviewCamera = BuildCameraAndLight(pedBbox, makeCurrent: _cameraMode != "close");
 
         if (_cameraMode == "close")
         {
@@ -432,6 +870,8 @@ public partial class Main : Node3D
             AddChild(_closeCamera);
             UpdateCloseCameraFraming(_closeCamera, null);
         }
+
+        SetupOrbitCamera(pedOverviewCamera, pedBbox);
 
         _pedMultiMesh = BuildPedMultiMesh();
         var pedTransportDesc = "transport=local, byte loopback";
@@ -442,6 +882,323 @@ public partial class Main : Node3D
         }
 #endif
         GD.Print($"Main: --peds active; crossing-plaza render ({pedTransportDesc}).");
+
+        _shotPath = ParseShotArg();
+        if (_shotPath is not null)
+        {
+            var shotDelaySeconds = ParseShotDelayArg();
+            GD.Print(
+                $"Main: --shot requested, will capture to '{_shotPath}' " +
+                $"(shot-delay={shotDelaySeconds:F1}s real wall-clock before capture).");
+            CaptureScreenshotAsync(_shotPath, shotDelaySeconds);
+        }
+    }
+
+    // docs/LIVE-CITY-VIEWERS-DESIGN.md §6, -TASKS.md D1/D2/D3 -- the `--live-city` setup entry point.
+    // `--replay <file.simrec>` (D3) takes the file-backed replay path; otherwise the LOCAL live path (D1).
+    // Live vs. replay differ ONLY in the source (design tenet 2) -- see ReadyLiveCityLive/ReadyLiveCityReplay.
+    private void ReadyLiveCity(string repoRoot)
+    {
+        var replayPath = ParseReplayArg();
+        _replay = replayPath is not null;
+
+        if (_replay)
+        {
+            ReadyLiveCityReplay(repoRoot, replayPath!);
+        }
+        else
+        {
+            ReadyLiveCityLive(repoRoot);
+        }
+    }
+
+    // docs/LIVE-CITY-VIEWERS-DESIGN.md §6, -TASKS.md D1/D2 -- the `--live-city` LOCAL setup. Builds a
+    // CityLib.LiveCitySource (wraps Sim.LiveCity.LiveCitySim over scenarios/_ped/demo_city/box), the road
+    // meshes from ITS NetworkModel (the same RoadMeshBuilder entry point the vehicle path uses, so
+    // LiveCitySource.LocalLanes' Lane.ShapeZ threads through identically -- D2), a car MultiMesh (reused
+    // unchanged from the --scenario path) AND a ped MultiMesh (BuildPedMultiMesh, same shape as the plaza
+    // path's empty-at-load build), and points the generic `_reconstructor`/`_source`/`_lanes` fields at the
+    // live-city source so the SAME Reconstructor/UpdateCars render live-city cars -- only ProcessLiveCity
+    // (its own accumulator) ticks the sim and calls them, never AdvanceLocalSim/RenderFrame.
+    private void ReadyLiveCityLive(string repoRoot)
+    {
+        try
+        {
+            // docs/LIVE-CITY-VISUALS-NOTES.md (tick-rate task): `_simHz` (resolved in _Ready, before this
+            // ever runs) sets LiveCityConfig.SimHz => Dt = 1/Hz -- the SAME Dt that flows into BOTH the
+            // engine step-length AND the ped demand's stepDt inside LiveCitySim's own ctor (the coupling
+            // invariant), so this one assignment is enough; no separate ped-side knob needed here. `_liveCityDt`
+            // mirrors it back out for ProcessLiveCity's accumulator (replacing the old hardcoded
+            // `LiveCityTickSeconds` const read).
+            var liveCfg = LiveCityConfig.ForRepoRoot(repoRoot);
+            liveCfg.SimHz = _simHz;
+            _liveCityDt = liveCfg.Dt;
+            _liveCitySource = new LiveCitySource(liveCfg);
+            _liveCityPedReconstructor = new CityLib.PedReconstructor();
+        }
+        catch (Exception ex)
+        {
+            GD.PrintErr($"Main: failed to construct LiveCitySource: {ex}");
+            GetTree().Quit(1);
+            return;
+        }
+
+        _reconstructor = new Reconstructor();
+        _source = _liveCitySource.Source;
+        _lanes = _liveCitySource.LocalLanes;
+
+        _cameraMode = ParseCameraArg();
+
+        // LiveCitySource.Network is the FULL parsed net.xml (scenarios/_ped/demo_city/box's net.xml spans
+        // 4750x4750m) -- only LiveCitySource.Crop (~840x840m) is where cars/peds actually live. Building
+        // road meshes / framing the camera over the WHOLE net would put the crop at sub-pixel scale (every
+        // lane a hairline, the camera effectively looking at the entire city from orbit) -- so the local
+        // live-city path builds/frames ONLY the crop's lanes, unlike the vehicle --scenario path (whose
+        // nets ARE the whole playable area already).
+        var (x0, y0, x1, y1) = _liveCitySource.Crop;
+
+        // docs/LIVE-CITY-VISUALS-NOTES.md deliverable 2: zone ground tint, built BEFORE the road meshes so
+        // it lands earlier in the scene tree -- Godot's default opaque/blended draw order for coplanar-ish
+        // transparent geometry follows a mix of tree order and distance-from-camera sort, but since the
+        // roads sit strictly ABOVE the zone tint (BuildRoadMeshesCropped at z=0 vs. ZoneGroundBuilder's
+        // z=-0.05 default) the depth test alone is what keeps roads visually on top; building zones first
+        // simply keeps this method's own read order matching "ground layer, then roads" (docs/LIVE-CITY-
+        // VISUALS-NOTES.md's stated per-layer sequencing).
+        BuildZoneGround(_liveCitySource.Scene);
+        var roadBbox = BuildRoadMeshesCropped(_liveCitySource.Network, x0, y0, x1, y1);
+        BuildCrosswalksAndLaneMarkings(_liveCitySource.Network, (x0, y0, x1, y1));
+        // docs/LIVE-CITY-VISUALS-NOTES.md "Buildings (data-driven)" row: data-driven massing off
+        // LiveCitySource.Scene.Buildings when present, procedural BuildingPlacer fallback otherwise --
+        // built AFTER the roads (so it lands under a later scene-tree node, same read order the other
+        // live-city layers follow) but its bbox is only used for logging here; `_sceneBbox`/camera framing
+        // below stay road-bbox-driven, unchanged from before this feature.
+        BuildLiveCityBuildings(_liveCitySource.Scene, _liveCitySource.Network);
+        // docs/LIVE-CITY-VISUALS-NOTES.md OWNER-CONFIRMED "POI / area rendering" block: POI markers +
+        // building-entrance doors + parking_lot/park areas, built AFTER buildings (same "ground layer,
+        // then roads" read order every other live-city overlay follows here).
+        BuildLiveCityPois(_liveCitySource.Scene);
+        // Render the ORCA high-realism pocket (promote/demote rings) so the tester can see where peds are
+        // full-ORCA vs low-power dead-reckoned. Local live path only (the pocket isn't on the DDS wire).
+        BuildHighRealismZone();
+        _sceneBbox = roadBbox;
+
+        // Even cropped to the ~840x840m downtown block, the FULL crop bbox still leaves individual
+        // ~4.5m cars/~0.5m peds sub-legible in a fixed-resolution screenshot (whole-network framing
+        // scales the camera to the LARGEST extent). Mirrors ReadyPeds' own move (a tight frame box
+        // distinct from `_sceneBbox`, which stays the real road bbox for the close-camera fallback):
+        // frame the overview camera on a smaller box centred on the crop, wide enough to show several
+        // intersections' worth of traffic+crowd while keeping entities legible.
+        // Interactive initial framing: the WHOLE cropped road net (roadBbox + small pad) from an elevated
+        // ~55deg bird's-eye, so the opening view shows the entire central area at once (no flying up first).
+        var frameBbox = (
+            Min: new Vector3(roadBbox.Min.X - LiveCityOverviewPadMeters, 0f, roadBbox.Min.Z - LiveCityOverviewPadMeters),
+            Max: new Vector3(roadBbox.Max.X + LiveCityOverviewPadMeters, 8f, roadBbox.Max.Z + LiveCityOverviewPadMeters));
+
+        var liveOverviewCamera = BuildCameraAndLight(
+            frameBbox, makeCurrent: _cameraMode != "close",
+            heightFactor: LiveCityOverviewHeightFactor, backFactor: LiveCityOverviewBackFactor);
+        _liveCityPedPalette = true; // grey = low-power, orange = high-power ORCA (clearer than plaza slate/cyan)
+        _carMultiMesh = BuildCarMultiMesh();
+        _pedMultiMesh = BuildPedMultiMesh();
+        BuildSelectionUi();
+        BuildRateControlUi();
+
+        // Deliverable 2 (docs/LIVE-CITY-VIEWERS-DESIGN.md TL wiring) -- ReadyLocal/ReadyRemote already wire
+        // this; `--live-city` (local live) never did, so TrafficLightPlacer/BuildTrafficLights/
+        // UpdateTrafficLights were correct but unreachable and no signal head ever appeared. Same closure
+        // shape ReadyLocal uses, over LiveCitySource's own (full, uncropped) NetworkModel -- the
+        // TL-controlled lane handles ProcessLiveCity's TlStateByLane lookup passes in are dense handles into
+        // that same network, cropping doesn't change lane numbering.
+        var liveCitySource = _liveCitySource;
+        // Fix #16: crop the controlled-lane handles to the SAME box as the rendered roads so no signal-head
+        // pole floats over bare ground outside the crop.
+        _placeSignalHeads = keys => TrafficLightPlacer.Place(
+            liveCitySource!.Network, CropTlLaneHandles(liveCitySource.Network, keys, x0, y0, x1, y1));
+
+        if (ParseShowZonesArg() && _zonesNode is not null)
+        {
+            _zonesNode.Visible = true;
+            GD.Print("Main: --show-zones active (zone tint starts visible; press Z to toggle).");
+        }
+
+        if (ParseHideBuildingsArg() && _buildingsNode is not null)
+        {
+            _buildingsNode.Visible = false;
+            GD.Print("Main: --hide-buildings active (buildings start hidden; press B to toggle).");
+        }
+
+        if (ParseHidePoisArg() && _poisNode is not null)
+        {
+            _poisNode.Visible = false;
+            GD.Print("Main: --hide-pois active (POIs/doors/areas start hidden; press P to toggle).");
+        }
+
+        if (_cameraMode == "close")
+        {
+            _closeCamera = new Camera3D { Name = "CloseCamera", Current = true, Far = 2000f };
+            AddChild(_closeCamera);
+            UpdateCloseCameraFraming(_closeCamera, null);
+            GD.Print("Main: --camera=close active (low angled close-up framing).");
+        }
+
+        SetupOrbitCamera(liveOverviewCamera, frameBbox);
+
+        GD.Print(
+            $"Main: --live-city active (coupled cars+peds+crossing-yield, transport=local, " +
+            $"sim-hz={_simHz} dt={_liveCityDt.ToString("F3", CultureInfo.InvariantCulture)} render-hz={_renderHz}).");
+
+        _shotPath = ParseShotArg();
+        if (_shotPath is not null)
+        {
+            var shotDelaySeconds = ParseShotDelayArg();
+            GD.Print(
+                $"Main: --shot requested, will capture to '{_shotPath}' " +
+                $"(shot-delay={shotDelaySeconds:F1}s real wall-clock before capture).");
+            CaptureScreenshotAsync(_shotPath, shotDelaySeconds);
+        }
+    }
+
+    // docs/LIVE-CITY-VIEWERS-DESIGN.md §2.3/§4, -TASKS.md D3 -- the `--live-city --replay <file>` REPLAY
+    // setup. Builds a PlaybackClock (the slider/buttons' authority) + a ReplicationFileSource (cars, over
+    // its OWN received wire geometry -- exactly the remote path's ReplicationLaneShapeSource shape, design
+    // tenet 2) + a PedFrameTrack (peds). Roads are still parsed straight off net.xml (this task's own
+    // "simplest" option: "still parse the same net for roads") via the SAME pinned crop
+    // LiveCityConfig.ForRepoRoot resolves -- cheap (no Engine/navmesh bake), and the recording's own crop
+    // is that exact pinned rect by construction (LiveCitySim publishes the FULL net's geometry, so the
+    // recording's wire geometry is NOT pre-cropped; framing/road-mesh-building off the parsed net + the
+    // known crop keeps the replay scene identical in extent to the live one without waiting on
+    // GeometryComplete or hard-coding a duplicate crop rect).
+    private void ReadyLiveCityReplay(string repoRoot, string replayPath)
+    {
+        if (!File.Exists(replayPath))
+        {
+            GD.PrintErr($"Main: --replay file not found: '{replayPath}'.");
+            GetTree().Quit(1);
+            return;
+        }
+
+        _clock = new PlaybackClock();
+
+        try
+        {
+            _replaySource = new ReplicationFileSource(replayPath, _clock);
+            _pedTrack = new PedFrameTrack(replayPath);
+        }
+        catch (Exception ex)
+        {
+            GD.PrintErr($"Main: failed to open replay '{replayPath}': {ex}");
+            GetTree().Quit(1);
+            return;
+        }
+
+        _clock.Duration = _replaySource.Duration;
+        if (_replaySource.Dt > 0.0)
+        {
+            _clock.Dt = _replaySource.Dt;
+        }
+
+        // docs/LIVE-CITY-VISUALS-NOTES.md (tick-rate task): replay has no live LiveCityConfig to read a
+        // Hz off of -- the rate readout (BuildRateControlUi below) instead shows the RECORDING's own
+        // cadence, straight off the file's Dt, overriding _Ready's CLI-resolved `_simHz`/`_liveCityDt`
+        // (which describe a live host that doesn't exist in this path).
+        _liveCityDt = _clock.Dt;
+        _simHz = _clock.Dt > 0.0 ? (int)Math.Round(1.0 / _clock.Dt) : _simHz;
+
+        _reconstructor = new Reconstructor();
+        _lanes = new ReplicationLaneShapeSource(_replaySource.Geometry);
+        _source = _replaySource;
+
+        _cameraMode = ParseCameraArg();
+
+        var cfg = LiveCityConfig.ForRepoRoot(repoRoot);
+        var netPath = Path.Combine(cfg.DatasetDir, "net.xml");
+        NetworkModel network;
+        try
+        {
+            network = NetworkParser.Parse(netPath);
+        }
+        catch (Exception ex)
+        {
+            GD.PrintErr($"Main: --replay could not parse '{netPath}' for road geometry: {ex}");
+            GetTree().Quit(1);
+            return;
+        }
+
+        // docs/LIVE-CITY-VISUALS-NOTES.md deliverable 2: replay has no live LiveCitySource to read `.Scene`
+        // off (there is no LiveCitySim in this path at all -- see the class remark above); the zone tint is
+        // purely STATIC world data, unrelated to the recorded car/ped frames, so it is loaded directly off
+        // the SAME dataset dir `cfg`/`netPath` above already resolved. Mirrors ReadyLiveCityLive's own
+        // "zones before roads" build order.
+        var replayScene = LiveCityScene.Load(cfg.DatasetDir);
+        BuildZoneGround(replayScene);
+        var roadBbox = BuildRoadMeshesCropped(network, cfg.X0, cfg.Y0, cfg.X1, cfg.Y1);
+        BuildCrosswalksAndLaneMarkings(network, (cfg.X0, cfg.Y0, cfg.X1, cfg.Y1));
+        // docs/LIVE-CITY-VISUALS-NOTES.md "Buildings (data-driven)" row -- replay flavor, same "no live
+        // LiveCitySource, load the SAME dataset dir directly" reasoning BuildZoneGround's own remark just
+        // above already established for zones. `network` (parsed straight off net.xml just above) is the
+        // fallback path's input if the dataset ships no buildings.json.
+        BuildLiveCityBuildings(replayScene, network);
+        // docs/LIVE-CITY-VISUALS-NOTES.md OWNER-CONFIRMED "POI / area rendering" block: replay flavor, same
+        // "no live LiveCitySource, use the SAME already-loaded scene" reasoning BuildLiveCityBuildings just
+        // used above.
+        BuildLiveCityPois(replayScene);
+        _sceneBbox = roadBbox;
+
+        var cropCenter = new Vector3(
+            (roadBbox.Min.X + roadBbox.Max.X) / 2f, 0f, (roadBbox.Min.Z + roadBbox.Max.Z) / 2f);
+        var frameHalf = LiveCityFrameHalfExtentMeters;
+        var frameBbox = (
+            Min: cropCenter - new Vector3(frameHalf, 0f, frameHalf),
+            Max: cropCenter + new Vector3(frameHalf, 8f, frameHalf));
+
+        var replayOverviewCamera = BuildCameraAndLight(
+            frameBbox, makeCurrent: _cameraMode != "close",
+            heightFactor: LiveCityCameraHeightFactor, backFactor: LiveCityCameraBackFactor);
+        _carMultiMesh = BuildCarMultiMesh();
+        _pedMultiMesh = BuildPedMultiMesh();
+        BuildSelectionUi();
+        BuildPlaybackUi();
+        BuildRateControlUi();
+
+        // Deliverable 2 -- same TL wiring gap as ReadyLiveCityLive, replay flavor. `network` above is
+        // parsed straight from the SAME net.xml the live path uses (this method's own "still parse the
+        // same net for roads" design note), so the NetworkModel overload applies unchanged -- no need for
+        // the wire-geometry overload here even though this IS a replay path, since the road geometry was
+        // never actually replicated (it's read locally, same as the live path).
+        _placeSignalHeads = keys => TrafficLightPlacer.Place(
+            network, CropTlLaneHandles(network, keys, cfg.X0, cfg.Y0, cfg.X1, cfg.Y1)); // Fix #16: crop TL poles to the rendered net
+
+        if (ParseShowZonesArg() && _zonesNode is not null)
+        {
+            _zonesNode.Visible = true;
+            GD.Print("Main: --show-zones active (zone tint starts visible; press Z to toggle).");
+        }
+
+        if (ParseHideBuildingsArg() && _buildingsNode is not null)
+        {
+            _buildingsNode.Visible = false;
+            GD.Print("Main: --hide-buildings active (buildings start hidden; press B to toggle).");
+        }
+
+        if (ParseHidePoisArg() && _poisNode is not null)
+        {
+            _poisNode.Visible = false;
+            GD.Print("Main: --hide-pois active (POIs/doors/areas start hidden; press P to toggle).");
+        }
+
+        if (_cameraMode == "close")
+        {
+            _closeCamera = new Camera3D { Name = "CloseCamera", Current = true, Far = 2000f };
+            AddChild(_closeCamera);
+            UpdateCloseCameraFraming(_closeCamera, null);
+            GD.Print("Main: --camera=close active (low angled close-up framing).");
+        }
+
+        SetupOrbitCamera(replayOverviewCamera, frameBbox);
+
+        GD.Print(
+            $"Main: --live-city --replay '{replayPath}' active (duration={_clock.Duration:F1}s, " +
+            $"dt={_clock.Dt:F2}s, {_pedTrack.FrameCount} ped frame(s)).");
 
         _shotPath = ParseShotArg();
         if (_shotPath is not null)
@@ -506,7 +1263,7 @@ public partial class Main : Node3D
             "roads/cars/traffic-lights still render).");
 
         _sceneBbox = roadBbox;
-        BuildCameraAndLight(roadBbox, makeCurrent: _cameraMode != "close");
+        var remoteOverviewCamera = BuildCameraAndLight(roadBbox, makeCurrent: _cameraMode != "close");
 
         if (_cameraMode == "close")
         {
@@ -515,11 +1272,178 @@ public partial class Main : Node3D
             UpdateCloseCameraFraming(_closeCamera, null);
             GD.Print("Main: --camera=close active (low angled close-up framing).");
         }
+
+        SetupOrbitCamera(remoteOverviewCamera, roadBbox);
+    }
+
+    // docs/LIVE-CITY-VIEWERS-DESIGN.md §7, -TASKS.md Stage E (E4) -- the combined `--live-city
+    // --transport=dds` REMOTE setup: no LiveCitySim/Engine here at all (mirrors ReadyRemote's own "do NOT
+    // create a SimSource/engine"), only a DdsSubscriber (vehicles) AND a DdsPedReplicationSource (peds)
+    // attached to the SAME DdsParticipant -- the DDS-branch mutual exclusion ReadyRemote()/ReadyPeds()'s
+    // own dds branch each embody is dropped for THIS mode: both wire types subscribe together and render
+    // together every frame (ProcessLiveCityRemote), fed by a single `Sim.Host.App --live-city --transport
+    // dds` producer (E3) publishing both topic sets from one net. Cars reuse the SAME
+    // Reconstructor/ReplicationLaneShapeSource path the plain vehicle remote uses (now Z- and name-aware,
+    // Stage E1/E2); peds reuse the SAME PedReconstructor/UpdatePeds path the `--peds --transport dds`
+    // branch uses (design §7: "removing the DDS-branch mutual exclusion"). Static scene (roads; buildings
+    // skipped, same reasoning as BuildRemoteScene) is built lazily once geometry arrives
+    // (BuildRemoteLiveCityScene, called from ProcessLiveCityRemote exactly like BuildRemoteScene is from
+    // AdvanceRemoteSim) -- `_lanes` stays null here, same "nothing to reconstruct/render yet" convention.
+    private void ReadyLiveCityRemote()
+    {
+        _cameraMode = ParseCameraArg();
+        _liveCityRemote = true;
+
+        _ddsParticipant = new DdsParticipant();
+        _ddsSource = new DdsSubscriber(_ddsParticipant);
+        _ddsPedSource = new DdsPedReplicationSource(_ddsParticipant);
+        _reconstructor = new Reconstructor();
+        _pedReconstructor = new PedReconstructor();
+        _source = _ddsSource;
+        var ddsSource = _ddsSource;
+        _placeSignalHeads = keys => TrafficLightPlacer.Place(ddsSource.Geometry, keys);
+
+        _carMultiMesh = BuildCarMultiMesh();
+        _pedMultiMesh = BuildPedMultiMesh();
+        BuildSelectionUi();
+        BuildRateControlUi(); // for the live playout-delay slider (sim-hz label is display-only / N/A on remote)
+
+        // Fix 6 (Windows GPU testing session) -- the remote path never called this before, so it had no
+        // rate panel / playout-delay slider at all. Mirrors ReadyLiveCityLive/ReadyLiveCityReplay's own
+        // call; the sim-hz label reads a bit generic here (no local LiveCitySim to report its own dt from),
+        // but the render-hz and playout-delay sliders both apply exactly as they do locally.
+        BuildRateControlUi();
+
+        GD.Print(
+            "Main: --live-city --transport=dds active; waiting for a Sim.Host.App --live-city publisher " +
+            "(vehicle geometry + frames, ped crowd)...");
+
+        _shotPath = ParseShotArg();
+        if (_shotPath is not null)
+        {
+            var shotDelaySeconds = ParseShotDelayArg();
+            GD.Print(
+                $"Main: --shot requested, will capture to '{_shotPath}' " +
+                $"(shot-delay={shotDelaySeconds:F1}s real wall-clock before capture).");
+            CaptureScreenshotAsync(_shotPath, shotDelaySeconds);
+        }
+    }
+
+    // Lazily builds the static scene from the RECEIVED wire geometry, once complete -- the combined
+    // live-city remote's counterpart to BuildRemoteScene above. LiveCitySim publishes the FULL (uncropped)
+    // net.xml geometry over the wire (mirrors what it publishes onto its own local in-mem bus, design §1),
+    // so this crops the received geometry to the SAME pinned downtown block every other live-city path
+    // frames (Sim.LiveCity.LiveCityConfig's own default X0..Y1 -- a fixed constant, not tied to the
+    // producer's dataset dir, so the subscriber needs no repo/dataset access of its own to know it) purely
+    // for render legibility/build cost (BuildRoadMeshesFromGeometryCropped below), same idea as the LOCAL
+    // live-city path's BuildRoadMeshesCropped and the replay path's own crop-by-config. The camera framing
+    // reuses the live-city overview knobs (LiveCityFrameHalfExtentMeters/-CameraHeightFactor/-BackFactor),
+    // not BuildRemoteScene's whole-received-geometry framing.
+    private void BuildRemoteLiveCityScene()
+    {
+        var geometry = _ddsSource!.Geometry;
+        _lanes = new ReplicationLaneShapeSource(geometry);
+
+        var crop = new LiveCityConfig(); // pinned defaults only -- no dataset dir needed just for X0..Y1.
+
+        // docs/LIVE-CITY-VISUALS-NOTES.md deliverable 2 (zone tint) + "Sidewalks"/"Crosswalk zebra"/"Lane
+        // markings" rows: none of these four overlays are carried over the DDS wire at all (GeometryCodec.
+        // LaneGeo has no Id/EdgeId/AllowsRoadVehicle -- only Handle/Width/Length/Points/Z), so ALL FOUR are
+        // BEST-EFFORT local reads off the SAME net.xml a same-machine/checkout producer publishes from (this
+        // method's own remark above notes the subscriber is designed to need "no repo/dataset access of its
+        // own" just for the crop rect) -- one try/catch, one parse, so a genuinely remote subscriber with no
+        // local scenarios/ tree just skips every one of them rather than failing the whole DDS scene build.
+        // The parsed NetworkModel's lane Handles are guaranteed to match the wire's (NetworkParser assigns
+        // them in the SAME deterministic parse order for the SAME net.xml file the publisher itself parsed),
+        // so `pedByHandle` below correctly keys the wire-built ribbon meshes' own material choice.
+        IReadOnlyDictionary<int, bool>? pedByHandle = null;
+        try
+        {
+            var zoneCfg = LiveCityConfig.ForRepoRoot(FindRepoRoot());
+            var remoteScene = LiveCityScene.Load(zoneCfg.DatasetDir);
+            BuildZoneGround(remoteScene);
+
+            var network = NetworkParser.Parse(Path.Combine(zoneCfg.DatasetDir, "net.xml"));
+            pedByHandle = PedByHandle(network);
+            BuildCrosswalksAndLaneMarkings(network, (crop.X0, crop.Y0, crop.X1, crop.Y1));
+
+            // docs/LIVE-CITY-VISUALS-NOTES.md "Buildings (data-driven)" row -- same best-effort local-read
+            // reasoning as the zone/sidewalk/crosswalk/lane-marking layers just above: buildings.json isn't
+            // carried over the DDS wire either, so this reads it off the SAME local dataset dir, inside the
+            // SAME try/catch (a subscriber with no local checkout just skips buildings too, rather than
+            // failing the whole scene build).
+            BuildLiveCityBuildings(remoteScene, network);
+            // docs/LIVE-CITY-VISUALS-NOTES.md OWNER-CONFIRMED "POI / area rendering" block -- same
+            // best-effort local-read reasoning as buildings just above (pois.json isn't carried over the
+            // DDS wire either).
+            BuildLiveCityPois(remoteScene);
+        }
+        catch (Exception ex)
+        {
+            GD.Print(
+                "Main: zone-tint/sidewalk/crosswalk/lane-marking/buildings/pois layers skipped (no local " +
+                $"dataset access for remote subscriber): {ex.Message}");
+        }
+
+        if (ParseShowZonesArg() && _zonesNode is not null)
+        {
+            _zonesNode.Visible = true;
+            GD.Print("Main: --show-zones active (zone tint starts visible; press Z to toggle).");
+        }
+
+        if (ParseHideBuildingsArg() && _buildingsNode is not null)
+        {
+            _buildingsNode.Visible = false;
+            GD.Print("Main: --hide-buildings active (buildings start hidden; press B to toggle).");
+        }
+
+        if (ParseHidePoisArg() && _poisNode is not null)
+        {
+            _poisNode.Visible = false;
+            GD.Print("Main: --hide-pois active (POIs/doors/areas start hidden; press P to toggle).");
+        }
+
+        var roadBbox = BuildRoadMeshesFromGeometryCropped(geometry, crop.X0, crop.Y0, crop.X1, crop.Y1, pedByHandle: pedByHandle);
+        _sceneBbox = roadBbox;
+
+        var cropCenter = new Vector3(
+            (roadBbox.Min.X + roadBbox.Max.X) / 2f, 0f, (roadBbox.Min.Z + roadBbox.Max.Z) / 2f);
+        var frameHalf = LiveCityFrameHalfExtentMeters;
+        var frameBbox = (
+            Min: cropCenter - new Vector3(frameHalf, 0f, frameHalf),
+            Max: cropCenter + new Vector3(frameHalf, 8f, frameHalf));
+
+        var remoteLiveOverviewCamera = BuildCameraAndLight(
+            frameBbox, makeCurrent: _cameraMode != "close",
+            heightFactor: LiveCityCameraHeightFactor, backFactor: LiveCityCameraBackFactor);
+
+        if (_cameraMode == "close")
+        {
+            _closeCamera = new Camera3D { Name = "CloseCamera", Current = true, Far = 2000f };
+            AddChild(_closeCamera);
+            UpdateCloseCameraFraming(_closeCamera, null);
+            GD.Print("Main: --camera=close active (low angled close-up framing).");
+        }
+
+        SetupOrbitCamera(remoteLiveOverviewCamera, frameBbox);
+
+        GD.Print(
+            $"Main: --live-city --transport=dds received geometry ({geometry.Count} lane(s) total on the " +
+            "wire); road meshes cropped to the pinned downtown block for legibility.");
     }
 #endif
 
     public override void _Process(double delta)
     {
+        PollCameraFlyKeys(delta); // Unity RMB+WASD/QE flythrough (mutates the orbit rig; applied this frame below)
+        UpdateZoomSmoothing(delta); // ease wheel zoom toward its target (smooth, distance-proportional)
+
+        if (_liveCity)
+        {
+            ProcessLiveCity(delta);
+            return;
+        }
+
         if (_peds)
         {
             ProcessPeds(delta);
@@ -589,6 +1513,23 @@ public partial class Main : Node3D
         }
     }
 
+    // BLOCKER fix -- the single "should the in-code frame-count auto-quit fire this frame" check, shared by
+    // every per-frame body's tail (ProcessPeds, ProcessLiveCity, ProcessLiveCityRemote,
+    // ProcessLiveCityReplay). An explicit `--frames=N` (_framesOverride) always applies; absent that, the
+    // legacy QuitAfterFrames=200 cap now only fires under Godot's own --headless -- an interactive/Xvfb-
+    // windowed run never self-quits anymore (it used to close after ~3.3s at 60fps on a real GPU, which is
+    // what made the local 3D viewer unusable for eyeballing). Every call site still ANDs this with its own
+    // `_shotPath is null` -- --shot keeps owning its own quit via CaptureScreenshotAsync, unaffected here.
+    private bool ShouldAutoQuit(int frame)
+    {
+        if (_framesOverride is { } n)
+        {
+            return frame >= n;
+        }
+
+        return _isHeadless && frame >= QuitAfterFrames;
+    }
+
     // docs/DEMO-CITY3D-DESIGN.md "#### Pedestrians (P7-3)" -- the per-frame ped body: advance the ped sim on
     // the sim-cadence accumulator (fixed 0.2s ped-Tick increments off `delta`, threshold PedTickWallSeconds),
     // reconstruct the crowd from the wire, and rewrite the ped MultiMesh transforms + regime colours. Mirrors
@@ -634,10 +1575,13 @@ public partial class Main : Node3D
         var peds = _pedReconstructor.Reconstruct(pedSource, serverTime);
         UpdatePeds(peds);
 
-        if (_closeCamera is not null)
-        {
-            UpdateCloseCameraFraming(_closeCamera, null);
-        }
+        // Interactive camera controller (docs/LIVE-CITY-VIEWERS-DESIGN.md camera-controller deliverable):
+        // `--camera=close`'s continuous auto-tracking (UpdateCloseCameraFraming, called per-frame with live
+        // `vehicles`) is superseded by the free orbit controller once one exists -- SetupOrbitCamera already
+        // seeded it from that SAME close-up pose at setup time, and _UnhandledInput's drag/wheel/reset
+        // handlers are what move it from there. ApplyOrbitCamera is a no-op (video-wall mode) when no orbit
+        // camera was built.
+        ApplyOrbitCamera();
 
         var highPower = 0;
         foreach (var p in peds)
@@ -652,9 +1596,284 @@ public partial class Main : Node3D
 
         _frame++;
 
-        if (_frame >= QuitAfterFrames && _shotPath is null)
+        if (_shotPath is null && ShouldAutoQuit(_frame))
         {
-            GD.Print($"Main: reached {QuitAfterFrames} frames, quitting.");
+            GD.Print($"Main: reached {(_framesOverride ?? QuitAfterFrames)} frames, quitting.");
+            DisposeSources();
+            GetTree().Quit();
+        }
+    }
+
+    // docs/LIVE-CITY-VIEWERS-DESIGN.md §6, -TASKS.md D1 -- the per-frame `--live-city` body: advance the
+    // coupled sim on ITS OWN fixed sim-cadence accumulator (_liveCityDt, docs/LIVE-CITY-VISUALS-NOTES.md
+    // tick-rate task -- `--sim-hz`-selected, LiveCityTickSeconds=0.5's old hardcoded value is now only the
+    // field's pre-ReadyLiveCityLive default -- matching LiveCityConfig.Dt -- a SEPARATE accumulator/frame
+    // pair from _accumulator/_frame, per design §6's "split per-domain accumulator" requirement), reconstruct
+    // cars through the SAME Reconstructor/UpdateCars
+    // the --scenario path uses (LiveCitySource.Source/LocalLanes are the SAME shapes SimSource exposes), and
+    // rewrite the ped MultiMesh via UpdatePeds, reconstructed off LiveCitySource.PedSource. Both MultiMeshes
+    // render in ONE scene every frame -- no `if(_peds){...return;}` mutual exclusion.
+    private void ProcessLiveCity(double delta)
+    {
+        if (_replay)
+        {
+            ProcessLiveCityReplay(delta);
+            return;
+        }
+
+#if CITY3D_REMOTE
+        if (_liveCityRemote)
+        {
+            ProcessLiveCityRemote(delta);
+            return;
+        }
+#endif
+
+        if (_liveCitySource is null || _reconstructor is null || _lanes is null || _liveCityPedReconstructor is null)
+        {
+            return; // _Ready already reported the error.
+        }
+
+        // docs/LIVE-CITY-VISUALS-NOTES.md (tick-rate task): `_liveCityDt` (set from LiveCityConfig.Dt in
+        // ReadyLiveCityLive, per `--sim-hz`) replaces the old hardcoded `LiveCityTickSeconds` const read --
+        // the accumulator now advances the coupled sim in whatever increment `--sim-hz` selected instead of
+        // always 0.5s. Peds no longer need a per-tick push here -- LiveCitySim.Step() (inside Tick()) already
+        // publishes onto LiveCitySource.PedSource every tick; the reconstructor below pulls from that wire
+        // continuously, not from this loop.
+        // #15 camera-driven LC-realism zone: push the current-mode zone (Central/Follow/Locked) BEFORE the
+        // sim steps, so this frame's per-area lane-change classification uses it; then move/recolour the
+        // highlight ring to match. Camera pose is stable within a frame, so one push covers all sub-steps.
+        PushLcZone();
+        UpdateLcZoneVisual();
+
+        _liveCityAccumulator += delta;
+        while (_liveCityAccumulator >= _liveCityDt)
+        {
+            _liveCitySource.Tick();
+            _liveCityAccumulator -= _liveCityDt;
+        }
+
+        var vehicles = _reconstructor.Reconstruct(_liveCitySource.Source, _liveCitySource.LocalLanes, _playoutDelaySeconds);
+        UpdateCars(vehicles);
+
+        // docs/LIVE-CITY-VIEWERS-DESIGN.md §3.1, -TASKS.md D4 -- the live Handle->Name table (LiveCityCar.
+        // Name is the real SUMO id, straight off Engine.VehicleIds -- design §3.1's "local/live viewers can
+        // also read the name directly from LiveCitySim ... without the wire"). Entries are never removed,
+        // so a car that despawns between this frame and a later click still resolves to its last-known name
+        // rather than the raw handle.
+        // Cars-only readback (SampleCars, reused buffer) -- NOT Sample(), which also materialises the whole
+        // ped crowd every frame (the dominant GC pressure at large LIVECITY_PEDS; only Cars is used here).
+        foreach (var car in _liveCitySource.SampleCars())
+        {
+            _vehicleNames[car.Handle] = car.Name;
+        }
+
+        // Ped-smoothing fix (pivoted to wire reconstruction, see `_liveCityPedReconstructor`'s doc comment):
+        // mirrors ProcessLiveCityRemote's own ped block, over the in-process LiveCitySource.PedSource
+        // instead of a DdsPedReplicationSource -- same CityLib.PedReconstructor, same UpdatePeds (the
+        // plaza/--peds/remote-live-city ped multimesh path). CRITICAL DIFFERENCE from a naive port of that
+        // pattern: `_liveCitySource.Time` (the sim's own tick clock) only advances once per `_liveCityDt`
+        // (0.5s @ the 2Hz default) -- feeding THAT raw value to the reconstructor every render frame would
+        // reproduce the exact stepwise jerk this fix targets (measured: positions frozen for the whole
+        // tick, then a single large jump at the boundary -- confirmed by a throwaway probe, see the PR
+        // notes). `_liveCitySource.Time + _liveCityAccumulator` is a CONTINUOUSLY-advancing render clock
+        // instead: the tick loop above's `Time += _liveCityDt` / `_liveCityAccumulator -= _liveCityDt` pair
+        // is a net no-op on their SUM, so this expression is mathematically identical to a free-running
+        // clock that advances by `delta` every frame, decoupled from the 2Hz tick boundary -- exactly what
+        // HeadlessIg.ReconstructSample's continuous PathArc/ActivityTimeline evaluation needs to render
+        // smoothly between ticks (measured: peak per-frame acceleration drops by ~4 orders of magnitude,
+        // and the at-tick-boundary/mid-tick asymmetry disappears -- see the PR notes for both numbers).
+        var pedNow = _liveCitySource.Time + _liveCityAccumulator;
+        var peds = _liveCityPedReconstructor.Reconstruct(_liveCitySource.PedSource, pedNow);
+        UpdatePeds(peds);
+        UpdateSelectionHighlight();
+
+        // Deliverable 2 (docs/LIVE-CITY-VIEWERS-DESIGN.md TL wiring) -- mirrors RenderFrame's own
+        // build-once/update-every-frame TL block; `_placeSignalHeads` is now set by ReadyLiveCityLive above.
+        var tlStateByLane = _source!.TlStateByLane;
+        if (!_signalHeadsBuilt && tlStateByLane.Count > 0 && _placeSignalHeads is not null)
+        {
+            BuildTrafficLights(_placeSignalHeads(tlStateByLane.Keys));
+            _signalHeadsBuilt = true;
+        }
+
+        if (_signalHeadsBuilt)
+        {
+            UpdateTrafficLights(tlStateByLane);
+        }
+
+        ApplyOrbitCamera();
+
+        GD.Print(
+            $"Main: frame={_liveCityFrame} liveCityTime={_liveCitySource.Time:F2} " +
+            $"cars={vehicles.Count} peds={peds.Count}");
+
+        _liveCityFrame++;
+
+        if (_shotPath is null && ShouldAutoQuit(_liveCityFrame))
+        {
+            GD.Print($"Main: reached {(_framesOverride ?? QuitAfterFrames)} frames, quitting.");
+            DisposeSources();
+            GetTree().Quit();
+        }
+    }
+
+#if CITY3D_REMOTE
+    // docs/LIVE-CITY-VIEWERS-DESIGN.md §7, -TASKS.md Stage E (E4) -- the per-frame `--live-city
+    // --transport=dds` REMOTE body: pump the vehicle subscriber, lazily build the static scene once its
+    // geometry completes (mirrors AdvanceRemoteSim + BuildRemoteScene), then reconstruct+render BOTH
+    // domains from the wire every frame -- cars through the SAME Reconstructor/UpdateCars the plain
+    // vehicle remote uses, peds through the SAME PedReconstructor/UpdatePeds the `--peds --transport dds`
+    // branch uses (design §7's "removing the DDS-branch mutual exclusion" made concrete: both run in one
+    // method, no `if(_peds){...return;}`). The vehicle Name table is refreshed from the wire's lifecycle-
+    // derived `DdsSubscriber.Names` every frame (Stage E2's "once per spawn" table, design §5's "resolves
+    // handle -> human-readable id ... in every mode/transport") so click-select shows the real SUMO id
+    // remotely too, not just in local live mode.
+    private void ProcessLiveCityRemote(double delta)
+    {
+        if (_ddsSource is null || _ddsPedSource is null || _reconstructor is null || _pedReconstructor is null)
+        {
+            return; // _Ready already reported the error.
+        }
+
+        _ddsSource.Pump();
+
+        if (_lanes is null)
+        {
+            if (!_ddsSource.GeometryComplete)
+            {
+                return; // waiting for the producer's one-time geometry publish to finish arriving.
+            }
+
+            BuildRemoteLiveCityScene();
+        }
+
+        var vehicles = _reconstructor.Reconstruct(_ddsSource, _lanes!, _playoutDelaySeconds);
+        UpdateCars(vehicles);
+
+        // Stage E2: the wire's Handle->name table, populated once per spawn lifecycle event -- accumulate
+        // into `_vehicleNames` (never removed, same "last-known name survives despawn" rule the local live
+        // path's own Sample().Cars loop uses) so NameFor/click-select resolve the real SUMO id remotely.
+        foreach (var kv in _ddsSource.Names)
+        {
+            _vehicleNames[kv.Key] = kv.Value;
+        }
+
+        // Fix 9 (Windows GPU testing session, docs/LIVE-CITY-WINDOWS-TESTING-BOOTSTRAP.md) -- remote peds
+        // were stepping visibly (~2Hz), the exact stepwise artifact cfd10bf fixed for the LOCAL live-city
+        // path. Root cause: querying the ped reconstructor at the DISCRETE newest-wire-crowd-frame time
+        // (`_ddsPedSource.LatestCrowdTime`) only advances the query instant once per incoming ped frame
+        // (~2Hz), so `PedRemoteReconstructor`'s internal per-frame smoothing (Smooth's dt-based chase) sees
+        // the SAME target position across many rendered frames in a row, then jumps -- the local fix's own
+        // "stepwise" diagnosis, just on the remote wire clock instead of the local tick clock. Fix: query
+        // at a CONTINUOUSLY-advancing render-time instead -- reuse `_reconstructor.LastQueryTime`, the car
+        // Reconstructor's own DrClock render instant (`_clock.RenderSim - delay`, pumped every real frame
+        // from a wall-clock Stopwatch inside Reconstruct just above), exactly the "car DR clock's render
+        // time" option and exactly the pattern `ProcessLiveCityReplay` already uses for its own peds
+        // (`_reconstructor.LastQueryTime` there too) -- so cars and peds share ONE render-time axis and
+        // stay in sync, remote and replay alike.
+        _pedRemoteServerTime = _reconstructor.LastQueryTime;
+        var peds = _pedReconstructor.Reconstruct(_ddsPedSource, _pedRemoteServerTime);
+        UpdatePeds(peds);
+
+        UpdateSelectionHighlight();
+
+        // Deliverable 2 -- same TL wiring as ProcessLiveCity; `_placeSignalHeads` is already set by
+        // ReadyLiveCityRemote (it just was never actually CALLED per-frame before this).
+        var tlStateByLane = _source!.TlStateByLane;
+        if (!_signalHeadsBuilt && tlStateByLane.Count > 0 && _placeSignalHeads is not null)
+        {
+            BuildTrafficLights(_placeSignalHeads(tlStateByLane.Keys));
+            _signalHeadsBuilt = true;
+        }
+
+        if (_signalHeadsBuilt)
+        {
+            UpdateTrafficLights(tlStateByLane);
+        }
+
+        ApplyOrbitCamera();
+
+        var highPowerPeds = 0;
+        foreach (var p in peds)
+        {
+            if (p.IsHighPower)
+            {
+                highPowerPeds++;
+            }
+        }
+
+        var wireVehTimeLabel = _ddsSource.LatestVehicleSampleTime is { } wireVehTime ? $"{wireVehTime:F2}" : "?";
+        GD.Print(
+            $"Main: frame={_liveCityFrame} remote-live-city wireVehTime={wireVehTimeLabel} " +
+            $"pedTime={_pedRemoteServerTime:F2} cars={vehicles.Count} peds={peds.Count} highPowerPeds={highPowerPeds}");
+
+        _liveCityFrame++;
+
+        if (_shotPath is null && ShouldAutoQuit(_liveCityFrame))
+        {
+            GD.Print($"Main: reached {(_framesOverride ?? QuitAfterFrames)} frames, quitting.");
+            DisposeSources();
+            GetTree().Quit();
+        }
+    }
+#endif
+
+    // docs/LIVE-CITY-VIEWERS-DESIGN.md §2.3/§4, -TASKS.md D3 -- the per-frame `--live-city --replay` body:
+    // advance the PlaybackClock by wall delta (a no-op while paused), pump the file source (SeekTo(Now)
+    // internally), reconstruct cars through the SAME Reconstructor/UpdateCars the live path uses (over the
+    // file source + its wire-fed ReplicationLaneShapeSource -- design tenet 2), and rewrite the ped
+    // MultiMesh from PedFrameTrack.PedsAtInterpolated. No LiveCitySource/Engine here at all -- replay never
+    // steps a sim, only reads the recording.
+    private void ProcessLiveCityReplay(double delta)
+    {
+        if (_clock is null || _replaySource is null || _pedTrack is null
+            || _reconstructor is null || _lanes is null)
+        {
+            return; // _Ready already reported the error.
+        }
+
+        _clock.Tick(delta);
+        _replaySource.Pump();
+
+        // Reconstruct cars first -- it pumps _reconstructor's DrClock and sets LastQueryTime, the SAME
+        // instant the ped query below reads (ped-smoothing fix: PedsAtInterpolated replaces the old
+        // nearest-frame PedsAt, which stepped exactly like the live path used to). LastQueryTime tracks
+        // _clock.Now closely (delaySeconds here is the SAME _playoutDelaySeconds both car and ped
+        // queries are implicitly behind), so the two stay in lockstep by construction.
+        var vehicles = _reconstructor.Reconstruct(_replaySource, _lanes, _playoutDelaySeconds);
+        UpdateCars(vehicles);
+
+        var peds = _pedTrack.PedsAtInterpolated(_reconstructor.LastQueryTime);
+        UpdateReplayPeds(peds);
+        UpdateSelectionHighlight();
+        UpdatePlaybackUi();
+
+        // Deliverable 2 -- same TL wiring as ProcessLiveCity/ProcessLiveCityRemote; `_placeSignalHeads` is
+        // set by ReadyLiveCityReplay above.
+        var tlStateByLane = _source!.TlStateByLane;
+        if (!_signalHeadsBuilt && tlStateByLane.Count > 0 && _placeSignalHeads is not null)
+        {
+            BuildTrafficLights(_placeSignalHeads(tlStateByLane.Keys));
+            _signalHeadsBuilt = true;
+        }
+
+        if (_signalHeadsBuilt)
+        {
+            UpdateTrafficLights(tlStateByLane);
+        }
+
+        ApplyOrbitCamera();
+
+        GD.Print(
+            $"Main: replay frame={_liveCityFrame} t={_clock.Now:F2}/{_clock.Duration:F2} " +
+            $"playing={_clock.Playing} speed={_clock.Speed:F1} cars={vehicles.Count} peds={peds.Count}");
+
+        _liveCityFrame++;
+
+        if (_shotPath is null && ShouldAutoQuit(_liveCityFrame))
+        {
+            GD.Print($"Main: reached {(_framesOverride ?? QuitAfterFrames)} frames, quitting.");
             DisposeSources();
             GetTree().Quit();
         }
@@ -684,7 +1903,7 @@ public partial class Main : Node3D
     // never branches on `_transport`.
     private void RenderFrame()
     {
-        var vehicles = _reconstructor!.Reconstruct(_source!, _lanes!, PlayoutDelaySeconds);
+        var vehicles = _reconstructor!.Reconstruct(_source!, _lanes!, _playoutDelaySeconds);
         UpdateCars(vehicles);
 
         var tlStateByLane = _source!.TlStateByLane;
@@ -699,10 +1918,7 @@ public partial class Main : Node3D
             UpdateTrafficLights(tlStateByLane);
         }
 
-        if (_closeCamera is not null)
-        {
-            UpdateCloseCameraFraming(_closeCamera, vehicles);
-        }
+        ApplyOrbitCamera();
 
         var simTimeLabel = SimTimeLabel();
         if (vehicles.Count > 0)
@@ -738,6 +1954,10 @@ public partial class Main : Node3D
         _sim = null;
         _pedSim?.Dispose();
         _pedSim = null;
+        _liveCitySource?.Dispose();
+        _liveCitySource = null;
+        _replaySource?.Dispose();
+        _replaySource = null;
 #if CITY3D_REMOTE
         _ddsPedSource?.Dispose();
         _ddsPedSource = null;
@@ -746,6 +1966,602 @@ public partial class Main : Node3D
         _ddsParticipant?.Dispose();
         _ddsParticipant = null;
 #endif
+    }
+
+    // Interactive camera controller (docs/LIVE-CITY-VIEWERS-DESIGN.md camera-controller deliverable) --
+    // works in EVERY mode (--scenario, --peds, --live-city local/replay/remote), unlike vehicle pick and
+    // the replay transport keys below, which stay live-city-only (their pre-existing scope, unchanged).
+    // Left-drag orbits, middle-drag (or shift+left-drag) pans, the wheel zooms, R/Home resets to the
+    // initial `--camera=overview|close` framing. Click-vs-drag is disambiguated on left-button RELEASE
+    // (task requirement): press just records where the button went down; release compares that to the
+    // current position and only fires TryPickVehicleAt when the cursor moved less than
+    // ClickDragThresholdPixels -- a real drag is fully consumed by the orbit and never falls through to a
+    // pick underneath it. `_UnhandledInput` (not `_Input`) so a click/drag that starts on a playback-UI
+    // Control (a Button/HSlider) is consumed by that Control first, same as before.
+    //
+    // Headless-safe (task requirement): `--shot` runs under Xvfb with no real user, so no InputEvent of any
+    // kind is ever delivered here -- `_orbitController` only ever moves from its `SetupOrbitCamera`-seeded
+    // (optionally `--cam-yaw`/`--cam-pitch`/`--cam-dist`/`--cam-focus`-overridden) initial state, and the
+    // screenshot captures exactly that framing.
+    public override void _UnhandledInput(InputEvent @event)
+    {
+        switch (@event)
+        {
+            case InputEventMouseButton { ButtonIndex: MouseButton.Left } mouseButton:
+                if (mouseButton.Pressed)
+                {
+                    _leftButtonDownPos = mouseButton.Position;
+                    _leftButtonDown = true;
+                }
+                else
+                {
+                    var downPos = _leftButtonDownPos;
+                    _leftButtonDown = false;
+                    _leftButtonDownPos = null;
+                    if (_liveCity && downPos is { } start && start.DistanceTo(mouseButton.Position) < ClickDragThresholdPixels)
+                    {
+                        TryPickVehicleAt(mouseButton.Position);
+                    }
+                }
+
+                GetViewport().SetInputAsHandled();
+                break;
+
+            case InputEventMouseButton { ButtonIndex: MouseButton.Middle } middleButton:
+                _middleButtonDown = middleButton.Pressed;
+                GetViewport().SetInputAsHandled();
+                break;
+
+            case InputEventMouseButton { ButtonIndex: MouseButton.Right } rightButton:
+                // Unity flythrough: RMB held = FPS look (mouse) + WASD/QE fly (polled per-frame in _Process).
+                _rightButtonDown = rightButton.Pressed;
+                GetViewport().SetInputAsHandled();
+                break;
+
+            case InputEventMouseButton { Pressed: true, ButtonIndex: MouseButton.WheelUp }:
+                NudgeZoomTarget(ZoomStepFactor);        // zoom IN: shrink target distance
+                GetViewport().SetInputAsHandled();
+                break;
+
+            case InputEventMouseButton { Pressed: true, ButtonIndex: MouseButton.WheelDown }:
+                NudgeZoomTarget(1f / ZoomStepFactor);    // zoom OUT: grow target distance
+                GetViewport().SetInputAsHandled();
+                break;
+
+            case InputEventMouseMotion motion:
+                if (_orbitController is not null)
+                {
+                    if (_rightButtonDown)
+                    {
+                        // Unity RMB look-around: FPS-style rotate-in-place (camera stays, view swings).
+                        _orbitController.LookInPlace(-motion.Relative.X * OrbitYawRadPerPixel, motion.Relative.Y * OrbitPitchRadPerPixel);
+                        ApplyOrbitCamera();
+                        GetViewport().SetInputAsHandled();
+                    }
+                    else if (_middleButtonDown)
+                    {
+                        // Unity MMB pan: world-space delta scaled by CURRENT distance so pan speed feels
+                        // consistent whether zoomed in or out.
+                        var scale = PanMetersPerPixelPerDistance * _orbitController.Distance;
+                        _orbitController.Pan(-motion.Relative.X * scale, motion.Relative.Y * scale);
+                        ApplyOrbitCamera();
+                        GetViewport().SetInputAsHandled();
+                    }
+                    else if (_leftButtonDown && motion.AltPressed)
+                    {
+                        // Unity Alt+LMB orbit: swing the camera around the focus.
+                        _orbitController.Orbit(-motion.Relative.X * OrbitYawRadPerPixel, motion.Relative.Y * OrbitPitchRadPerPixel);
+                        ApplyOrbitCamera();
+                        GetViewport().SetInputAsHandled();
+                    }
+                }
+
+                break;
+
+            case InputEventKey { Pressed: true } key when key.Keycode == Key.Home || key.Keycode == Key.F:
+                // Unity F = frame/recenter (here: back to the initial framed pose).
+                _orbitController?.Reset();
+                ApplyOrbitCamera();
+                SyncZoomTargetToCurrent(); // Reset changed the distance -> don't let easing pull it back
+                GetViewport().SetInputAsHandled();
+                break;
+
+            case InputEventKey { Pressed: true } key when key.Keycode == Key.R && !_replay:
+                _orbitController?.Reset();
+                ApplyOrbitCamera();
+                SyncZoomTargetToCurrent(); // Reset changed the distance -> don't let easing pull it back
+                GetViewport().SetInputAsHandled();
+                break;
+
+            case InputEventKey { Pressed: true } key when key.Keycode == Key.B:
+                if (_buildingsNode is not null)
+                {
+                    _buildingsNode.Visible = !_buildingsNode.Visible;
+                    GD.Print($"Main: buildings visible={_buildingsNode.Visible} (B toggle).");
+                }
+
+                GetViewport().SetInputAsHandled();
+                break;
+
+            // LC-realism zone mode cycle (Central -> Follow -> Locked). Local live path only.
+            case InputEventKey { Pressed: true } key when key.Keycode == Key.H:
+                if (_liveCitySource is not null)
+                {
+                    CycleLcZoneMode();
+                }
+
+                GetViewport().SetInputAsHandled();
+                break;
+
+            // Infinite ground-grid toggle (mirrors the B/buildings toggle).
+            case InputEventKey { Pressed: true } key when key.Keycode == Key.G:
+                if (_gridNode is not null)
+                {
+                    _gridNode.Visible = !_gridNode.Visible;
+                    GD.Print($"Main: ground grid visible={_gridNode.Visible} (G toggle).");
+                }
+
+                GetViewport().SetInputAsHandled();
+                break;
+
+            // docs/LIVE-CITY-VISUALS-NOTES.md deliverable 2: runtime zone-tint toggle, mirrors the B/
+            // buildings toggle immediately above.
+            case InputEventKey { Pressed: true } key when key.Keycode == Key.Z:
+                if (_zonesNode is not null)
+                {
+                    _zonesNode.Visible = !_zonesNode.Visible;
+                    GD.Print($"Main: zones visible={_zonesNode.Visible} (Z toggle).");
+                }
+
+                GetViewport().SetInputAsHandled();
+                break;
+
+            // docs/LIVE-CITY-VISUALS-NOTES.md OWNER-CONFIRMED "POI / area rendering" block: runtime toggle
+            // for the WHOLE POI+doors+areas group (`_poisNode`), mirrors the B/buildings and Z/zones
+            // toggles immediately above -- one key flips one node's Visible, no per-layer sub-toggles.
+            case InputEventKey { Pressed: true } key when key.Keycode == Key.P:
+                if (_poisNode is not null)
+                {
+                    _poisNode.Visible = !_poisNode.Visible;
+                    GD.Print($"Main: pois visible={_poisNode.Visible} (P toggle).");
+                }
+
+                GetViewport().SetInputAsHandled();
+                break;
+
+            case InputEventKey { Pressed: true } key when _liveCity && _replay && _clock is not null:
+                if (key.Keycode == Key.Space)
+                {
+                    TogglePlayPause();
+                    GetViewport().SetInputAsHandled();
+                }
+                else if (key.Keycode == Key.Left)
+                {
+                    _clock.StepFrame(-1);
+                    GetViewport().SetInputAsHandled();
+                }
+                else if (key.Keycode == Key.Right)
+                {
+                    _clock.StepFrame(1);
+                    GetViewport().SetInputAsHandled();
+                }
+
+                break;
+        }
+    }
+
+    // docs/LIVE-CITY-VIEWERS-DESIGN.md §5, -TASKS.md D4 -- the click-pick itself: project every currently-
+    // rendered car's WORLD origin (`_carWorldPositions`, written by UpdateCars this same frame or the last
+    // one) to SCREEN space via the active Camera3D's own UnprojectPosition (design §5's literal
+    // suggestion: "camera ray -> nearest instance", done here as "nearest screen-projected instance" since
+    // there is no physics collider to actually ray-cast against), skip anything behind the camera
+    // (IsPositionBehind -- an UnprojectPosition of a behind-camera point is not a meaningful screen pixel),
+    // and hand the filtered list to CityLib.VehiclePicker.PickNearestScreen (the pure, unit-tested part of
+    // this path). A miss (nothing within PickPixelRadius) leaves the previous selection untouched --
+    // mirrors LiveCityOverlay.OnWorldClick's own "clicking empty road should not blank out an already-
+    // identified vehicle" rule.
+    private readonly List<(float X, float Y)> _pickScreenScratch = new();
+    private readonly List<int> _pickIndexScratch = new();
+
+    private void TryPickVehicleAt(Vector2 mousePos)
+    {
+        var camera = GetViewport().GetCamera3D();
+        if (camera is null || _carWorldPositions.Count == 0)
+        {
+            return;
+        }
+
+        _pickScreenScratch.Clear();
+        _pickIndexScratch.Clear();
+
+        for (var i = 0; i < _carWorldPositions.Count; i++)
+        {
+            var pos = _carWorldPositions[i];
+            if (camera.IsPositionBehind(pos))
+            {
+                continue;
+            }
+
+            var screen = camera.UnprojectPosition(pos);
+            _pickScreenScratch.Add((screen.X, screen.Y));
+            _pickIndexScratch.Add(i);
+        }
+
+        var localIdx = CityLib.VehiclePicker.PickNearestScreen(
+            _pickScreenScratch, mousePos.X, mousePos.Y, PickPixelRadius);
+        if (localIdx < 0)
+        {
+            return;
+        }
+
+        var carIdx = _pickIndexScratch[localIdx];
+        var handle = _carHandles[carIdx];
+        _selectedHandle = handle;
+        GD.Print($"Main: picked vehicle {NameFor(handle)} at screen ({mousePos.X:F0},{mousePos.Y:F0}).");
+    }
+
+    // docs/LIVE-CITY-VIEWERS-DESIGN.md §5 -- "A viewer-side Dictionary<VehicleHandle,string> Names ...
+    // resolves handle -> human-readable id ... in every mode/transport". `_vehicleNames` is populated every
+    // live-mode frame from LiveCitySource.Sample().Cars (real SUMO ids); it stays empty in replay (the
+    // wire's LifecycleRecord carries no name yet -- Stage E, out of scope here), so this falls back to
+    // VehicleHandle.ToString()'s own "Vehicle#{Index}.{Generation}" -- exactly the task's stated
+    // acceptable-for-now replay label.
+    private string NameFor(VehicleHandle handle)
+        => _vehicleNames.TryGetValue(handle, out var name) ? name : handle.ToString();
+
+    // docs/LIVE-CITY-VIEWERS-DESIGN.md §5, -TASKS.md D4 -- builds the selection ring (a small emissive
+    // torus, hidden until a pick happens) + the identity label (a screen-space Godot Label in its own
+    // CanvasLayer, so it always faces the viewer and stays legible regardless of camera distance/angle --
+    // same "label drawn in screen space" choice LiveCityOverlay.DrawWorldOver makes). Called once from both
+    // ReadyLiveCityLive and ReadyLiveCityReplay -- works in BOTH modes (task D4's explicit requirement).
+    private void BuildSelectionUi()
+    {
+        var ringMaterial = new StandardMaterial3D
+        {
+            AlbedoColor = SelectionColor,
+            EmissionEnabled = true,
+            Emission = SelectionColor,
+            EmissionEnergyMultiplier = 2.5f,
+        };
+        _selectionRing = new MeshInstance3D
+        {
+            Mesh = new TorusMesh { InnerRadius = 1.5f, OuterRadius = 2.0f, Rings = 16, RingSegments = 8 },
+            Name = "SelectionRing",
+            Visible = false,
+        };
+        _selectionRing.SetSurfaceOverrideMaterial(0, ringMaterial);
+        AddChild(_selectionRing);
+
+        _selectionLabelLayer = new CanvasLayer { Name = "SelectionLabelLayer" };
+        AddChild(_selectionLabelLayer);
+
+        _selectionLabelNode = new Label { Text = string.Empty, Visible = false };
+        _selectionLabelNode.AddThemeColorOverride("font_color", new Color(1f, 1f, 1f));
+        _selectionLabelNode.AddThemeColorOverride("font_outline_color", new Color(0f, 0f, 0f));
+        _selectionLabelNode.AddThemeConstantOverride("outline_size", 4);
+        _selectionLabelNode.AddThemeFontSizeOverride("font_size", 18);
+        _selectionLabelLayer.AddChild(_selectionLabelNode);
+    }
+
+    // docs/LIVE-CITY-VISUALS-NOTES.md (tick-rate task): the on-screen rate control -- a small top-left
+    // Godot Control mirroring src/Sim.Viewer's DrawLiveCityRatePanel one-for-one: a display-only sim-hz
+    // label (sim-hz is baked into the engine's step-length at LiveCitySim construction time, so there is
+    // no live knob to turn here -- "relaunch --sim-hz=N to change", same hint the Raylib panel gives) and
+    // an HSlider that pushes render-hz straight to Godot.Engine.MaxFps INSTANTLY, clamped to the same
+    // [15,60] band ValidateRenderHz enforces at startup. Fix 6 (Windows GPU testing session) adds a THIRD
+    // row: a live [0,2]s playout-delay slider bound to `_playoutDelaySeconds` (every Reconstruct call site
+    // reads the field, so this takes effect on the very next frame, no relaunch). Called once from
+    // ReadyLiveCityLive/ReadyLiveCityReplay AND (Fix 6 -- previously missing) ReadyLiveCityRemote, so the
+    // panel (and this slider) shows in local live, replay, AND remote DDS live-city modes alike.
+    private void BuildRateControlUi()
+    {
+        _rateUi = new CanvasLayer { Name = "RateUi" };
+        AddChild(_rateUi);
+
+        var panel = new PanelContainer { Name = "RatePanel" };
+        panel.SetAnchorsPreset(Control.LayoutPreset.TopLeft);
+        panel.OffsetLeft = 16f;
+        panel.OffsetTop = 16f;
+        panel.OffsetRight = 316f;
+        panel.OffsetBottom = 176f;
+        _rateUi.AddChild(panel);
+
+        var vbox = new VBoxContainer();
+        panel.AddChild(vbox);
+
+        _rateLabel = new Label { Text = $"sim: {_simHz} Hz (dt={_liveCityDt:F3}s) -- relaunch --sim-hz=N to change" };
+        vbox.AddChild(_rateLabel);
+
+        var renderRow = new HBoxContainer();
+        vbox.AddChild(renderRow);
+
+        var renderLabel = new Label { Text = "render (Hz):" };
+        renderRow.AddChild(renderLabel);
+
+        _renderHzSlider = new HSlider
+        {
+            MinValue = 15,
+            MaxValue = 60,
+            Step = 1,
+            Value = _renderHz,
+            CustomMinimumSize = new Vector2(180f, 20f),
+            SizeFlagsHorizontal = Control.SizeFlags.ExpandFill,
+        };
+        _renderHzSlider.ValueChanged += OnRenderHzSliderChanged;
+        renderRow.AddChild(_renderHzSlider);
+
+        var delayRow = new HBoxContainer();
+        vbox.AddChild(delayRow);
+
+        _playoutDelayLabel = new Label { Text = $"playout delay: {_playoutDelaySeconds:F2}s" };
+        delayRow.AddChild(_playoutDelayLabel);
+
+        _playoutDelaySlider = new HSlider
+        {
+            MinValue = 0.0,
+            MaxValue = 2.0,
+            Step = 0.05,
+            Value = _playoutDelaySeconds,
+            CustomMinimumSize = new Vector2(180f, 20f),
+            SizeFlagsHorizontal = Control.SizeFlags.ExpandFill,
+        };
+        _playoutDelaySlider.ValueChanged += OnPlayoutDelaySliderChanged;
+        delayRow.AddChild(_playoutDelaySlider);
+
+        // #15 LC-realism zone mode selector -- local live-city path only (remote runs LiveCitySim in the
+        // producer, so the viewer can't drive the zone there; replay has no live sim). Mirrors the `H` key.
+        if (_liveCitySource is not null)
+        {
+            var zoneRow = new HBoxContainer();
+            vbox.AddChild(zoneRow);
+
+            _lcZoneModeLabel = new Label { Text = $"LC zone [H]: {_lcZoneMode}" };
+            zoneRow.AddChild(_lcZoneModeLabel);
+
+            _lcZoneModeDropdown = new OptionButton();
+            _lcZoneModeDropdown.AddItem("Central", (int)LcZoneMode.Central);
+            _lcZoneModeDropdown.AddItem("Follow", (int)LcZoneMode.Follow);
+            _lcZoneModeDropdown.AddItem("Locked", (int)LcZoneMode.Locked);
+            _lcZoneModeDropdown.Selected = (int)_lcZoneMode;
+            _lcZoneModeDropdown.ItemSelected += OnLcZoneModeSelected;
+            zoneRow.AddChild(_lcZoneModeDropdown);
+        }
+
+        GD.Print(
+            "Main: rate control UI built (sim-hz display + render-hz slider + playout-delay slider, " +
+            $"default={_playoutDelaySeconds:F2}s).");
+    }
+
+    // Menu path for the LC-realism zone mode (mirrors the `H` key). Selecting "Locked" freezes the current
+    // camera zone via SetLcZoneMode.
+    private void OnLcZoneModeSelected(long index) => SetLcZoneMode((LcZoneMode)(int)index);
+
+    // Runtime render-hz change (task deliverable: "render-hz adjustable at runtime (instant)") -- pushes
+    // straight to Godot.Engine.MaxFps, exactly like the Raylib viewer's DrawLiveCityRatePanel slider pushes
+    // to Raylib.SetTargetFPS. No rebuild/relaunch needed.
+    private void OnRenderHzSliderChanged(double value)
+    {
+        _renderHz = Math.Clamp((int)value, 15, 60);
+        Godot.Engine.MaxFps = _renderHz;
+    }
+
+    // Fix 6 -- runtime playout-delay change: every ProcessLiveCity*/ProcessPeds call site reads
+    // `_playoutDelaySeconds` fresh each frame (Reconstruct's `delaySeconds` parameter), so writing the
+    // field here takes effect on the very next reconstructed frame, no relaunch needed -- mirrors
+    // OnRenderHzSliderChanged's instant-apply pattern.
+    private void OnPlayoutDelaySliderChanged(double value)
+    {
+        _playoutDelaySeconds = Math.Clamp(value, 0.0, 2.0);
+        if (_playoutDelayLabel is not null)
+        {
+            _playoutDelayLabel.Text = $"playout delay: {_playoutDelaySeconds:F2}s";
+        }
+    }
+
+    // Called every live-city render frame (both live and replay). Repositions the ring above the selected
+    // vehicle's CURRENT world position (re-resolved by VehicleHandle via `_carHandles`/`_carWorldPositions`
+    // every frame, per UpdateCars' own remark on why instance index is never cached across frames) and the
+    // label at its screen projection; hides both while nothing is selected or the selected vehicle isn't
+    // present in this exact frame's render set (e.g. transiently out of the crop/reconstruction window).
+    private void UpdateSelectionHighlight()
+    {
+        if (_selectionRing is null || _selectionLabelNode is null)
+        {
+            return;
+        }
+
+        if (_selectedHandle is not { } handle)
+        {
+            _selectionRing.Visible = false;
+            _selectionLabelNode.Visible = false;
+            return;
+        }
+
+        var idx = _carHandles.IndexOf(handle);
+        if (idx < 0)
+        {
+            _selectionRing.Visible = false;
+            _selectionLabelNode.Visible = false;
+            return;
+        }
+
+        var pos = _carWorldPositions[idx];
+        _selectionRing.Visible = true;
+        _selectionRing.Position = pos + new Vector3(0f, CarHeightMeters + 0.8f, 0f);
+
+        var camera = GetViewport().GetCamera3D();
+        if (camera is not null && !camera.IsPositionBehind(pos))
+        {
+            var screen = camera.UnprojectPosition(pos);
+            _selectionLabelNode.Text = NameFor(handle);
+            _selectionLabelNode.Position = new Vector2(screen.X + 14f, screen.Y - 28f);
+            _selectionLabelNode.Visible = true;
+        }
+        else
+        {
+            _selectionLabelNode.Visible = false;
+        }
+    }
+
+    // docs/LIVE-CITY-VIEWERS-DESIGN.md §4, -TASKS.md D3 -- the Godot playback UI: a CanvasLayer/Control
+    // panel built in code (Play/Pause, Restart, frame-step x2, a 0.5x/1x/2x speed row, a "t = .../..." time
+    // label, and an HSlider timeline bound to clock.Now over [0, clock.Duration]). Built ONLY from
+    // ReadyLiveCityReplay -- this UI shows ONLY in replay mode, per the task spec.
+    private void BuildPlaybackUi()
+    {
+        if (_clock is null)
+        {
+            return;
+        }
+
+        var canvas = new CanvasLayer { Name = "PlaybackUi" };
+        AddChild(canvas);
+        _playbackUi = canvas;
+
+        var panel = new PanelContainer { Name = "PlaybackPanel" };
+        panel.SetAnchorsPreset(Control.LayoutPreset.BottomWide);
+        panel.OffsetTop = -76f;
+        panel.OffsetBottom = -12f;
+        panel.OffsetLeft = 16f;
+        panel.OffsetRight = -16f;
+        canvas.AddChild(panel);
+
+        var vbox = new VBoxContainer();
+        panel.AddChild(vbox);
+
+        var row = new HBoxContainer();
+        vbox.AddChild(row);
+
+        _playPauseButton = new Button { Text = "Pause" };
+        _playPauseButton.Pressed += TogglePlayPause;
+        row.AddChild(_playPauseButton);
+
+        var restartButton = new Button { Text = "Restart" };
+        restartButton.Pressed += () => _clock?.Restart();
+        row.AddChild(restartButton);
+
+        var stepBack = new Button { Text = "<< Frame" };
+        stepBack.Pressed += () => _clock?.StepFrame(-1);
+        row.AddChild(stepBack);
+
+        var stepFwd = new Button { Text = "Frame >>" };
+        stepFwd.Pressed += () => _clock?.StepFrame(1);
+        row.AddChild(stepFwd);
+
+        foreach (var speed in new[] { 0.5, 1.0, 2.0 })
+        {
+            var speedButton = new Button { Text = $"{speed:0.0}x" };
+            speedButton.Pressed += () =>
+            {
+                if (_clock is not null)
+                {
+                    _clock.Speed = speed;
+                }
+            };
+            row.AddChild(speedButton);
+        }
+
+        _timeLabel = new Label { Text = "t = 0.0s / 0.0s" };
+        row.AddChild(_timeLabel);
+
+        _timelineSlider = new HSlider
+        {
+            MinValue = 0.0,
+            MaxValue = Math.Max(_clock.Duration, 0.01),
+            Step = 0.01,
+            CustomMinimumSize = new Vector2(0f, 24f),
+            SizeFlagsHorizontal = Control.SizeFlags.ExpandFill,
+        };
+        _timelineSlider.DragStarted += OnTimelineDragStarted;
+        _timelineSlider.DragEnded += OnTimelineDragEnded;
+        _timelineSlider.ValueChanged += OnTimelineValueChanged;
+        vbox.AddChild(_timelineSlider);
+
+        GD.Print("Main: --replay playback UI built (Play/Pause, Restart, frame-step, speed, timeline slider).");
+    }
+
+    private void TogglePlayPause()
+    {
+        if (_clock is null)
+        {
+            return;
+        }
+
+        if (_clock.Playing)
+        {
+            _clock.Pause();
+        }
+        else
+        {
+            _clock.Play();
+        }
+    }
+
+    // docs/LIVE-CITY-VIEWERS-DESIGN.md §4 -- "dragging it calls clock.SeekTo (pause while dragging, restore
+    // on release)". DragStarted latches whether the clock was playing so DragEnded can restore it exactly.
+    private void OnTimelineDragStarted()
+    {
+        if (_clock is null)
+        {
+            return;
+        }
+
+        _sliderDragging = true;
+        _wasPlayingBeforeDrag = _clock.Playing;
+        _clock.Pause();
+    }
+
+    // Live-scrub: while dragging, every slider value change seeks the clock immediately so the rendered
+    // scene tracks the thumb instead of only updating on release.
+    private void OnTimelineValueChanged(double value)
+    {
+        if (_sliderDragging)
+        {
+            _clock?.SeekTo(value);
+        }
+    }
+
+    private void OnTimelineDragEnded(bool valueChanged)
+    {
+        if (_clock is null || _timelineSlider is null)
+        {
+            return;
+        }
+
+        _sliderDragging = false;
+        _clock.SeekTo(_timelineSlider.Value);
+        if (_wasPlayingBeforeDrag)
+        {
+            _clock.Play();
+        }
+    }
+
+    // Called every ProcessLiveCityReplay frame: refreshes the "t = .../..." label, the Play/Pause button's
+    // own text, and the slider thumb position from clock.Now -- via SetValueNoSignal so this write never
+    // re-fires ValueChanged (which would otherwise feed back into OnTimelineValueChanged's own SeekTo and
+    // fight the clock every frame). Skipped entirely while the user is actively dragging the thumb, so the
+    // thumb only ever reflects either the clock (not dragging) or the user's own drag (dragging), never both.
+    private void UpdatePlaybackUi()
+    {
+        if (_clock is null)
+        {
+            return;
+        }
+
+        if (_timeLabel is not null)
+        {
+            _timeLabel.Text = $"t = {_clock.Now:F1}s / {_clock.Duration:F1}s";
+        }
+
+        if (_playPauseButton is not null)
+        {
+            _playPauseButton.Text = _clock.Playing ? "Pause" : "Play";
+        }
+
+        if (_timelineSlider is not null && !_sliderDragging)
+        {
+            _timelineSlider.SetValueNoSignal(_clock.Now);
+        }
     }
 
     // Resolve the repo root by searching upward from this project's own directory for Traffic.sln --
@@ -775,7 +2591,66 @@ public partial class Main : Node3D
     // ArrayMesh construction.
     private (Vector3 Min, Vector3 Max) BuildRoadMeshes(NetworkModel network)
         => BuildRoadMeshesFromRibbons(
-            RoadMeshBuilder.BuildAll(network, includeInternal: true), network.LanesByHandle.Count);
+            RoadMeshBuilder.BuildAll(network, includeInternal: true), network.LanesByHandle.Count,
+            PedByHandle(network));
+
+    // docs/LIVE-CITY-VISUALS-NOTES.md "Sidewalks" row -- Handle -> "is this a pedestrian-only lane"
+    // (Sim.Ingest.Lane.AllowsRoadVehicle == false), built once off a NetworkModel and threaded into
+    // BuildRoadMeshesFromRibbons's material choice. Shared by every NetworkModel-backed road-mesh caller
+    // (BuildRoadMeshes, BuildRoadMeshesCropped) so the ped-vs-car material split is computed in exactly one
+    // place.
+    private static Dictionary<int, bool> PedByHandle(NetworkModel network)
+    {
+        var dict = new Dictionary<int, bool>(network.LanesByHandle.Count);
+        foreach (var lane in network.LanesByHandle)
+        {
+            dict[lane.Handle] = !lane.AllowsRoadVehicle;
+        }
+
+        return dict;
+    }
+
+    // docs/LIVE-CITY-VIEWERS-DESIGN.md §6, -TASKS.md D1 -- the live-city LOCAL entry point's crop-filtered
+    // counterpart to BuildRoadMeshes: only lanes with at least one shape vertex inside the crop rect
+    // (expanded by a small margin so a lane that just straddles the crop edge still renders whole rather
+    // than being clipped mid-ribbon) are built, keeping the legible downtown block from being lost in the
+    // full net's ~4750m extent (see ReadyLiveCity's own remark). RoadMeshBuilder.Build (the same per-lane
+    // ribbon math BuildAll uses internally) is called directly per surviving lane.
+    private (Vector3 Min, Vector3 Max) BuildRoadMeshesCropped(
+        NetworkModel network, double x0, double y0, double x1, double y1, double marginMeters = 60.0)
+    {
+        var minX = x0 - marginMeters;
+        var minY = y0 - marginMeters;
+        var maxX = x1 + marginMeters;
+        var maxY = y1 + marginMeters;
+
+        var filtered = new List<(int Handle, RibbonMesh Mesh)>();
+        foreach (var lane in network.LanesByHandle)
+        {
+            var inside = false;
+            foreach (var (sx, sy) in lane.Shape)
+            {
+                if (sx >= minX && sx <= maxX && sy >= minY && sy <= maxY)
+                {
+                    inside = true;
+                    break;
+                }
+            }
+
+            if (!inside)
+            {
+                continue;
+            }
+
+            filtered.Add((lane.Handle, RoadMeshBuilder.Build(lane.Shape, lane.ShapeZ, lane.Width)));
+        }
+
+        GD.Print(
+            $"Main: --live-city crop [{x0:F0},{y0:F0}]-[{x1:F0},{y1:F0}] kept {filtered.Count} of " +
+            $"{network.LanesByHandle.Count} lane(s) from the full net.");
+
+        return BuildRoadMeshesFromRibbons(filtered, filtered.Count, PedByHandle(network));
+    }
 
 #if CITY3D_REMOTE
     // docs/DEMO-CITY3D-DESIGN.md "Data path -> Remote mode" / task T2.2b -- the REMOTE entry point: builds
@@ -785,6 +2660,69 @@ public partial class Main : Node3D
     private (Vector3 Min, Vector3 Max) BuildRoadMeshesFromGeometry(
         IReadOnlyDictionary<int, GeometryCodec.LaneGeo> geometry)
         => BuildRoadMeshesFromRibbons(RoadMeshBuilder.BuildAll(geometry, includeInternal: true), geometry.Count);
+
+    // docs/LIVE-CITY-VIEWERS-DESIGN.md §7, -TASKS.md Stage E (E4) -- BuildRoadMeshesFromGeometry's
+    // crop-filtered counterpart (mirrors BuildRoadMeshesCropped's NetworkModel-side filtering, one input
+    // shape over): the combined `--live-city --transport=dds` remote path receives the FULL (uncropped)
+    // net's geometry over the wire (LiveCitySim publishes its whole parsed net.xml, same as the local
+    // path's `Network` property), so this keeps only lanes with at least one point inside the crop rect
+    // (+ margin) before handing them to RoadMeshBuilder.Build directly -- same reasoning as
+    // BuildRoadMeshesCropped: build/frame only the legible downtown block, not the whole ~4750m net. Z
+    // (GeometryCodec.LaneGeo.Z, Stage E1) threads through to RoadMeshBuilder.Build exactly like
+    // RoadMeshBuilder.BuildAll's own geometry-dictionary overload does.
+    private (Vector3 Min, Vector3 Max) BuildRoadMeshesFromGeometryCropped(
+        IReadOnlyDictionary<int, GeometryCodec.LaneGeo> geometry,
+        double x0, double y0, double x1, double y1, double marginMeters = 60.0,
+        IReadOnlyDictionary<int, bool>? pedByHandle = null)
+    {
+        var minX = x0 - marginMeters;
+        var minY = y0 - marginMeters;
+        var maxX = x1 + marginMeters;
+        var maxY = y1 + marginMeters;
+
+        var filtered = new List<(int Handle, RibbonMesh Mesh)>();
+        foreach (var lane in geometry.Values)
+        {
+            var inside = false;
+            foreach (var (px, py) in lane.Points)
+            {
+                if (px >= minX && px <= maxX && py >= minY && py <= maxY)
+                {
+                    inside = true;
+                    break;
+                }
+            }
+
+            if (!inside)
+            {
+                continue;
+            }
+
+            var shape = new (double X, double Y)[lane.Points.Length];
+            for (var i = 0; i < shape.Length; i++)
+            {
+                shape[i] = (lane.Points[i].X, lane.Points[i].Y);
+            }
+
+            double[]? shapeZ = null;
+            if (lane.Z is { Length: > 0 } laneZ)
+            {
+                shapeZ = new double[laneZ.Length];
+                for (var i = 0; i < laneZ.Length; i++)
+                {
+                    shapeZ[i] = laneZ[i];
+                }
+            }
+
+            filtered.Add((lane.Handle, RoadMeshBuilder.Build(shape, shapeZ, lane.Width)));
+        }
+
+        GD.Print(
+            $"Main: --live-city --transport=dds crop [{x0:F0},{y0:F0}]-[{x1:F0},{y1:F0}] kept " +
+            $"{filtered.Count} of {geometry.Count} lane(s) from the wire.");
+
+        return BuildRoadMeshesFromRibbons(filtered, filtered.Count, pedByHandle);
+    }
 #endif
 
     // docs/DEMO-CITY3D-DESIGN.md "Procedural scene generation -> Roads" / task T1.3 (and T2.2b's remote
@@ -793,12 +2731,24 @@ public partial class Main : Node3D
     // computed (from a NetworkModel locally, from received wire geometry remotely -- see the two callers
     // above) into Godot ArrayMesh/MeshInstance3D nodes. Returns the Godot-space bounding box of every
     // emitted vertex, so the camera can frame the whole network.
+    //
+    // docs/LIVE-CITY-VISUALS-NOTES.md "Sidewalks" row -- `pedByHandle` (Handle -> Sim.Ingest.
+    // Lane.AllowsRoadVehicle == false), when supplied, picks the lighter ConcreteColor material for that
+    // lane's MeshInstance3D instead of the shared AsphaltColor one; null (every non-live-city caller) keeps
+    // every lane on the single asphalt material, byte-identical to before this layer existed.
     private (Vector3 Min, Vector3 Max) BuildRoadMeshesFromRibbons(
-        IEnumerable<(int Handle, RibbonMesh Mesh)> perLane, int totalLaneCount)
+        IEnumerable<(int Handle, RibbonMesh Mesh)> perLane, int totalLaneCount,
+        IReadOnlyDictionary<int, bool>? pedByHandle = null)
     {
-        var material = new StandardMaterial3D
+        var asphaltMaterial = new StandardMaterial3D
         {
             AlbedoColor = AsphaltColor,
+            Roughness = 0.95f,
+            CullMode = BaseMaterial3D.CullModeEnum.Disabled,
+        };
+        var concreteMaterial = new StandardMaterial3D
+        {
+            AlbedoColor = ConcreteColor,
             Roughness = 0.95f,
             CullMode = BaseMaterial3D.CullModeEnum.Disabled,
         };
@@ -806,6 +2756,7 @@ public partial class Main : Node3D
         var min = new Vector3(float.PositiveInfinity, float.PositiveInfinity, float.PositiveInfinity);
         var max = new Vector3(float.NegativeInfinity, float.NegativeInfinity, float.NegativeInfinity);
         var laneCount = 0;
+        var pedLaneCount = 0;
 
         foreach (var (handle, mesh) in perLane)
         {
@@ -843,17 +2794,25 @@ public partial class Main : Node3D
             var arrayMesh = new ArrayMesh();
             arrayMesh.AddSurfaceFromArrays(Mesh.PrimitiveType.Triangles, arrays);
 
+            var isPed = pedByHandle is not null && pedByHandle.TryGetValue(handle, out var pedFlag) && pedFlag;
+            if (isPed)
+            {
+                pedLaneCount++;
+            }
+
             var instance = new MeshInstance3D
             {
                 Mesh = arrayMesh,
                 Name = $"Lane_{handle}",
             };
-            instance.SetSurfaceOverrideMaterial(0, material);
+            instance.SetSurfaceOverrideMaterial(0, isPed ? concreteMaterial : asphaltMaterial);
             AddChild(instance);
             laneCount++;
         }
 
-        GD.Print($"Main: built {laneCount} road ribbon mesh(es) from {totalLaneCount} lane(s).");
+        GD.Print(
+            $"Main: built {laneCount} road ribbon mesh(es) from {totalLaneCount} lane(s) " +
+            $"({pedLaneCount} sidewalk/concrete).");
 
         if (laneCount == 0)
         {
@@ -906,10 +2865,11 @@ public partial class Main : Node3D
             var box = boxes[i];
 
             // Scale the unit cube to (SizeX, SizeY, SizeZ) in its own local axes, THEN rotate the whole
-            // scaled box about +Y by YawRad (Basis.Scaled multiplies as R*S, i.e. scale-then-rotate for a
-            // transformed vector) so its SizeX face runs along the local road tangent.
+            // scaled box about +Y by YawRad. Basis.ScaledLocal right-multiplies (R*S), i.e. it scales in the
+            // box's OWN axes and then rotates -- so SizeX runs along the local road tangent. (Plain
+            // Basis.Scaled left-multiplies (S*R) and would stretch along fixed WORLD axes, hiding the yaw.)
             var scale = new Vector3(box.SizeX, box.SizeY, box.SizeZ);
-            var basis = new Basis(Vector3.Up, box.YawRad).Scaled(scale);
+            var basis = new Basis(Vector3.Up, box.YawRad).ScaledLocal(scale);
             var origin = new Vector3(box.CX, box.CY, box.CZ);
             multiMesh.SetInstanceTransform(i, new Transform3D(basis, origin));
             multiMesh.SetInstanceColor(i, BuildingPalette[i % BuildingPalette.Length]);
@@ -936,9 +2896,544 @@ public partial class Main : Node3D
             MaterialOverride = material,
         };
         AddChild(instance);
+        _buildingsNode = instance;
 
         GD.Print($"Main: built {boxes.Count} building(s).");
         return (min, max);
+    }
+
+    // docs/LIVE-CITY-VISUALS-NOTES.md "Buildings (data-driven)" row -- the single entry point every
+    // `--live-city` flavour (local live, replay, remote) calls to build ITS buildings node, applying the
+    // "data over defaults" standing directive: real footprint + real HeightM from buildings.json
+    // (BuildDataDrivenBuildings) when the scene has any, procedural BuildingPlacer boxes
+    // (BuildBuildings, unchanged) only as the no-data FALLBACK. `network` is only actually walked in the
+    // fallback branch -- a scene with buildings.json data never touches BuildingPlacer at all.
+    private (Vector3 Min, Vector3 Max) BuildLiveCityBuildings(LiveCityScene scene, NetworkModel network)
+    {
+        if (scene.Buildings.Count > 0)
+        {
+            return BuildDataDrivenBuildings(scene.Buildings);
+        }
+
+        GD.Print("Main: 0 building(s) in scene (no buildings.json) -- falling back to procedural BuildingPlacer.");
+        return BuildBuildings(network);
+    }
+
+    // docs/LIVE-CITY-VISUALS-NOTES.md "Buildings (data-driven)" row / DESIGN-live-city-2d-viz.md §7
+    // "Buildings: buildings[].polygon + type -> extruded massing". Static geometry, built ONCE at load,
+    // same "build once, no per-frame cost" split as BuildBuildings/BuildZoneGround. CityLib.
+    // BuildingFromDataBuilder does the polygon+height -> mesh math (ear-clip roof cap + one flat-shaded
+    // wall quad per footprint edge, real HeightM -- not a synthetic band like BuildingPlacer's); this
+    // method only turns each ExtrudedBuildingMesh into a MeshInstance3D, coloured by
+    // BuildingFillPalette[building.Type]. One MeshInstance3D per building (not a MultiMesh like the
+    // procedural path): only 31 buildings in the committed dataset, and per-building footprints/heights
+    // vary too much to share one instanced mesh the way identical unit-cube boxes do.
+    //
+    // Every building lands under ONE parent Node3D (`_buildingsNode`, same field the procedural path
+    // uses) so `--hide-buildings` / the runtime `B` key toggles the whole layer with a single Visible
+    // flip, regardless of which of the two building-building methods actually ran.
+    private (Vector3 Min, Vector3 Max) BuildDataDrivenBuildings(IReadOnlyList<SceneBuilding> buildings)
+    {
+        var min = new Vector3(float.PositiveInfinity, float.PositiveInfinity, float.PositiveInfinity);
+        var max = new Vector3(float.NegativeInfinity, float.NegativeInfinity, float.NegativeInfinity);
+
+        var root = new Node3D { Name = "Buildings" };
+        AddChild(root);
+        _buildingsNode = root;
+
+        var built = 0;
+        foreach (var building in buildings)
+        {
+            var mesh = BuildingFromDataBuilder.Build(building);
+            if (mesh.Vertices.Length == 0)
+            {
+                continue; // degenerate footprint or non-positive height -- nothing to draw.
+            }
+
+            var vertexCount = mesh.Vertices.Length / 3;
+            var vertices = new Vector3[vertexCount];
+            var normals = new Vector3[vertexCount];
+            for (var i = 0; i < vertexCount; i++)
+            {
+                vertices[i] = new Vector3(mesh.Vertices[i * 3 + 0], mesh.Vertices[i * 3 + 1], mesh.Vertices[i * 3 + 2]);
+                normals[i] = new Vector3(mesh.Normals[i * 3 + 0], mesh.Normals[i * 3 + 1], mesh.Normals[i * 3 + 2]);
+
+                min.X = Mathf.Min(min.X, vertices[i].X);
+                min.Y = Mathf.Min(min.Y, vertices[i].Y);
+                min.Z = Mathf.Min(min.Z, vertices[i].Z);
+                max.X = Mathf.Max(max.X, vertices[i].X);
+                max.Y = Mathf.Max(max.Y, vertices[i].Y);
+                max.Z = Mathf.Max(max.Z, vertices[i].Z);
+            }
+
+            var arrays = new Godot.Collections.Array();
+            arrays.Resize((int)Mesh.ArrayType.Max);
+            arrays[(int)Mesh.ArrayType.Vertex] = vertices;
+            arrays[(int)Mesh.ArrayType.Normal] = normals;
+            arrays[(int)Mesh.ArrayType.Index] = mesh.Indices;
+
+            var arrayMesh = new ArrayMesh();
+            arrayMesh.AddSurfaceFromArrays(Mesh.PrimitiveType.Triangles, arrays);
+
+            var color = BuildingFillPalette.TryGetValue(building.Type, out var c) ? c : BuildingFillDefault;
+            var material = new StandardMaterial3D
+            {
+                AlbedoColor = color,
+                Roughness = 0.9f,
+                // Double-sided (like ZoneGroundBuilder's ground tint material): the footprint's authored
+                // winding is normalized internally by BuildingFromDataBuilder, but disabling face culling
+                // here is cheap insurance against a future dataset's footprint being wound the other way
+                // -- a solid building silhouette must never show a see-through wall/roof face.
+                CullMode = BaseMaterial3D.CullModeEnum.Disabled,
+            };
+
+            var instance = new MeshInstance3D
+            {
+                Mesh = arrayMesh,
+                Name = $"Building_{building.Id}",
+            };
+            instance.SetSurfaceOverrideMaterial(0, material);
+            root.AddChild(instance);
+            built++;
+        }
+
+        GD.Print($"Main: built {built} data-driven building(s) from {buildings.Count} buildings.json record(s).");
+
+        if (built == 0)
+        {
+            return (new Vector3(float.PositiveInfinity, float.PositiveInfinity, float.PositiveInfinity),
+                    new Vector3(float.NegativeInfinity, float.NegativeInfinity, float.NegativeInfinity));
+        }
+
+        return (min, max);
+    }
+
+    // docs/LIVE-CITY-VISUALS-NOTES.md deliverable 2 ("Zones layer"). Static geometry, built ONCE at load,
+    // same "build once, no per-frame cost" split as BuildRoadMeshes/BuildBuildings -- a district tint never
+    // animates. CityLib.ZoneGroundBuilder does the polygon -> flat-mesh math (fan triangulation + the SUMO
+    // -> Godot elevation offset that keeps the tint just below the road ribbons); this method only turns
+    // each FlatGroundMesh into a MeshInstance3D, coloured by `ZoneFillPalette[zone.Type]`.
+    //
+    // Draw order: zones are added LARGEST-AREA-FIRST (sorted by FlatGroundMesh.Area descending) so a big
+    // district's tint node -- and therefore its render -- lands before a smaller nested/adjacent zone's,
+    // per the task's explicit "so a big zone doesn't cover a small one" requirement. All zone meshes sit at
+    // the SAME ground offset (ZoneGroundBuilder's default -0.05m, just under the road surface at 0m) with
+    // an unshaded, alpha-blended, double-sided (CullMode.Disabled -- a flat ground wash has no meaningful
+    // back face, and the fan triangulation deliberately does not normalize winding, see
+    // ZoneGroundBuilder.Build's own remark) material, so overlapping tints blend by DRAW ORDER, not a depth
+    // fight.
+    //
+    // Every zone lands under ONE parent Node3D (`_zonesNode`) so `--show-zones` / the runtime `Z` key
+    // toggles the whole layer with a single Visible flip, mirroring `_buildingsNode`/`B` -- except the
+    // layer STARTS hidden here unconditionally (owner decision: zones are opt-in, not the default wash).
+    // A scene with no zones (a dataset that ships no zones.json) leaves `_zonesNode` null -- a harmless
+    // no-op toggle, exactly like `_buildingsNode` in every mode that never builds buildings.
+    private void BuildZoneGround(LiveCityScene scene)
+    {
+        if (scene.Zones.Count == 0)
+        {
+            GD.Print("Main: 0 zone(s) in scene -- zone-tint layer skipped.");
+            return;
+        }
+
+        var built = new List<(SceneZone Zone, FlatGroundMesh Mesh)>(scene.Zones.Count);
+        foreach (var zone in scene.Zones)
+        {
+            built.Add((zone, ZoneGroundBuilder.Build(zone.Polygon)));
+        }
+
+        // Largest planar area first (descending) -- a plain insertion sort is fine at n=6 (one dataset's
+        // worth of districts); no need to pull in System.Linq for this file's first sort.
+        built.Sort((a, b) => b.Mesh.Area.CompareTo(a.Mesh.Area));
+
+        var root = new Node3D { Name = "Zones" };
+        // Owner decision (docs/LIVE-CITY-VISUALS-NOTES.md): zones are opt-in, not the default wash -- the
+        // layer starts hidden here (regardless of caller) so every `--live-city` entry point (local live,
+        // replay, and remote) is hidden-by-default without each needing its own default-visibility logic.
+        // `--show-zones` (checked by the caller right after this returns) and the runtime `Z` key
+        // (_UnhandledInput) are the only ways to make it visible.
+        root.Visible = false;
+        AddChild(root);
+        _zonesNode = root;
+
+        var built3D = 0;
+        foreach (var (zone, flat) in built)
+        {
+            if (flat.Vertices.Length == 0)
+            {
+                continue; // degenerate (<3-point) polygon -- nothing to draw.
+            }
+
+            var vertexCount = flat.Vertices.Length / 3;
+            var vertices = new Vector3[vertexCount];
+            var normals = new Vector3[vertexCount];
+            for (var i = 0; i < vertexCount; i++)
+            {
+                vertices[i] = new Vector3(flat.Vertices[i * 3 + 0], flat.Vertices[i * 3 + 1], flat.Vertices[i * 3 + 2]);
+                normals[i] = new Vector3(flat.Normals[i * 3 + 0], flat.Normals[i * 3 + 1], flat.Normals[i * 3 + 2]);
+            }
+
+            var arrays = new Godot.Collections.Array();
+            arrays.Resize((int)Mesh.ArrayType.Max);
+            arrays[(int)Mesh.ArrayType.Vertex] = vertices;
+            arrays[(int)Mesh.ArrayType.Normal] = normals;
+            arrays[(int)Mesh.ArrayType.Index] = flat.Indices;
+
+            var arrayMesh = new ArrayMesh();
+            arrayMesh.AddSurfaceFromArrays(Mesh.PrimitiveType.Triangles, arrays);
+
+            var color = ZoneFillPalette.TryGetValue(zone.Type, out var c) ? c : ZoneFillDefault;
+            var material = new StandardMaterial3D
+            {
+                AlbedoColor = color,
+                Transparency = BaseMaterial3D.TransparencyEnum.Alpha,
+                ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded,
+                CullMode = BaseMaterial3D.CullModeEnum.Disabled,
+            };
+
+            var instance = new MeshInstance3D
+            {
+                Mesh = arrayMesh,
+                Name = $"Zone_{zone.Id}",
+            };
+            instance.SetSurfaceOverrideMaterial(0, material);
+            root.AddChild(instance);
+            built3D++;
+        }
+
+        GD.Print($"Main: built {built3D} zone ground tile(s) from {scene.Zones.Count} zone(s).");
+    }
+
+    // docs/LIVE-CITY-VISUALS-NOTES.md OWNER-CONFIRMED "POI / area rendering" block -- the single entry
+    // point every `--live-city` flavour (local live, replay, remote) calls to build the WHOLE "POI + doors
+    // + areas" group under one `_poisNode` (so the `--hide-pois`/`P` toggle flips everything with one
+    // Visible flip, per the task's "one toggle for the whole group is fine"). Static geometry, built ONCE
+    // at load -- same "build once, no per-frame cost" split every other live-city overlay layer uses.
+    // Sub-builds, in the group's own internal draw order (areas -> markers -> doors, i.e. flattest/most
+    // ground-hugging first): BuildPoiAreas (parking_lot/park ground tint, reusing ZoneGroundBuilder),
+    // BuildPoiMarkers (the flat venue/transit_stop/dwell_spot/parking_access ground discs), BuildDoors (the
+    // vertical building_entrance boxes -- "the ONE vertical element").
+    private void BuildLiveCityPois(LiveCityScene scene)
+    {
+        var root = new Node3D { Name = "Pois" };
+        AddChild(root);
+        _poisNode = root;
+
+        BuildPoiAreas(root, scene.Areas);
+        BuildPoiMarkers(root, scene.Pois);
+        BuildDoors(root, scene.Pois);
+    }
+
+    // POI AREAS (parking_lot/park -- pois.json records that carry a `polygon`): "flat colored ground
+    // polygons (parking = grey, park = green)". Reuses CityLib.ZoneGroundBuilder's polygon -> flat-mesh math
+    // verbatim (the SAME fan-triangulation + SUMO->Godot ground-offset pipeline the zones layer uses) --
+    // just with the POI-area palette and a ground offset that sits "just above the zone tint, below roads"
+    // per the task (zones default -0.05m, roads sit at 0m -- -0.03m lands strictly between the two).
+    // Largest-area-first, mirroring BuildZoneGround's own ordering (only 6 areas in the committed dataset,
+    // but the same "big area's tint shouldn't get buried under a small nested one" reasoning applies).
+    private static void BuildPoiAreas(Node3D parent, IReadOnlyList<SceneArea> areas)
+    {
+        if (areas.Count == 0)
+        {
+            GD.Print("Main: 0 POI area(s) in scene -- parking_lot/park layer skipped.");
+            return;
+        }
+
+        const double groundOffsetSumoZ = -0.03;
+
+        var built = new List<(SceneArea Area, FlatGroundMesh Mesh)>(areas.Count);
+        foreach (var area in areas)
+        {
+            built.Add((area, ZoneGroundBuilder.Build(area.Polygon, groundOffsetSumoZ)));
+        }
+
+        built.Sort((a, b) => b.Mesh.Area.CompareTo(a.Mesh.Area));
+
+        var root = new Node3D { Name = "PoiAreas" };
+        parent.AddChild(root);
+
+        var built3D = 0;
+        foreach (var (area, flat) in built)
+        {
+            if (flat.Vertices.Length == 0)
+            {
+                continue; // degenerate (<3-point) polygon -- nothing to draw.
+            }
+
+            var vertexCount = flat.Vertices.Length / 3;
+            var vertices = new Vector3[vertexCount];
+            var normals = new Vector3[vertexCount];
+            for (var i = 0; i < vertexCount; i++)
+            {
+                vertices[i] = new Vector3(flat.Vertices[i * 3 + 0], flat.Vertices[i * 3 + 1], flat.Vertices[i * 3 + 2]);
+                normals[i] = new Vector3(flat.Normals[i * 3 + 0], flat.Normals[i * 3 + 1], flat.Normals[i * 3 + 2]);
+            }
+
+            var arrays = new Godot.Collections.Array();
+            arrays.Resize((int)Mesh.ArrayType.Max);
+            arrays[(int)Mesh.ArrayType.Vertex] = vertices;
+            arrays[(int)Mesh.ArrayType.Normal] = normals;
+            arrays[(int)Mesh.ArrayType.Index] = flat.Indices;
+
+            var arrayMesh = new ArrayMesh();
+            arrayMesh.AddSurfaceFromArrays(Mesh.PrimitiveType.Triangles, arrays);
+
+            var color = PoiAreaFillPalette.TryGetValue(area.Kind, out var c) ? c : PoiAreaFillDefault;
+            var material = new StandardMaterial3D
+            {
+                AlbedoColor = color,
+                Transparency = BaseMaterial3D.TransparencyEnum.Alpha,
+                ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded,
+                CullMode = BaseMaterial3D.CullModeEnum.Disabled,
+            };
+
+            var instance = new MeshInstance3D
+            {
+                Mesh = arrayMesh,
+                Name = $"PoiArea_{area.Id}",
+            };
+            instance.SetSurfaceOverrideMaterial(0, material);
+            root.AddChild(instance);
+            built3D++;
+        }
+
+        GD.Print($"Main: built {built3D} POI area ground tile(s) from {areas.Count} area(s).");
+    }
+
+    // POI POINT markers (venue/transit_stop/dwell_spot/parking_access -- NOT building_entrance, which
+    // BuildDoors owns): "flat colored ground markers/decals by kind. NO posts/benches/pylons/models."
+    // CityLib.PoiGroundBuilder does the polygon-free point -> (position, per-kind radius) math; this method
+    // turns its plain instances into ONE MultiMeshInstance3D (a thin unit disc/puck, one per-instance
+    // transform+colour per marker) -- the SAME instancing idiom BuildBuildings/BuildCarMultiMesh use.
+    // A round cylinder (not a flat quad) sidesteps any "which local axis does an unrotated PlaneMesh lie
+    // in" ambiguity entirely -- a very short cylinder unavoidably reads as a flat puck regardless of
+    // orientation assumptions, matching BuildPedMultiMesh's own reasoning for picking a cylinder mesh.
+    private static void BuildPoiMarkers(Node3D parent, IReadOnlyList<ScenePoi> pois)
+    {
+        var markers = PoiGroundBuilder.Build(pois);
+        if (markers.Count == 0)
+        {
+            GD.Print("Main: 0 POI marker(s) in scene.");
+            return;
+        }
+
+        const float puckHeightMeters = 0.04f; // thin -- reads as a flat ground decal, not a raised disc.
+
+        var material = new StandardMaterial3D
+        {
+            VertexColorUseAsAlbedo = true, // per-instance MultiMesh colours (the per-kind palette) modulate albedo
+            ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded, // flat decal -- reads the same regardless of light angle
+        };
+
+        var multiMesh = new MultiMesh
+        {
+            TransformFormat = MultiMesh.TransformFormatEnum.Transform3D,
+            UseColors = true,
+            // unit cylinder (radius 0.5, height 1); per-instance transform scales it to each marker's real
+            // (2*RadiusMeters, puckHeightMeters, 2*RadiusMeters) footprint.
+            Mesh = new CylinderMesh { TopRadius = 0.5f, BottomRadius = 0.5f, Height = 1f, RadialSegments = 12 },
+            InstanceCount = markers.Count,
+        };
+
+        for (var i = 0; i < markers.Count; i++)
+        {
+            var m = markers[i];
+            var diameter = m.RadiusMeters * 2f;
+            var basis = Basis.Identity.Scaled(new Vector3(diameter, puckHeightMeters, diameter));
+            // Raise by half the puck's own thickness so it sits ON TOP of PoiGroundBuilder's ground point
+            // (PosY already carries the small +0.02m "above road" offset) rather than being bisected by it.
+            var origin = new Vector3(m.PosX, m.PosY + (puckHeightMeters / 2f), m.PosZ);
+            multiMesh.SetInstanceTransform(i, new Transform3D(basis, origin));
+            multiMesh.SetInstanceColor(i, PoiMarkerPalette.TryGetValue(m.Kind, out var c) ? c : PoiMarkerDefault);
+        }
+
+        var instance = new MultiMeshInstance3D
+        {
+            Multimesh = multiMesh,
+            Name = "PoiMarkers",
+            MaterialOverride = material,
+        };
+        parent.AddChild(instance);
+
+        GD.Print($"Main: built {markers.Count} POI marker(s).");
+    }
+
+    // BUILDING-ENTRANCE DOORS: "the ONE vertical element: a thin, flat, vertical colored box ... oriented
+    // by its `facing` vector. Different color (green) so it reads as a door." CityLib.DoorBuilder does the
+    // pure position+yaw math (facing -> Godot yaw, ground point -> box centre raised half the door's own
+    // height); this method turns its plain instances into ONE MultiMeshInstance3D (a thin unit box, one
+    // per-instance transform per door) -- same idiom BuildCarMultiMesh/UpdateCars use for oriented boxes
+    // (ScaledLocal(scale) so the box's THIN axis, not a fixed world axis, points along Facing).
+    private static void BuildDoors(Node3D parent, IReadOnlyList<ScenePoi> pois)
+    {
+        var doors = DoorBuilder.Build(pois);
+        if (doors.Count == 0)
+        {
+            GD.Print("Main: 0 building_entrance door(s) in scene.");
+            return;
+        }
+
+        var material = new StandardMaterial3D
+        {
+            AlbedoColor = DoorColor,
+            Roughness = 0.6f,
+        };
+
+        var multiMesh = new MultiMesh
+        {
+            TransformFormat = MultiMesh.TransformFormatEnum.Transform3D,
+            UseColors = false, // every door is the SAME colour (DoorColor, baked into the material) -- no per-instance tint needed.
+            Mesh = new BoxMesh { Size = Vector3.One }, // unit cube; per-instance transform scales it to (WidthMeters, HeightMeters, ThicknessMeters)
+            InstanceCount = doors.Count,
+        };
+
+        for (var i = 0; i < doors.Count; i++)
+        {
+            var d = doors[i];
+            var scale = new Vector3(DoorBuilder.WidthMeters, DoorBuilder.HeightMeters, DoorBuilder.ThicknessMeters);
+            // ScaledLocal (R*S) scales in the door's OWN axes then rotates by yaw, so the box's thin face
+            // points down Facing -- same reasoning UpdateCars' own remark gives for its own ScaledLocal use.
+            var basis = new Basis(Vector3.Up, d.YawRad).ScaledLocal(scale);
+            var origin = new Vector3(d.PosX, d.PosY, d.PosZ);
+            multiMesh.SetInstanceTransform(i, new Transform3D(basis, origin));
+        }
+
+        var instance = new MultiMeshInstance3D
+        {
+            Multimesh = multiMesh,
+            Name = "Doors",
+            MaterialOverride = material,
+        };
+        parent.AddChild(instance);
+
+        GD.Print($"Main: built {doors.Count} building_entrance door(s).");
+    }
+
+    // docs/LIVE-CITY-VISUALS-NOTES.md "Crosswalk zebra" + "Lane markings" rows / DESIGN-live-city-2d-viz.md
+    // §2 layers 9/3. Both are static, ALWAYS-visible overlays (unlike the opt-in zone tint) built once, off
+    // a NetworkModel -- crossing lanes (CrosswalkBuilder.IsCrossingLaneId) get zebra stripes; every CAR lane
+    // (AllowsRoadVehicle) that has a car left-neighbour on the same edge (Lane.LeftNeighbor, precomputed by
+    // NetworkParser -- it already excludes non-vehicular siblings, see NetworkModel.Lane's own remark) gets
+    // a dashed seam marking. `crop`, when given, keeps only lanes with at least one shape vertex inside the
+    // rect (+margin) -- the SAME filtering BuildRoadMeshesCropped/BuildRoadMeshesFromGeometryCropped apply,
+    // so this overlay never outruns the cropped road ribbons it sits on. All stripes collapse into ONE
+    // MeshInstance3D and all dashes into another (CrosswalkBuilder.MergeRibbons), matching BuildRoadMeshes'
+    // own "one draw call" ethos.
+    private void BuildCrosswalksAndLaneMarkings(
+        NetworkModel network, (double X0, double Y0, double X1, double Y1)? crop = null, double marginMeters = 60.0)
+    {
+        double minX = 0, minY = 0, maxX = 0, maxY = 0;
+        if (crop is { } c)
+        {
+            minX = c.X0 - marginMeters;
+            minY = c.Y0 - marginMeters;
+            maxX = c.X1 + marginMeters;
+            maxY = c.Y1 + marginMeters;
+        }
+
+        bool Inside(IReadOnlyList<(double X, double Y)> shape)
+        {
+            if (crop is null)
+            {
+                return true;
+            }
+
+            foreach (var (sx, sy) in shape)
+            {
+                if (sx >= minX && sx <= maxX && sy >= minY && sy <= maxY)
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        var crosswalkParts = new List<RibbonMesh>();
+        var markingParts = new List<RibbonMesh>();
+        var crossingLaneCount = 0;
+        var markingLaneCount = 0;
+
+        foreach (var lane in network.LanesByHandle)
+        {
+            if (!Inside(lane.Shape))
+            {
+                continue;
+            }
+
+            if (CrosswalkBuilder.IsCrossingLaneId(lane.Id))
+            {
+                var (mesh, stripeCount) = CrosswalkBuilder.Build(lane.Shape, lane.Width);
+                if (stripeCount > 0)
+                {
+                    crosswalkParts.Add(mesh);
+                    crossingLaneCount++;
+                }
+
+                continue;
+            }
+
+            if (lane.AllowsRoadVehicle && lane.LeftNeighbor >= 0)
+            {
+                var (mesh, dashCount) = LaneMarkingBuilder.Build(lane.Shape, lane.Width);
+                if (dashCount > 0)
+                {
+                    markingParts.Add(mesh);
+                    markingLaneCount++;
+                }
+            }
+        }
+
+        if (crosswalkParts.Count > 0)
+        {
+            var merged = CrosswalkBuilder.MergeRibbons(crosswalkParts);
+            AddChild(BuildRoadPaintMeshInstance(merged, "CrosswalkZebras"));
+        }
+
+        if (markingParts.Count > 0)
+        {
+            var merged = CrosswalkBuilder.MergeRibbons(markingParts);
+            AddChild(BuildRoadPaintMeshInstance(merged, "LaneMarkings"));
+        }
+
+        GD.Print(
+            $"Main: built crosswalk zebra(s) on {crossingLaneCount} crossing lane(s) and seam marking(s) " +
+            $"on {markingLaneCount} lane(s) (out of {network.LanesByHandle.Count} lane(s) considered).");
+    }
+
+    // Shared "unshaded near-white paint" MeshInstance3D construction for BuildCrosswalksAndLaneMarkings'
+    // two overlays -- mirrors BuildZoneGround's own per-mesh ArrayMesh/StandardMaterial3D pattern (unshaded,
+    // double-sided, since a flat road-paint quad has no meaningful back face at overview-camera range).
+    private static MeshInstance3D BuildRoadPaintMeshInstance(RibbonMesh mesh, string name)
+    {
+        var vertexCount = mesh.Vertices.Length / 3;
+        var vertices = new Vector3[vertexCount];
+        var normals = new Vector3[vertexCount];
+        for (var i = 0; i < vertexCount; i++)
+        {
+            vertices[i] = new Vector3(mesh.Vertices[i * 3 + 0], mesh.Vertices[i * 3 + 1], mesh.Vertices[i * 3 + 2]);
+            normals[i] = new Vector3(mesh.Normals[i * 3 + 0], mesh.Normals[i * 3 + 1], mesh.Normals[i * 3 + 2]);
+        }
+
+        var arrays = new Godot.Collections.Array();
+        arrays.Resize((int)Mesh.ArrayType.Max);
+        arrays[(int)Mesh.ArrayType.Vertex] = vertices;
+        arrays[(int)Mesh.ArrayType.Normal] = normals;
+        arrays[(int)Mesh.ArrayType.Index] = mesh.Indices;
+
+        var arrayMesh = new ArrayMesh();
+        arrayMesh.AddSurfaceFromArrays(Mesh.PrimitiveType.Triangles, arrays);
+
+        var material = new StandardMaterial3D
+        {
+            AlbedoColor = RoadPaintColor,
+            ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded,
+            CullMode = BaseMaterial3D.CullModeEnum.Disabled,
+        };
+
+        var instance = new MeshInstance3D { Mesh = arrayMesh, Name = name };
+        instance.SetSurfaceOverrideMaterial(0, material);
+        return instance;
     }
 
     // docs/DEMO-CITY3D-DESIGN.md "Procedural scene generation -> Cars" / task T1.5. The ONLY per-frame
@@ -994,25 +3489,45 @@ public partial class Main : Node3D
 
         _carMultiMesh.VisibleInstanceCount = vehicles.Count;
 
+        // docs/LIVE-CITY-VIEWERS-DESIGN.md §5, -TASKS.md D4 -- rebuilt every frame, in lockstep with the
+        // MultiMesh instance indices above, so index i here means "car MultiMesh instance i" for exactly
+        // this frame (a car's instance index is NOT stable across frames -- Reconstructor.Reconstruct
+        // iterates `source.History`, a dictionary, so insertion/removal can reshuffle order -- the pick
+        // path and the selection highlight both re-resolve by VehicleHandle every frame, never by a cached
+        // index, which is exactly why this list is thrown away and rebuilt rather than diffed).
+        _carHandles.Clear();
+        _carWorldPositions.Clear();
+
         for (var i = 0; i < vehicles.Count; i++)
         {
             var v = vehicles[i];
             var car = CityLib.CarTransform.ForVehicle(v, CarHeightMeters);
 
+            // ScaledLocal (R*S) scales in the car's OWN axes then rotates by yaw, so the box points down
+            // its heading. Plain Scaled (S*R) would stretch along fixed world axes -> heading invisible.
             var scale = new Vector3(car.ScaleX, car.ScaleY, car.ScaleZ);
-            var basis = new Basis(Vector3.Up, car.YawRad).Scaled(scale);
+            var basis = new Basis(Vector3.Up, car.YawRad).ScaledLocal(scale);
             var origin = new Vector3(car.PosX, car.PosY, car.PosZ);
             _carMultiMesh.SetInstanceTransform(i, new Transform3D(basis, origin));
 
             var paletteIndex = (int)(v.Handle.Index % (uint)CarPalette.Length);
             _carMultiMesh.SetInstanceColor(i, CarPalette[paletteIndex]);
+
+            _carHandles.Add(v.Handle);
+            _carWorldPositions.Add(origin);
         }
     }
 
     // docs/DEMO-CITY3D-DESIGN.md "#### Pedestrians (P7-3)" -- ONE ped MultiMeshInstance3D, the ped analog of
-    // BuildCarMultiMesh: built once as an EMPTY MultiMesh (no peds at load), a unit BoxMesh scaled per
-    // instance by CityLib.PedTransform into a slim upright avatar; UpdatePeds (below) writes the live
-    // transforms + regime colours each frame.
+    // BuildCarMultiMesh: built once as an EMPTY MultiMesh (no peds at load), a unit mesh scaled per instance
+    // by CityLib.PedTransform (plaza path) / UpdateLivePeds/UpdateReplayPeds (live-city path) into a slim
+    // upright avatar; the per-frame Update* methods write the live transforms + regime colours.
+    //
+    // Visibility polish (docs/LIVE-CITY-VIEWERS-TASKS.md Stage D): a unit CYLINDER, not a unit BOX -- a
+    // round cross-section reads as an upright figure rather than a slab, and (unlike a box) looks the same
+    // from every yaw, which matters here since peds are drawn axis-aligned (no per-instance yaw, see
+    // UpdatePeds/UpdateLivePeds/UpdateReplayPeds's own remarks on why heading is skipped). A LOW segment
+    // count keeps the per-instance triangle cost negligible at the crowd sizes this demo renders (<=160).
     private MultiMesh BuildPedMultiMesh()
     {
         var material = new StandardMaterial3D
@@ -1025,7 +3540,8 @@ public partial class Main : Node3D
         {
             TransformFormat = MultiMesh.TransformFormatEnum.Transform3D,
             UseColors = true,
-            Mesh = new BoxMesh { Size = Vector3.One }, // unit box; per-instance transform scales it to the slim avatar dims
+            // unit cylinder (radius 0.5, height 1); per-instance transform scales it to the avatar dims
+            Mesh = new CylinderMesh { TopRadius = 0.5f, BottomRadius = 0.5f, Height = 1f, RadialSegments = 10 },
             InstanceCount = 0,
         };
 
@@ -1068,7 +3584,51 @@ public partial class Main : Node3D
             var basis = Basis.Identity.Scaled(new Vector3(inst.ScaleX, inst.ScaleY, inst.ScaleZ));
             var origin = new Vector3(inst.PosX, inst.PosY, inst.PosZ);
             _pedMultiMesh.SetInstanceTransform(i, new Transform3D(basis, origin));
-            _pedMultiMesh.SetInstanceColor(i, inst.IsHighPower ? PedHighPowerColor : PedLowPowerColor);
+            _pedMultiMesh.SetInstanceColor(i, inst.IsHighPower
+                ? (_liveCityPedPalette ? LiveCityPedHighPowerColor : PedHighPowerColor)   // orange (ORCA) vs cyan
+                : (_liveCityPedPalette ? LiveCityPedLowPowerColor : PedLowPowerColor));   // grey vs slate
+        }
+    }
+
+    // docs/LIVE-CITY-VIEWERS-DESIGN.md §2.1, -TASKS.md D3 -- the REPLAY analog of UpdatePeds: consumes
+    // PedFrameTrack.PedsAt's plain neutral tuple (int Id, float X, float Y, float Z, byte Regime, string
+    // AnimTag) -- deliberately Sim.LiveCity-free on the record/replay side (PedFrameTrack.cs's own doc
+    // comment) -- rather than Sim.LiveCity.LiveCityPed. The `Regime` byte maps directly onto
+    // Sim.LiveCity.PedRegime's own numeric values (LowPowerWalking=0, HighPower=1, Paused=2, guaranteed by
+    // PedFrameTrack's doc comment), so a straight cast reproduces UpdateLivePeds' grey/orange/yellow
+    // mapping without re-deriving it. Same build-once/grow-only/VisibleInstanceCount discipline.
+    private void UpdateReplayPeds(
+        IReadOnlyList<(int Id, float X, float Y, float Z, byte Regime, string AnimTag)> peds)
+    {
+        if (_pedMultiMesh is null)
+        {
+            return;
+        }
+
+        if (peds.Count > _pedMultiMesh.InstanceCount)
+        {
+            _pedMultiMesh.InstanceCount = peds.Count;
+        }
+
+        _pedMultiMesh.VisibleInstanceCount = peds.Count;
+
+        for (var i = 0; i < peds.Count; i++)
+        {
+            var p = peds[i];
+            var (gx, gy, gz) = CoordinateTransform.SumoToGodot(p.X, p.Y, p.Z);
+
+            var scale = new Vector3(PedRenderWidthMeters, PedRenderHeightMeters, PedRenderWidthMeters);
+            var basis = Basis.Identity.Scaled(scale);
+            var origin = new Vector3(gx, gy + PedRenderHeightMeters / 2f, gz);
+            _pedMultiMesh.SetInstanceTransform(i, new Transform3D(basis, origin));
+
+            var color = (Sim.LiveCity.PedRegime)p.Regime switch
+            {
+                Sim.LiveCity.PedRegime.HighPower => LiveCityPedHighPowerColor,
+                Sim.LiveCity.PedRegime.Paused => LiveCityPedPausedColor,
+                _ => LiveCityPedLowPowerColor,
+            };
+            _pedMultiMesh.SetInstanceColor(i, color);
         }
     }
 
@@ -1089,7 +3649,21 @@ public partial class Main : Node3D
     // non-Current (in favour of the separate close-up camera built in _Ready) rather than forking the
     // environment/light setup, so run-smoke.sh's default (`--camera=overview`, `makeCurrent: true`) is
     // byte-identical to the pre-T1.6 behavior.
-    private void BuildCameraAndLight((Vector3 Min, Vector3 Max) bbox, bool makeCurrent)
+    //
+    // `heightFactor`/`backFactor` default to the original whole-network values (CameraHeightFactor/
+    // CameraBackFactor) so every pre-existing caller (--scenario, --peds) is BYTE-IDENTICAL. Visibility
+    // polish (docs/LIVE-CITY-VIEWERS-TASKS.md Stage D): the live-city callers pass a LOWER, more oblique
+    // pair (see LiveCityCameraHeightFactor/BackFactor below) -- the original near-vertical satellite angle
+    // reads true-scale cars/peds as a scatter of a few pixels each regardless of how tight the frame box is
+    // (a top-down view of a person is a dot no matter the zoom); a lower angle shows their actual silhouette
+    // height instead.
+    // Returns the built Camera3D (task requirement: callers seed the interactive orbit controller from
+    // whichever camera/pose this method just computed) -- every pre-existing call site either ignores the
+    // return value or captures it into a local only used for the new SetupOrbitCamera call, so the method's
+    // own behavior is otherwise unchanged.
+    private Camera3D BuildCameraAndLight(
+        (Vector3 Min, Vector3 Max) bbox, bool makeCurrent,
+        float heightFactor = CameraHeightFactor, float backFactor = CameraBackFactor)
     {
         // A soft sky-coloured background + a little ambient fill light (docs/DEMO-CITY3D-DESIGN.md's
         // "Roads" only specifies the asphalt material; a bare gl_compatibility clear colour with pure
@@ -1114,7 +3688,7 @@ public partial class Main : Node3D
         var camera = new Camera3D { Name = "FramingCamera" };
         AddChild(camera);
 
-        var camPos = center + new Vector3(0f, extent * CameraHeightFactor, extent * CameraBackFactor);
+        var camPos = center + new Vector3(0f, extent * heightFactor, extent * backFactor);
         camera.Position = camPos;
         camera.LookAt(center, Vector3.Up);
         camera.Current = makeCurrent;
@@ -1129,6 +3703,7 @@ public partial class Main : Node3D
         AddChild(light);
 
         GD.Print($"Main: camera framing bbox min={min} max={max}, positioned at {camPos} looking at {center}.");
+        return camera;
     }
 
     // docs/DEMO-CITY3D-DESIGN.md "Procedural scene generation -> Traffic lights" / task T1.6 Part B (and
@@ -1218,27 +3793,7 @@ public partial class Main : Node3D
     // the vehicle/network-center branches.
     private void UpdateCloseCameraFraming(Camera3D camera, IReadOnlyList<CityLib.ReconstructedVehicle>? vehicles)
     {
-        Vector3 focus;
-        if (_signalHeads.Count > 0)
-        {
-            var sum = Vector3.Zero;
-            foreach (var head in _signalHeads)
-            {
-                sum += head.HeadInstance.Position;
-            }
-
-            focus = sum / _signalHeads.Count;
-        }
-        else if (vehicles is { Count: > 0 })
-        {
-            var v = vehicles[0];
-            focus = new Vector3(v.X, v.Y, v.Z);
-        }
-        else
-        {
-            var (min, max) = _sceneBbox;
-            focus = new Vector3((min.X + max.X) / 2f, (min.Y + max.Y) / 2f, (min.Z + max.Z) / 2f);
-        }
+        var focus = ComputeCloseCameraFocus(vehicles);
 
         // Fixed (not extent-scaled) low-angled offset -- design Part C: "~40-80m back and ~15-25m up,
         // tilted down". Offset ALONG the approach's own back-of-travel direction (not a fixed world axis):
@@ -1253,6 +3808,33 @@ public partial class Main : Node3D
             + lateralDir * CloseCameraLateralMeters
             + new Vector3(0f, CloseCameraUpMeters, 0f);
         camera.LookAt(focus, Vector3.Up);
+    }
+
+    // Extracted from UpdateCloseCameraFraming (docs/LIVE-CITY-VIEWERS-DESIGN.md camera-controller
+    // deliverable) so SetupOrbitCamera can compute the SAME "what is the close camera looking at" point
+    // once, at setup time, to seed the interactive orbit controller's initial focus -- task T1.6 Part C's
+    // original priority order (signal-head centroid, else first vehicle, else network center) is unchanged.
+    private Vector3 ComputeCloseCameraFocus(IReadOnlyList<CityLib.ReconstructedVehicle>? vehicles)
+    {
+        if (_signalHeads.Count > 0)
+        {
+            var sum = Vector3.Zero;
+            foreach (var head in _signalHeads)
+            {
+                sum += head.HeadInstance.Position;
+            }
+
+            return sum / _signalHeads.Count;
+        }
+
+        if (vehicles is { Count: > 0 })
+        {
+            var v = vehicles[0];
+            return new Vector3(v.X, v.Y, v.Z);
+        }
+
+        var (min, max) = _sceneBbox;
+        return new Vector3((min.X + max.X) / 2f, (min.Y + max.Y) / 2f, (min.Z + max.Z) / 2f);
     }
 
     // The horizontal unit direction the close camera sits back along, i.e. opposite the approach's own
@@ -1298,6 +3880,660 @@ public partial class Main : Node3D
         return new Vector3(0f, 0f, 1f);
     }
 
+    // docs/LIVE-CITY-VIEWERS-DESIGN.md camera-controller deliverable -- seeds `_orbitController`/
+    // `_orbitCamera` from whichever camera is this scene's "current" one at setup time: `_closeCamera` if
+    // `--camera=close` built one (call this AFTER that block so `_closeCamera` is already non-null), else
+    // the overview `Camera3D` `BuildCameraAndLight` just returned. `frameBbox` is the SAME box the caller
+    // already framed the overview camera against (so the fallback "network center" focus, when no signal
+    // heads/vehicles exist yet, matches what the eye already sees). `--cam-yaw`/`--cam-pitch`/`--cam-dist`/
+    // `--cam-focus` debug overrides (below) replace the computed initial state 1:1 so a headless screenshot
+    // from a rotated angle exercises the EXACT SAME transform the interactive controller uses every frame.
+    private void SetupOrbitCamera(Camera3D overviewCamera, (Vector3 Min, Vector3 Max) frameBbox)
+    {
+        Camera3D activeCamera;
+        Vector3 focus;
+
+        if (_closeCamera is not null)
+        {
+            activeCamera = _closeCamera;
+            focus = ComputeCloseCameraFocus(null);
+        }
+        else
+        {
+            activeCamera = overviewCamera;
+            var (min, max) = frameBbox;
+            focus = new Vector3((min.X + max.X) / 2f, (min.Y + max.Y) / 2f, (min.Z + max.Z) / 2f);
+        }
+
+        _orbitCamera = activeCamera;
+        var pos = activeCamera.Position;
+        _orbitController = BuildOrbitController((pos.X, pos.Y, pos.Z), (focus.X, focus.Y, focus.Z));
+
+        // Capture the far-plane baseline (see the fields' doc comment): whatever Far the camera already
+        // has (BuildCameraAndLight's extent*4/500m floor, or CloseCamera's flat 2000f) is a floor we never
+        // shrink below, and the frameBbox's horizontal half-extent is the scene-size term ApplyOrbitCamera
+        // adds on top of the live orbit distance every frame.
+        _orbitBaseFar = activeCamera.Far;
+        var (bboxMin, bboxMax) = frameBbox;
+        _orbitSceneExtent = Mathf.Max(Mathf.Max(bboxMax.X - bboxMin.X, bboxMax.Z - bboxMin.Z), 10f);
+
+        BuildGroundGrid();  // build the infinite floor grid before the first apply so recenter has a node
+
+        ApplyOrbitCamera(); // push the (possibly CLI-overridden) initial pose to the node right away
+        GD.Print(
+            $"Main: orbit camera ready on '{activeCamera.Name}' -- yaw={_orbitController.YawRad * 180f / Mathf.Pi:F1}deg " +
+            $"pitch={_orbitController.PitchRad * 180f / Mathf.Pi:F1}deg dist={_orbitController.Distance:F1}m " +
+            $"focus={_orbitController.Focus}. Controls (Unity-style): RMB look + WASD/QE fly (Shift=sprint), " +
+            "MMB pan, Alt+LMB orbit, wheel dolly, F/Home frame, G grid.");
+    }
+
+    // Seeds an OrbitCameraController from the given (cameraPos, focus) -- normally exactly the pose
+    // BuildCameraAndLight/UpdateCloseCameraFraming already computed -- then lets any `--cam-yaw=<deg>`/
+    // `--cam-pitch=<deg>`/`--cam-dist=<m>`/`--cam-focus=x,z` debug flag REPLACE the corresponding component
+    // of that initial state (never additive) before the controller is actually constructed, so an override
+    // becomes part of Reset()'s target too, not a one-off nudge that a later `R` press would undo.
+    private static OrbitCameraController BuildOrbitController(
+        (float X, float Y, float Z) cameraPos, (float X, float Y, float Z) focus)
+    {
+        var seeded = OrbitCameraController.FromLookAt(cameraPos, focus);
+
+        var yaw = ParseCamYawArg() is { } yawDeg ? yawDeg * Mathf.Pi / 180f : seeded.YawRad;
+        var pitch = ParseCamPitchArg() is { } pitchDeg ? pitchDeg * Mathf.Pi / 180f : seeded.PitchRad;
+        var distance = ParseCamDistArg() ?? seeded.Distance;
+        var focusOverride = ParseCamFocusArg();
+        var focusX = focusOverride?.X ?? seeded.Focus.X;
+        var focusZ = focusOverride?.Z ?? seeded.Focus.Z;
+
+        return new OrbitCameraController(focusX, seeded.Focus.Y, focusZ, yaw, pitch, distance);
+    }
+
+    // Pushes `_orbitController`'s current (focus, yaw, pitch, distance) to `_orbitCamera`'s actual Godot
+    // transform -- called once at setup (via SetupOrbitCamera) and then every render frame from each
+    // Process*/RenderFrame body, so it picks up whatever the input handlers below just mutated. A no-op
+    // when no orbit camera exists (video-wall mode, or before setup finishes) -- safe to call unconditionally.
+    private void ApplyOrbitCamera()
+    {
+        if (_orbitCamera is null || _orbitController is null)
+        {
+            return;
+        }
+
+        var pos = _orbitController.CameraPosition();
+        _orbitCamera.Position = new Vector3(pos.X, pos.Y, pos.Z);
+        var focus = _orbitController.Focus;
+        // Use the controller's OWN up axis (always perpendicular to forward), NOT Vector3.Up: near a
+        // top-down pitch, forward ~parallel to world +Y makes LookAt(., Vector3.Up) degenerate -> the camera
+        // froze/flipped and zoom/pan appeared dead (the "unusable looking down" bug).
+        var up = _orbitController.UpVector();
+        _orbitCamera.LookAt(new Vector3(focus.X, focus.Y, focus.Z), new Vector3(up.X, up.Y, up.Z));
+
+        // Bug fix: track the far plane to the live orbit distance so dollying out never clips the scene
+        // (see the `_orbitBaseFar`/`_orbitSceneExtent` fields' doc comment for the formula's reasoning).
+        _orbitCamera.Far = Mathf.Max(_orbitBaseFar, (_orbitController.Distance * 2.5f) + _orbitSceneExtent);
+
+        // Recenter the ground grid under the camera, SNAPPED to the grid spacing so the lines never appear to
+        // slide -- makes the finite mesh read as an infinite floor as you fly around.
+        if (_gridNode is not null)
+        {
+            var gx = Mathf.Round(pos.X / GridSpacingMeters) * GridSpacingMeters;
+            var gz = Mathf.Round(pos.Z / GridSpacingMeters) * GridSpacingMeters;
+            _gridNode.Position = new Vector3(gx, GridGroundY, gz);
+        }
+    }
+
+    // Fix #16 (Windows testing session): TL signal heads were placed for ALL TL-controlled lanes while
+    // roads render only the CROP (BuildRoadMeshesCropped keeps lanes with a shape vertex in crop+margin),
+    // so poles appeared floating over bare ground outside the rendered net. This keeps only the controlled
+    // lanes whose geometry is inside the SAME crop box (same rule as the roads) before placing heads.
+    private static IEnumerable<int> CropTlLaneHandles(
+        NetworkModel network, IEnumerable<int> handles, double x0, double y0, double x1, double y1, double margin = 60.0)
+    {
+        var minX = x0 - margin;
+        var minY = y0 - margin;
+        var maxX = x1 + margin;
+        var maxY = y1 + margin;
+        foreach (var h in handles)
+        {
+            if (h < 0 || h >= network.LanesByHandle.Count)
+            {
+                continue;
+            }
+
+            var inside = false;
+            foreach (var (sx, sy) in network.LanesByHandle[h].Shape)
+            {
+                if (sx >= minX && sx <= maxX && sy >= minY && sy <= maxY)
+                {
+                    inside = true;
+                    break;
+                }
+            }
+
+            if (inside)
+            {
+                yield return h;
+            }
+        }
+    }
+
+    // Draws the high-realism (ORCA-promotion) pocket as two ground rings at the pocket centre: the inner
+    // PROMOTE radius (peds inside => full ORCA) and the outer DEMOTE radius (hysteresis; beyond => low-power
+    // dead-reckoning). Centre/radii come from LiveCitySim via LiveCitySource (SUMO world coords).
+    // Build the LC-realism zone highlight ONCE as a unit-radius ring under a transform-driven parent, then
+    // let UpdateLcZoneVisual() reposition + XZ-scale it to the live zone each frame (Follow moves it without
+    // rebuilding the mesh -> no per-frame GC). Central mode leaves the zone on the static pocket, so at
+    // launch the ring sits exactly where the ORCA pocket ring used to.
+    private void BuildHighRealismZone()
+    {
+        if (_highRealismNode is not null)
+        {
+            return;
+        }
+
+        var root = new Node3D { Name = "HighRealismZone" };
+        _lcZoneRing = MakeGroundRing(0f, 0f, 1f, LcZoneColor(_lcZoneMode)); // unit ring, centred at origin
+        _lcZoneRing.Position = Vector3.Zero; // lift is applied on the parent transform instead
+        root.AddChild(_lcZoneRing);
+        AddChild(root);
+        _highRealismNode = root;
+        UpdateLcZoneVisual();
+        GD.Print("Main: LC-realism zone ring built (H cycles Central/Follow/Locked; menu mirrors it).");
+    }
+
+    private static Color LcZoneColor(LcZoneMode mode) => mode switch
+    {
+        LcZoneMode.Follow => new Color(0.2f, 0.9f, 0.35f, 0.95f), // green = live, tracks camera
+        LcZoneMode.Locked => new Color(1f, 0.85f, 0.1f, 0.95f),   // amber = frozen
+        _ => new Color(1f, 0.55f, 0.1f, 0.95f),                    // orange = central (as before)
+    };
+
+    // Reposition + XZ-scale the ring to the live LC-realism zone (LiveCitySource.LcZone{X,Y,Radius}) and
+    // recolour by mode. The ring geometry is a unit circle in the XZ plane (y=0), so scaling Y is a no-op
+    // and the 0.2 m lift stays constant via the translation.
+    private void UpdateLcZoneVisual()
+    {
+        if (_highRealismNode is null || _liveCitySource is null)
+        {
+            return;
+        }
+
+        var (gx, _, gz) = CityLib.CoordinateTransform.SumoToGodot(_liveCitySource.LcZoneX, _liveCitySource.LcZoneY, 0.0);
+        var r = Mathf.Max(0.001f, (float)_liveCitySource.LcZoneRadius);
+        _highRealismNode.Transform = new Transform3D(
+            Basis.Identity.Scaled(new Vector3(r, 1f, r)), new Vector3(gx, 0.2f, gz));
+        if (_lcZoneRing?.MaterialOverride is StandardMaterial3D m)
+        {
+            m.AlbedoColor = LcZoneColor(_lcZoneMode);
+        }
+    }
+
+    // The camera-derived LC-realism zone (Follow/Locked). Centre = where the camera is actually looking on
+    // the ground: a raycast from the camera through the SCREEN CENTRE to the y=0 plane (so it tracks pitch
+    // AND yaw, not just the orbit pivot). Radius respects the FOV: half the vertical view extent at the
+    // look-point's depth (slant * tan(halfFov)), so a wider FOV / nearer look-point => a larger circle that
+    // fits within the ground frustum trapezoid. Godot ground point -> SUMO is the inverse of
+    // CoordinateTransform.SumoToGodot's (x, z, -y): SumoX = GodotX, SumoY = -GodotZ. If the camera looks at
+    // or above the horizon (no ground hit), fall back to the orbit focus + a distance-based radius.
+    private (double sumoX, double sumoY, double radius) CameraLcZone()
+    {
+        if (_orbitCamera is not null
+            && RaycastScreenToGround(GetViewport().GetVisibleRect().Size * 0.5f, out var centre))
+        {
+            var slant = _orbitCamera.GlobalPosition.DistanceTo(centre);
+            var halfFov = Mathf.DegToRad(_orbitCamera.Fov * 0.5f);
+            var radius = Math.Clamp(slant * Math.Tan(halfFov) * LcZoneFovFillFactor, LcZoneMinRadius, LcZoneMaxRadius);
+            return (centre.X, -centre.Z, radius);
+        }
+
+        var focus = _orbitController?.Focus ?? (0f, 0f, 0f);
+        var dist = _orbitController?.Distance ?? 100f;
+        return (focus.X, -focus.Z, Math.Clamp(dist * LcZoneDistanceFactor, LcZoneMinRadius, LcZoneMaxRadius));
+    }
+
+    // Raycast a viewport point through the camera to the ground plane (y = 0). Returns false if the ray is
+    // parallel to the ground or points away from it (camera looking at/above the horizon).
+    private bool RaycastScreenToGround(Vector2 screenPoint, out Vector3 hit)
+    {
+        hit = Vector3.Zero;
+        if (_orbitCamera is null)
+        {
+            return false;
+        }
+
+        var origin = _orbitCamera.ProjectRayOrigin(screenPoint);
+        var dir = _orbitCamera.ProjectRayNormal(screenPoint);
+        if (Mathf.Abs(dir.Y) < 1e-5f)
+        {
+            return false; // ray parallel to the ground
+        }
+
+        var t = -origin.Y / dir.Y;
+        if (t <= 0f)
+        {
+            return false; // ground is behind / above the camera
+        }
+
+        hit = origin + (t * dir);
+        return true;
+    }
+
+    // Push the current-mode zone onto the sim BEFORE Step() (called once per ProcessLiveCity frame). Central
+    // restores the static pocket; Follow tracks the camera; Locked replays the frozen capture.
+    private void PushLcZone()
+    {
+        if (_liveCitySource is null)
+        {
+            return;
+        }
+
+        switch (_lcZoneMode)
+        {
+            case LcZoneMode.Follow:
+            {
+                var (sx, sy, r) = CameraLcZone();
+                _liveCitySource.SetLcRealismZone(sx, sy, r);
+                break;
+            }
+
+            case LcZoneMode.Locked:
+                _liveCitySource.SetLcRealismZone(_lcZoneLockedX, _lcZoneLockedY, _lcZoneLockedR);
+                break;
+
+            default: // Central -- the static crop-centre pocket (== prior behaviour)
+                _liveCitySource.SetLcRealismZone(
+                    _liveCitySource.HighRealismPocketX, _liveCitySource.HighRealismPocketY,
+                    _liveCitySource.HighRealismPromoteRadius);
+                break;
+        }
+    }
+
+    // Cycle Central -> Follow -> Locked (H key / menu). Entering Locked freezes the CURRENT camera zone.
+    private void SetLcZoneMode(LcZoneMode mode)
+    {
+        if (mode == LcZoneMode.Locked)
+        {
+            var (sx, sy, r) = CameraLcZone();
+            _lcZoneLockedX = sx; _lcZoneLockedY = sy; _lcZoneLockedR = r;
+        }
+
+        _lcZoneMode = mode;
+        SyncLcZoneUi();
+        GD.Print($"Main: LC-realism zone mode = {_lcZoneMode}.");
+    }
+
+    private void CycleLcZoneMode() => SetLcZoneMode(_lcZoneMode switch
+    {
+        LcZoneMode.Central => LcZoneMode.Follow,
+        LcZoneMode.Follow => LcZoneMode.Locked,
+        _ => LcZoneMode.Central,
+    });
+
+    // Keep the menu dropdown + HUD label in step with `_lcZoneMode` (either input path can change it).
+    private void SyncLcZoneUi()
+    {
+        if (_lcZoneModeDropdown is not null && _lcZoneModeDropdown.Selected != (int)_lcZoneMode)
+        {
+            _lcZoneModeDropdown.Selected = (int)_lcZoneMode;
+        }
+
+        if (_lcZoneModeLabel is not null)
+        {
+            _lcZoneModeLabel.Text = $"LC zone [H]: {_lcZoneMode}";
+        }
+    }
+
+    private static MeshInstance3D MakeGroundRing(float cx, float cz, float radius, Color color)
+    {
+        const int seg = 96;
+        var verts = new List<Vector3>(seg * 2);
+        for (var i = 0; i < seg; i++)
+        {
+            var a0 = (float)(2.0 * Math.PI * i / seg);
+            var a1 = (float)(2.0 * Math.PI * (i + 1) / seg);
+            verts.Add(new Vector3(cx + (radius * MathF.Cos(a0)), 0f, cz + (radius * MathF.Sin(a0))));
+            verts.Add(new Vector3(cx + (radius * MathF.Cos(a1)), 0f, cz + (radius * MathF.Sin(a1))));
+        }
+
+        var arrays = new Godot.Collections.Array();
+        arrays.Resize((int)Mesh.ArrayType.Max);
+        arrays[(int)Mesh.ArrayType.Vertex] = verts.ToArray();
+        var mesh = new ArrayMesh();
+        mesh.AddSurfaceFromArrays(Mesh.PrimitiveType.Lines, arrays);
+        var material = new StandardMaterial3D
+        {
+            ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded,
+            AlbedoColor = color,
+            Transparency = BaseMaterial3D.TransparencyEnum.Alpha,
+        };
+        return new MeshInstance3D { Mesh = mesh, MaterialOverride = material, Position = new Vector3(0f, 0.2f, 0f) };
+    }
+
+    // Infinite ground-grid reference: a flat XZ line grid at GridGroundY, built ONCE (5 km span, 25 m lines)
+    // and recentered on the camera's XZ (snapped to the spacing) every frame in ApplyOrbitCamera, so it reads
+    // as an endless floor without ever rebuilding the mesh. Unlit grey lines; sits just under the roads/zones
+    // so both draw on top. Toggle with `G`.
+    private void BuildGroundGrid()
+    {
+        if (_gridNode is not null)
+        {
+            return;
+        }
+
+        var n = (int)(GridHalfExtentMeters / GridSpacingMeters);
+        var ext = n * GridSpacingMeters;
+        var verts = new List<Vector3>((n * 2 + 1) * 4);
+        for (var i = -n; i <= n; i++)
+        {
+            var p = i * GridSpacingMeters;
+            verts.Add(new Vector3(p, 0f, -ext)); // line parallel to Z
+            verts.Add(new Vector3(p, 0f, ext));
+            verts.Add(new Vector3(-ext, 0f, p)); // line parallel to X
+            verts.Add(new Vector3(ext, 0f, p));
+        }
+
+        var arrays = new Godot.Collections.Array();
+        arrays.Resize((int)Mesh.ArrayType.Max);
+        arrays[(int)Mesh.ArrayType.Vertex] = verts.ToArray();
+
+        var mesh = new ArrayMesh();
+        mesh.AddSurfaceFromArrays(Mesh.PrimitiveType.Lines, arrays);
+
+        var material = new StandardMaterial3D
+        {
+            ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded,
+            AlbedoColor = new Color(0.5f, 0.53f, 0.58f, 0.55f),
+            Transparency = BaseMaterial3D.TransparencyEnum.Alpha,
+            VertexColorUseAsAlbedo = false,
+        };
+
+        _gridNode = new MeshInstance3D { Name = "GroundGrid", Mesh = mesh, Position = new Vector3(0f, GridGroundY, 0f) };
+        _gridNode.MaterialOverride = material;
+        AddChild(_gridNode);
+        GD.Print($"Main: ground grid built ({GridSpacingMeters:F0}m spacing, ±{GridHalfExtentMeters:F0}m, recentered on camera).");
+    }
+
+    // Unity RMB flythrough: while RMB is held, WASD flies in the camera's right/forward plane and Q/E move
+    // world down/up, Shift sprints. Speed is a FIXED m/s (FlyMetersPerSecond) -- distance-independent.
+    // Polled per-frame (keys are HELD, not one-shot events); mutates the orbit rig, applied via
+    // ApplyOrbitCamera this frame (both here and by the per-frame body's own tail call).
+    private void PollCameraFlyKeys(double delta)
+    {
+        if (_orbitController is null || !_rightButtonDown)
+        {
+            return;
+        }
+
+        float right = 0f, forward = 0f, up = 0f;
+        if (Input.IsKeyPressed(Key.W)) { forward += 1f; }
+        if (Input.IsKeyPressed(Key.S)) { forward -= 1f; }
+        if (Input.IsKeyPressed(Key.D)) { right += 1f; }
+        if (Input.IsKeyPressed(Key.A)) { right -= 1f; }
+        if (Input.IsKeyPressed(Key.E)) { up += 1f; }
+        if (Input.IsKeyPressed(Key.Q)) { up -= 1f; }
+        if (right == 0f && forward == 0f && up == 0f)
+        {
+            return;
+        }
+
+        var speed = FlyMetersPerSecond * (float)delta;
+        if (Input.IsKeyPressed(Key.Shift))
+        {
+            speed *= FlyShiftMultiplier;
+        }
+
+        _orbitController.FlyLocal(right * speed, forward * speed, up * speed);
+        ApplyOrbitCamera();
+    }
+
+    // Wheel zoom target: multiply the target distance by `factor` (clamped to the controller's zoom range).
+    // The per-frame UpdateZoomSmoothing eases the ACTUAL distance toward it. Distance-multiplicative, so the
+    // step is proportional to distance (gentle near the ground, fast far out) and asymptotes at the focus.
+    // Snap the zoom target to the controller's current distance (after Reset/frame/setup changed it), so the
+    // per-frame easing treats "here" as settled instead of gliding back to a stale target.
+    private void SyncZoomTargetToCurrent()
+    {
+        if (_orbitController is not null)
+        {
+            _zoomTargetDistance = _orbitController.Distance;
+            _zoomInit = true;
+        }
+    }
+
+    private void NudgeZoomTarget(float factor)
+    {
+        if (_orbitController is null)
+        {
+            return;
+        }
+
+        if (!_zoomInit)
+        {
+            _zoomTargetDistance = _orbitController.Distance;
+            _zoomInit = true;
+        }
+
+        _zoomTargetDistance = Math.Clamp(
+            _zoomTargetDistance * factor, _orbitController.MinDistance, _orbitController.MaxDistance);
+    }
+
+    // Ease the orbit distance toward the wheel-set target each frame (frame-rate-independent exponential
+    // smoothing) via the controller's multiplicative Zoom. Called every frame from _Process.
+    private void UpdateZoomSmoothing(double delta)
+    {
+        if (_orbitController is null)
+        {
+            return;
+        }
+
+        var cur = _orbitController.Distance;
+        if (!_zoomInit)
+        {
+            _zoomTargetDistance = cur;
+            _zoomInit = true;
+            return;
+        }
+
+        var diff = _zoomTargetDistance - cur;
+        if (cur <= 0f || MathF.Abs(diff) < 0.01f)
+        {
+            return; // settled
+        }
+
+        var t = 1f - MathF.Exp(-ZoomSmoothRate * (float)delta);
+        var newDist = cur + (diff * t);
+        _orbitController.Zoom(newDist / cur); // multiplicative -> Distance := newDist (clamped)
+        ApplyOrbitCamera();
+    }
+
+    // `--cam-yaw=<deg>`/`--cam-pitch=<deg>`/`--cam-dist=<m>` -- headless verification hooks (task
+    // requirement): set the orbit controller's INITIAL yaw/pitch/distance so a screenshot from a rotated
+    // angle proves the orbit transform actually renders, without needing a real mouse. Same
+    // OS.GetCmdlineUserArgs() mechanism as every other `--foo=` arg in this file.
+    private static float? ParseCamYawArg() => ParseFloatArg("--cam-yaw=");
+    private static float? ParseCamPitchArg() => ParseFloatArg("--cam-pitch=");
+    private static float? ParseCamDistArg() => ParseFloatArg("--cam-dist=");
+
+    private static float? ParseFloatArg(string prefix)
+    {
+        foreach (var arg in OS.GetCmdlineUserArgs())
+        {
+            if (arg.StartsWith(prefix, StringComparison.Ordinal)
+                && float.TryParse(
+                    arg[prefix.Length..], System.Globalization.NumberStyles.Float,
+                    System.Globalization.CultureInfo.InvariantCulture, out var value))
+            {
+                return value;
+            }
+        }
+
+        return null;
+    }
+
+    // `--cam-focus=x,z` -- the ground-plane (X, Z) coordinate pair the orbit controller's focus starts at
+    // (Y is left at whatever the computed default focus' height was); same `--cam-yaw`-style headless
+    // verification hook, for re-centering the initial view rather than only rotating around the default
+    // focus point.
+    private static (float X, float Z)? ParseCamFocusArg()
+    {
+        const string prefix = "--cam-focus=";
+        foreach (var arg in OS.GetCmdlineUserArgs())
+        {
+            if (!arg.StartsWith(prefix, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            var parts = arg[prefix.Length..].Split(',');
+            if (parts.Length == 2
+                && float.TryParse(parts[0], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var x)
+                && float.TryParse(parts[1], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var z))
+            {
+                return (x, z);
+            }
+        }
+
+        return null;
+    }
+
+    // `--hide-buildings` USER cmdline flag (buildings-visibility deliverable): a bare flag, same
+    // OS.GetCmdlineUserArgs() mechanism as `--peds`/`--live-city`. Starts the buildings MultiMeshInstance3D
+    // (when this mode builds one at all -- see `_buildingsNode`'s own remark) hidden; the runtime `B` key
+    // (_UnhandledInput) toggles it from there regardless of how it started.
+    private static bool ParseHideBuildingsArg()
+    {
+        foreach (var arg in OS.GetCmdlineUserArgs())
+        {
+            if (arg == "--hide-buildings")
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    // docs/LIVE-CITY-VISUALS-NOTES.md OWNER-CONFIRMED "POI / area rendering" block: POIs/doors/areas are a
+    // PRIMARY feature (default ON, same as `_buildingsNode`/`--hide-buildings`) -- but `parking_access`
+    // alone is 351 records, so a hide flag is required (per the task's explicit "make sure the toggle
+    // works so it can be turned off"). `--hide-pois` starts the WHOLE group (`_poisNode`: areas + markers +
+    // doors, one toggle) hidden; the runtime `P` key (_UnhandledInput) toggles it from there.
+    private static bool ParseHidePoisArg()
+    {
+        foreach (var arg in OS.GetCmdlineUserArgs())
+        {
+            if (arg == "--hide-pois")
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    // Owner decision (docs/LIVE-CITY-VISUALS-NOTES.md): zones default OFF (hidden), opt-in via
+    // `--show-zones` USER cmdline flag -- replaces the earlier `--hide-zones` flag now that hidden is the
+    // default (a "hide" flag would be redundant). BuildZoneGround already starts the zone-tint layer
+    // (`_zonesNode`, when built at all) hidden unconditionally; this flag is what a caller checks right
+    // after to flip it visible at startup. The runtime `Z` key (_UnhandledInput) toggles it from there,
+    // regardless of how it started.
+    private static bool ParseShowZonesArg()
+    {
+        foreach (var arg in OS.GetCmdlineUserArgs())
+        {
+            if (arg == "--show-zones")
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    // docs/LIVE-CITY-VISUALS-NOTES.md (tick-rate task): `--sim-hz=<N>` USER cmdline arg -- the live-city
+    // coupled sim's tick rate (Hz), which LiveCityConfig.Dt = 1/Hz derives from (ReadyLiveCityLive). Same
+    // `--foo=` OS.GetCmdlineUserArgs() mechanism as --scenario/--camera/--shot. Absent -> null
+    // (ValidateSimHz's default, 2 Hz, applies).
+    private static int? ParseSimHzArg()
+    {
+        const string prefix = "--sim-hz=";
+        foreach (var arg in OS.GetCmdlineUserArgs())
+        {
+            if (arg.StartsWith(prefix, StringComparison.Ordinal)
+                && int.TryParse(arg[prefix.Length..], NumberStyles.Integer, CultureInfo.InvariantCulture, out var hz))
+            {
+                return hz;
+            }
+        }
+
+        return null;
+    }
+
+    // docs/LIVE-CITY-VISUALS-NOTES.md (tick-rate task): `--render-hz=<N>` USER cmdline arg -- Godot's
+    // Engine.MaxFps cap, applied in _Ready (before mode dispatch) and INDEPENDENT of --sim-hz (render rate
+    // is decoupled from sim rate by design -- the kinematic reconstructor interpolates between sparse sim
+    // samples). Same mechanism as --sim-hz above. Absent -> null (ValidateRenderHz's default, 60).
+    private static int? ParseRenderHzArg()
+    {
+        const string prefix = "--render-hz=";
+        foreach (var arg in OS.GetCmdlineUserArgs())
+        {
+            if (arg.StartsWith(prefix, StringComparison.Ordinal)
+                && int.TryParse(arg[prefix.Length..], NumberStyles.Integer, CultureInfo.InvariantCulture, out var hz))
+            {
+                return hz;
+            }
+        }
+
+        return null;
+    }
+
+    // Mirrors src/Sim.Viewer/Program.cs's ValidateSimHz one-for-one (same allowed set {1,2,5,10,20}, same
+    // clamp-to-nearest-with-a-reported-message behaviour rather than a hard failure over a typo'd flag) --
+    // just logged through GD.Print/GD.PrintErr instead of Console, since this is the Godot side.
+    private static int ValidateSimHz(int? requested)
+    {
+        const int defaultHz = 2;
+        if (requested is not { } hz)
+        {
+            return defaultHz;
+        }
+
+        var allowed = new[] { 1, 2, 5, 10, 20 };
+        if (Array.IndexOf(allowed, hz) >= 0)
+        {
+            return hz;
+        }
+
+        var nearest = allowed[0];
+        var bestDiff = Math.Abs(hz - nearest);
+        foreach (var candidate in allowed)
+        {
+            var diff = Math.Abs(hz - candidate);
+            if (diff < bestDiff)
+            {
+                nearest = candidate;
+                bestDiff = diff;
+            }
+        }
+
+        GD.PrintErr($"Main: --sim-hz={hz} is not one of {{1,2,5,10,20}} -- clamped to {nearest} Hz.");
+        return nearest;
+    }
+
+    // Mirrors src/Sim.Viewer/Program.cs's ValidateRenderHz -- clamped (not a discrete set) to [15,60]; 60
+    // is the hard cap, 15 a usability floor. Absent -> 60.
+    private static int ValidateRenderHz(int? requested)
+    {
+        var hz = requested ?? 60;
+        var clamped = Math.Clamp(hz, 15, 60);
+        if (clamped != hz)
+        {
+            GD.PrintErr($"Main: --render-hz={hz} clamped to {clamped} (allowed 15..60).");
+        }
+
+        return clamped;
+    }
+
     // `--camera=<mode>` USER cmdline arg (task T1.6 Part C): "overview" (default, the whole-network
     // bird's-eye framing -- unchanged run-smoke.sh behavior) or "close" (a low, angled, real-scale
     // close-up). Same OS.GetCmdlineUserArgs() mechanism as --shot/--scenario; an unrecognized value falls
@@ -1325,9 +4561,11 @@ public partial class Main : Node3D
         return "overview";
     }
 
-    // docs/DEMO-CITY3D-DESIGN.md task T1.3 part C -- Xvfb screenshot pipeline. `--shot=<abs path>` is a
+    // docs/DEMO-CITY3D-DESIGN.md task T1.3 part C -- Xvfb screenshot pipeline. `--shot=<path>` is a
     // USER cmdline arg (everything after Godot's own `--`), read via OS.GetCmdlineUserArgs() so it never
-    // collides with Godot's own switches (--headless, --rendering-driver, ...).
+    // collides with Godot's own switches (--headless, --rendering-driver, ...). Fix 11 (Windows GPU
+    // testing session) -- a RELATIVE value is resolved against the true process working directory before
+    // any Godot res:// resolution can apply, see ResolveAgainstLaunchCwd's remarks.
     private static string? ParseShotArg()
     {
         const string prefix = "--shot=";
@@ -1335,7 +4573,97 @@ public partial class Main : Node3D
         {
             if (arg.StartsWith(prefix, StringComparison.Ordinal))
             {
-                return arg[prefix.Length..];
+                return ResolveAgainstLaunchCwd(arg[prefix.Length..]);
+            }
+        }
+
+        return null;
+    }
+
+    // Fix 11 (Windows GPU testing session, docs/LIVE-CITY-WINDOWS-TESTING-BOOTSTRAP.md) -- `--replay
+    // out\lc.simrec` / `--shot=out\shot.png` were failing on Windows: a RELATIVE path/arg is resolved by
+    // Godot against `--path <project dir>` (e.g. `demos/City3D/Viewer`), not the shell's actual launch
+    // directory, so a plain `System.IO.File.Exists`/`FileStream.Open` on the raw string silently looked in
+    // the wrong place. Absolute paths are untouched (pass straight through -- Path.IsPathRooted is
+    // platform-correct for both `C:\...`/`\\host\share\...` on Windows and `/...` on Linux/macOS). A
+    // relative path is made absolute against the BEST AVAILABLE reading of the true process working
+    // directory: `PWD` (an environment variable the launching shell sets before exec/CreateProcess and
+    // which survives any internal chdir the engine performs afterward, since chdir(2)/SetCurrentDirectory
+    // never touches the environment block) when present and pointing at a directory that still exists,
+    // else `Directory.GetCurrentDirectory()` (correct whenever the engine hasn't actually redirected the
+    // process's OS-level cwd -- the common case, confirmed empirically on Linux with `--path`). Applied at
+    // the two USER-arg parse points (ParseReplayArg/ParseShotArg) so it runs before either arg is ever
+    // handed to a file API.
+    private static string ResolveAgainstLaunchCwd(string rawPath)
+    {
+        if (string.IsNullOrEmpty(rawPath) || Path.IsPathRooted(rawPath))
+        {
+            return rawPath;
+        }
+
+        var launchDir = OS.GetEnvironment("PWD");
+        if (string.IsNullOrEmpty(launchDir) || !Directory.Exists(launchDir))
+        {
+            launchDir = Directory.GetCurrentDirectory();
+        }
+
+        return Path.GetFullPath(rawPath, launchDir);
+    }
+
+    // BLOCKER fix -- true only under Godot's own `--headless` (no real/Xvfb display server backing the
+    // window). Verified Godot 4.7.1: DisplayServer.GetName() returns "headless" under --headless and a
+    // real driver name ("X11", ...) otherwise, including under Xvfb (Xvfb provides a real X11 display, so
+    // Godot picks its normal windowed driver there, NOT the headless one -- exactly the "interactive"
+    // case this auto-quit gate must leave alone). Falls back to scanning Godot's OWN cmdline args (not the
+    // USER args after `--`) for a literal `--headless` switch, in case a future engine build ever names the
+    // driver differently.
+    private static bool IsHeadlessDisplay()
+    {
+        if (Godot.DisplayServer.GetName() == "headless")
+        {
+            return true;
+        }
+
+        foreach (var arg in OS.GetCmdlineArgs())
+        {
+            if (arg == "--headless")
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    // `--frames=<n>` / `--frames <n>` USER cmdline arg (both forms, like --replay): an EXPLICIT opt-in
+    // override for the in-code auto-quit frame cap (QuitAfterFrames' fixed 200), applied REGARDLESS of
+    // headless/windowed -- e.g. bounding a windowed run for scripted capture without relying on an external
+    // `--quit-after`. Absent (null) means "use the headless-gated default" (see IsHeadlessDisplay /
+    // ShouldAutoQuit). Non-positive or unparsable values are ignored, same defensive style as
+    // ParseShotDelayArg's `seconds > 0.0` guard.
+    private static int? ParseFramesArg()
+    {
+        const string eqPrefix = "--frames=";
+        var args = OS.GetCmdlineUserArgs();
+        for (var i = 0; i < args.Length; i++)
+        {
+            var arg = args[i];
+            if (arg.StartsWith(eqPrefix, StringComparison.Ordinal))
+            {
+                var v = arg[eqPrefix.Length..].Trim();
+                if (int.TryParse(v, NumberStyles.Integer, CultureInfo.InvariantCulture, out var n) && n > 0)
+                {
+                    return n;
+                }
+
+                continue;
+            }
+
+            if (arg == "--frames" && i + 1 < args.Length
+                && int.TryParse(args[i + 1], NumberStyles.Integer, CultureInfo.InvariantCulture, out var n2)
+                && n2 > 0)
+            {
+                return n2;
             }
         }
 
@@ -1377,6 +4705,53 @@ public partial class Main : Node3D
         }
 
         return false;
+    }
+
+    // docs/LIVE-CITY-VIEWERS-DESIGN.md §6, -TASKS.md D1 -- the `--live-city` USER flag (a bare flag, no
+    // `=`), parsed via the same OS.GetCmdlineUserArgs() mechanism as --peds/--scenario/--camera/--shot.
+    // When present the viewer takes the dedicated live-city path (ReadyLiveCity/ProcessLiveCity): the
+    // coupled cars+peds+crossing-yield scene over scenarios/_ped/demo_city/box, rendered together in one
+    // scene; absent, behaviour is byte-identical to before.
+    private static bool ParseLiveCityArg()
+    {
+        foreach (var arg in OS.GetCmdlineUserArgs())
+        {
+            if (arg == "--live-city")
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    // docs/LIVE-CITY-VIEWERS-TASKS.md D3 -- `--live-city --replay <file.simrec>` (a TWO-TOKEN arg, per the
+    // task spec, unlike --shot=/--scenario=/--camera='s `=`-joined form) selects the file-backed replay
+    // path instead of a live LiveCitySource. `--replay=<file>` (the `=`-joined form, for consistency with
+    // this file's other args/shell habits that quote a single token) is also accepted. Returns null when
+    // absent -- ReadyLiveCity's `_replay = replayPath is not null` is the single source of truth for which
+    // branch runs. Fix 11 -- a RELATIVE value is resolved against the true process working directory
+    // before any Godot res:// resolution can apply, see ResolveAgainstLaunchCwd's remarks.
+    private static string? ParseReplayArg()
+    {
+        const string eqPrefix = "--replay=";
+        var args = OS.GetCmdlineUserArgs();
+        for (var i = 0; i < args.Length; i++)
+        {
+            var arg = args[i];
+            if (arg.StartsWith(eqPrefix, StringComparison.Ordinal))
+            {
+                var v = arg[eqPrefix.Length..].Trim();
+                return v.Length > 0 ? ResolveAgainstLaunchCwd(v) : null;
+            }
+
+            if (arg == "--replay" && i + 1 < args.Length)
+            {
+                return ResolveAgainstLaunchCwd(args[i + 1]);
+            }
+        }
+
+        return null;
     }
 
     // `--transport=<local|dds>` USER cmdline arg (task T2.2b): default "local" (today's in-process

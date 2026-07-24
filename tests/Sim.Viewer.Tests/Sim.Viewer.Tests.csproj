@@ -1,0 +1,38 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    docs/LIVE-CITY-VIEWERS-TASKS.md Stage B (B2 success condition): a headless unit test for
+    LiveCityOverlay.PickNearest, the pure, Raylib-free static hit-test helper, so the click-select
+    behaviour is verifiable without a window. References the Sim.Viewer EXE project directly (an
+    OutputType=Exe project can still be referenced as a library; this test project never invokes its
+    Main). Deliberately OUT of Traffic.sln (mirrors Sim.Viewer itself and every other viewer/demo test
+    project in tests/); the standing parity gate (Sim.ParityTests) is unaffected either way.
+  -->
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.6.0" />
+    <PackageReference Include="xunit" Version="2.4.2" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.4.5">
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+      <PrivateAssets>all</PrivateAssets>
+    </PackageReference>
+    <PackageReference Include="coverlet.collector" Version="6.0.0">
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+      <PrivateAssets>all</PrivateAssets>
+    </PackageReference>
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Sim.Viewer\Sim.Viewer.csproj" />
+  </ItemGroup>
+
+</Project>

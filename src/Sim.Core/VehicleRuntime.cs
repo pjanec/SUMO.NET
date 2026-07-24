@@ -135,7 +135,37 @@ internal sealed class VehicleRuntime
     // Inert for lane-0/single-lane vehicles: ApplyKeepRightDecision returns on `RightNeighbor < 0`
     // before ever reading this.
     public int KeepRightStayCacheLane = -1;
+
+    // DIAGNOSTIC ONLY (#15): the id of the constraint that bound this vehicle's speed on its last real
+    // plan pass (see Engine.ComputeMoveIntent's argmin fold). Never read by sim logic -> parity-neutral.
+    public byte BindingConstraint;
+
+    // DIAGNOSTIC ONLY (#15): when JunctionYieldConstraint bound this vehicle, WHICH arm did (low 4 bits:
+    // 1 cycleHold, 2 cautiousApproach, 3 sameTargetMerge, 4 externalAgent, 5 adaptToJunctionLeader,
+    // 6 approachingCross) plus bit 0x80 = the ego link held a protected-green signal priority. Never read
+    // by sim logic.
+    public byte JunctionYieldArm;
+
+    // DIAGNOSTIC ONLY (#15): the speed (m/s) of the junction foe that bound this vehicle via
+    // JunctionYieldConstraint's foe arms (-1 = no foe arm bound this step). Tells a moving foe (real
+    // cross traffic -> legitimate wait) from a ~0 foe (a car stopped ON the junction -> box block).
+    public float JunctionYieldFoeSpeed = -1f;
     public bool KeepRightStaySuppress;
+
+    // Turn-lane segregation fix (docs/GETBESTLANES-RESUME.md follow-up): the position-INDEPENDENT
+    // components of SUMO's stayOnBest rule 2 (MSLCM_LC2013.cpp:1410-1418: `bestLaneOffset == 0 &&
+    // neighLeftPlace * 2 < laDist`), cached alongside the VARIANT_21 memo above (same LaneHandle key,
+    // same reroute invalidation). `KeepRightStayRule2Eligible` = ego is on a route-continuing lane
+    // (own offset 0) whose right neighbour leaves the route (!AllowsContinuation) -- the same
+    // (currContinues && rightLeavesRoute) predicate VARIANT_21 needs, minus its static <200 m gate.
+    // `KeepRightStayRightContLength` = that right lane's best-lanes continuation length (SUMO's
+    // neigh.length), from which ApplyKeepRightDecision derives the POSITION-dependent
+    // neighLeftPlace = MAX2(0, length - posOnLane) fresh each step. Both are pure functions of
+    // (lane, remaining route), so they memoize on the same key; the per-step part is only the cheap
+    // distance compare + laDist. Inert (Eligible=false) for single-edge routes and any lane whose
+    // right neighbour continues the route -- byte-identical there.
+    public bool KeepRightStayRule2Eligible;
+    public double KeepRightStayRightContLength;
 
     // Rung A2: SUMO's MSLCM_LC2013::mySpeedGainProbability -- a stateful per-vehicle accumulator
     // for the speed-gain (overtaking) lane-change incentive. Starts at 0 (SUMO's ctor default);
@@ -146,6 +176,22 @@ internal sealed class VehicleRuntime
     // it is written once, after all vehicles' moves are settled, from a single frozen post-move
     // snapshot built at the top of that phase -- not a mid-query shared-state write).
     public double SpeedGainProbability;
+
+    // P2G-2 (docs/HIGH-DENSITY-P2G2-COOPERATIVE-LC-DESIGN.md): SUMO's MSLCM_LC2013 myVSafes speed-advice
+    // channel. A blocked lane-changer's informFollower writes (as a MIN) the speed THIS vehicle should
+    // slow to so the changer can cut in ("make room"); the car-following phase reads it as an additive
+    // vPos cap NEXT step and clears it. +Infinity == no advice. Written/consumed ONLY when
+    // Engine.CoordinatedLaneChange is on, so it stays +Infinity (inert, byte-identical) by default.
+    public double CoopSpeedAdvice = double.PositiveInfinity;
+
+    // #15 per-area realism LOD (docs/LIVE-CITY-15-PER-AREA-LOD-DESIGN.md). When true, THIS vehicle is in a
+    // LOW-realism area (distant/unobserved) and its lane changing takes the cheap flow-preserving path: the
+    // cooperative informFollower, the into-occupied vetoes, and the stopped keep-right float guard are all
+    // skipped for it (identical to CooperativeInformFollower being off, but per-car). The host sets it each
+    // step from the car's position vs the demo's static high-realism pocket; every parity/bench golden leaves
+    // it false (and the global cooperative flags off), so all gating sites are byte-identical there. A pure
+    // function of frozen start-of-step position => order-independent => serial==parallel preserved.
+    public bool LowRealismLaneChange;
 
     // C2-ii: SUMO's MSLCM_LC2013::myLookAheadSpeed -- a stateful per-vehicle "how fast have I
     // recently been driving" estimate feeding the STRATEGIC lane-change look-ahead distance

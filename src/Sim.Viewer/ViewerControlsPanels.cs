@@ -1,5 +1,6 @@
 using System.Numerics;
 using ImGuiNET;
+using Sim.Replication.Recording;
 using Sim.Viewer.Core;
 using Sim.Viewer.Raylib;
 
@@ -268,5 +269,132 @@ public static class ViewerControlsPanels
         ImGui.Checkbox("smooth (extrap only)", ref smooth);
         ImGui.TextWrapped("click a road to drop an obstacle (remote). delay 0 = extrapolate; raise = interpolate");
         ImGui.End();
+    }
+
+    // docs/LIVE-CITY-VIEWERS-DESIGN.md §4, -TASKS.md Stage C (C3): the live-city REPLAY playback panel --
+    // play/pause, restart, a speed selector, frame-step, and a drag-scrub timeline slider bound to
+    // `clock.Now` over `[0, clock.Duration]`. Mirrors src/Sim.Viz/template.js's HTML player: dragging the
+    // slider PAUSES the clock (so it doesn't fight the drag) and remembers whether it was already playing;
+    // releasing restores that prior state (a drag that started while paused stays paused after release).
+    // `draggingSlider`/`wasPlayingBeforeDrag` are ref because Program.cs's replay loop owns them across
+    // frames, same convention as `fpsCap`/`smooth` above.
+    // docs/LIVE-CITY-VISUALS-NOTES.md (tick-rate task): `rateFooter`, when supplied, draws the sim-hz/
+    // render-hz readout+slider (DrawLiveCityRatePanel) INSIDE this same window, right before ImGui.End() --
+    // `--mode live-city --replay` (RunLiveCityReplay) passes one; every other caller omits it (null),
+    // byte-identical to pre-task behaviour. A plain `Action` (not ref params) because ref locals can't be
+    // captured by a lambda -- RunLiveCityReplay's closure mutates its own `replayRenderHz` local directly.
+    public static void DrawPlaybackPanel(
+        PlaybackClock clock, ref bool draggingSlider, ref bool wasPlayingBeforeDrag, Action? rateFooter = null)
+    {
+        ImGui.SetNextWindowPos(new Vector2(10, 10), ImGuiCond.FirstUseEver);
+        ImGui.SetNextWindowSize(new Vector2(420, rateFooter is null ? 190 : 230), ImGuiCond.FirstUseEver);
+        ImGui.Begin("SumoSharp - live-city replay");
+
+        ImGui.Text("mode: REPLAY (from a .simrec recording)");
+        ImGui.Separator();
+
+        if (ImGui.Button(clock.Playing ? "pause" : "play"))
+        {
+            if (clock.Playing)
+            {
+                clock.Pause();
+            }
+            else
+            {
+                clock.Play();
+            }
+        }
+
+        ImGui.SameLine();
+        if (ImGui.Button("restart"))
+        {
+            clock.Restart();
+        }
+
+        ImGui.SameLine();
+        if (ImGui.Button("<< step"))
+        {
+            clock.Pause();
+            clock.StepFrame(-1);
+        }
+
+        ImGui.SameLine();
+        if (ImGui.Button("step >>"))
+        {
+            clock.Pause();
+            clock.StepFrame(1);
+        }
+
+        var speed = (float)clock.Speed;
+        if (ImGui.SliderFloat("speed", ref speed, 0.1f, 8f, "%.2fx"))
+        {
+            clock.Speed = speed;
+        }
+
+        var now = (float)clock.Now;
+        var maxT = (float)System.Math.Max(clock.Duration, 0.001);
+        if (ImGui.SliderFloat("timeline", ref now, 0f, maxT, "%.2f s"))
+        {
+            if (!draggingSlider)
+            {
+                draggingSlider = true;
+                wasPlayingBeforeDrag = clock.Playing;
+                clock.Pause();
+            }
+
+            clock.SeekTo(now);
+        }
+
+        if (draggingSlider && !ImGui.IsItemActive())
+        {
+            draggingSlider = false;
+            if (wasPlayingBeforeDrag)
+            {
+                clock.Play();
+            }
+        }
+
+        ImGui.Text($"t = {clock.Now:F2}s / {clock.Duration:F2}s   {(clock.Playing ? "PLAYING" : "PAUSED")}");
+        ImGui.TextWrapped("drag the timeline to scrub - left/right arrows or the buttons frame-step");
+        rateFooter?.Invoke();
+        ImGui.End();
+
+        if (global::Raylib_cs.Raylib.IsKeyPressed(global::Raylib_cs.KeyboardKey.Left))
+        {
+            clock.Pause();
+            clock.StepFrame(-1);
+        }
+
+        if (global::Raylib_cs.Raylib.IsKeyPressed(global::Raylib_cs.KeyboardKey.Right))
+        {
+            clock.Pause();
+            clock.StepFrame(1);
+        }
+    }
+
+    // docs/LIVE-CITY-VISUALS-NOTES.md (tick-rate task): the live-city sim-hz/render-hz readout + runtime
+    // render-hz control, shared by RunLiveCity's diagnostics panel and RunLiveCityReplay's playback panel
+    // (via `rateFooter` above) -- MUST be called between an already-open ImGui.Begin()/End() pair (it does
+    // neither itself), mirroring DrawControlsPanel's own "render fps cap" radios just below its sim
+    // resolution block. `simHz`/`dtSeconds` are DISPLAY-ONLY: unlike render-hz, sim-hz is baked into the
+    // engine's step-length at LiveCitySim construction time (or, for replay, is simply whatever the
+    // recording was made at) -- there is no live knob to turn, hence the "relaunch to change" hint rather
+    // than a control. `renderHz` IS live: the slider pushes straight to Raylib.SetTargetFPS, exactly like
+    // DrawControlsPanel's fpsCap radios do, clamped to the same [15,60] band ValidateRenderHz enforces at
+    // startup so a runtime drag can't exceed the hard cap or undershoot the usability floor.
+    // docs/LIVE-CITY-VISUALS-NOTES.md deliverable 2: `showZones` is the SAME flag Program.cs's `Z`-key
+    // handler mutates every frame -- this checkbox is just a second, discoverable entry point onto that
+    // one bool (the `Z` key keeps working whether or not this panel/checkbox is ever touched).
+    public static void DrawLiveCityRatePanel(int simHz, double dtSeconds, ref int renderHz, ref bool showZones)
+    {
+        ImGui.Separator();
+        ImGui.Text($"sim tick rate: {simHz} Hz (dt={dtSeconds:F3}s) -- relaunch --sim-hz N to change");
+        if (ImGui.SliderInt("render rate (Hz)", ref renderHz, 15, 60))
+        {
+            renderHz = Math.Clamp(renderHz, 15, 60);
+            global::Raylib_cs.Raylib.SetTargetFPS(renderHz);
+        }
+
+        ImGui.Checkbox("show zones (Z)", ref showZones);
     }
 }
