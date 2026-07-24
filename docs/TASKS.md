@@ -2423,3 +2423,60 @@ apps (`Sim.Viewer` ×3, `Sim.Host.App` ×1; `Sim.Viz` uses a direct `box` path �
 cosmetic (`pois*`,`buildings`,`zones`) files rather than copy the whole dataset.
 
 **Detail:** see `scenarios/_ped/demo_city/box/README.md` and the discussion in `LIVE-CITY-15-RESUME.md`.
+
+---
+
+## Realism violations in high-realism zones (live-city demo) — observed, NOT yet reproduced/fixed
+
+**Status: RECORDED (owner observations in the 3D viewer), 2026-07-24. Not yet reproduced headlessly.**
+These are car↔ped coupling + LOD-transition defects seen in the City3D live-city demo. None has a headless
+repro yet — per the project discipline, each needs a **solid deterministic repro first** (most are
+observable without the GUI via the DR/footprint math the viewer uses), THEN analysis, THEN fix. Likely-area
+pointers below are HYPOTHESES from a read of `src/Sim.LiveCity/LiveCitySim.cs`, not verified causes.
+
+Relevant wiring (for whoever picks these up):
+- Cars yield to `Engine.CrowdSource = CompositeFootprintSource(PedLodManager.HighPowerFootprints,
+  CrossingOccupancySource)` when `YieldEnabled` — i.e. cars react to (a) promoted/ORCA peds' footprints and
+  (b) crossing discs marked occupied by WALKING low-power peds (`_movingLowPowerPositions`, gathered as
+  `ModelOf(id) != FreeKinematic && AnimTag == WalkAnimTag`, fed via `_crossingOccupancy.Update(...)`).
+- Ped LOD promotion/demotion: `PedLodManager` + the `InterestField` pocket (promote 70 m / demote 100 m).
+
+1. **Cars in the HIGH-realism zone drive THROUGH peds on crosswalks (no dodge/stop).** Observed: a car
+   crosses a zebra occupied by peds without yielding or steering around, driving "over" them. Expected: in
+   the high-realism zone cars must yield to / avoid peds on the crossing. Likely area: the car-yield gate vs
+   `HighPowerFootprints` — the peds are promoted (ORCA) in-zone so their footprints SHOULD be in
+   `CrowdSource`; check whether the footprint is actually fed/seen at the car's approach, and whether the
+   yield decision consults it for crossing peds (vs only signalized-crossing logic).
+
+2. **LOW-realism crossings not marked 'occupied' when low-power peds cross (cars don't stop before).**
+   Observed: a low-power ped crossing a zebra in a low-res zone often fails to make cars stop short.
+   Expected: a crossing with a crossing low-power ped is marked occupied so approaching cars halt before it.
+   Likely area: `CrossingOccupancySource.Update(_movingLowPowerPositions)` — the disc geometry / pedRadius
+   (0.3), or the `_movingLowPowerPositions` filter (only WALKING, non-FreeKinematic peds counted — a ped in
+   another anim/model state while on the zebra would be missed), or the disc not covering the actual zebra.
+
+3. **Low-power peds DISAPPEAR from the 3D view when entering the high-realism zone.** Observed: a low-power
+   ped crossing into the pocket vanishes — either permanently, or it re-appears as an ORCA ped a few seconds
+   later. Expected: a seamless promotion (low-power DR → ORCA) with continuous rendering, no gap. Likely
+   area: the `PedLodManager` promotion handoff at the `InterestField` promote boundary — the ped is likely
+   dropped from the low-power publish set before the ORCA representation is live (a one-sided handoff /
+   publish-scheduler gap), so the viewer has no record for those frames.
+
+4. **ORCA peds leaving the high-realism zone sometimes STAY ORCA and wander.** Observed: a demoted-region ped
+   keeps its ORCA behaviour, moving in a random direction, off the sidewalks, never reverting to a low-power
+   ped. Expected: on leaving the demote radius the ped demotes back to low-power DR on its route/sidewalk.
+   Likely area: the demotion path in `PedLodManager` (hysteresis: promote 70 m / demote 100 m) — the demote
+   transition may not fire (or not restore the route/sidewalk target), leaving an orphaned ORCA agent with no
+   goal.
+
+5. **ORCA peds do NOT dodge a SUMO car standing on the crosswalk.** Observed: when a junction is blocked by
+   cars stopped ON the zebra, ORCA peds walk into / stall against the standing car instead of routing around
+   it, though there is physical space to pass. Expected: the ORCA ped treats the standing car as an obstacle
+   and steers around it. Likely area: standing SUMO cars are (apparently) NOT injected into the ped ORCA as
+   agents/obstacles — the ped crowd only avoids other peds, not vehicle footprints. Needs a car→ped obstacle
+   feed (the mirror of the ped→car `CrowdSource`), or the stopped car's footprint added to the ORCA
+   neighbourhood.
+
+**Note on the section name.** Items 2–4 span the low-realism zone and the promote/demote TRANSITIONS, not
+only the high-realism interior; grouped here as the owner requested since they are all coupled-realism /
+LOD-boundary defects. Each is independent and can be scoped/repro'd separately.
