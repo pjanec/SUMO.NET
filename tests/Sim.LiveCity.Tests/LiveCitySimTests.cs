@@ -170,6 +170,8 @@ public class LiveCitySimTests
     }
 
     // #15 LIVENESS / THROUGHPUT regression guard (docs/LIVE-CITY-15-RESUME.md §2 item 3).
+    // Fixture + run/re-baseline instructions: scenarios/_ped/demo_city/box/README.md (the committed dataset
+    // this and several other tests pin -- change it only deliberately, re-baseline all dependants together).
     // The parity gate structurally CANNOT catch the #15 junction-gridlock class of bug: every #15 fix is
     // demo-gated and INERT on every golden, so a change that silently reforms the dense-flow gridlock passes
     // parity byte-for-byte. This test is the missing guard: it runs the coupled live-city sim ~1000 s
