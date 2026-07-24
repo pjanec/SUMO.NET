@@ -63,8 +63,31 @@ Sweep: nose-in 10→1 (residual 1 = ORCA promotion-timing → #3/#4), throughput
 `--live-city-yieldtrace`. The late-trigger/release-lunge hypotheses (below) were REFUTED by the trace; kept
 for the record.
 
-**NEXT:** owner confirms the HTML replay, then start defect #3/#4 (ped LOD promote/demote, task #25) — the
-residual ORCA nose-in lives there too.
+**DENSITY (owner 10x stress-test) — FIXED.** At `LIVECITY_PEDS=1600` the r=1.5 fix failed (nose-in 28, 15
+fast) → two density bugs: (1) the engine's crowd-disc query cap `stackalloc[16]` truncated the in-path disc
+(median 39/max 131 discs near a car) → `Engine.MaxCrowdDiscs=256` (parity-inert, verified 657/4 + bench
+unchanged); (2) ORCA peds fed only as their 0.3 m footprint → knob `GateOrcaPedsOnCrossing` (env
+`LIVECITY_GATE_ORCA`), **default OFF** (velocity-0 gate over-brakes a walking ORCA ped → −15% throughput,
+DenseFlow 490→418; the buffer fix alone cut ORCA nose-ins 11→3). Result: 10x nose-in **28→5, 0 fast**; 1x 0;
+throughput preserved. Guard: `CrossingYield_HoldsUnderHighPedDensity_NoMassDriveThrough`.
+
+**OPEN follow-up (ORCA residual):** the proper ORCA fix is a VELOCITY-PRESERVING wide vehicle-facing footprint
+(wrap `HighPowerFootprints` in a radius-inflator that keeps velocity, so a car brakes with margin for an ORCA
+crossing ped but FOLLOWS its motion instead of stopping dead). Would fix the ~3 residual ORCA noses at 10x
+without the throughput cost of the velocity-0 gate. Not yet done — needs an A/B (nose-in vs DenseFlow).
+
+**MERGE:** `origin/main`'s viz-unification (PR #10: `VizReplayBuilder`/`LiveCitySource`/`EngineScenarioSource`/
+`VizHtml`) is merged in. `--live-city-demo` now runs through `VizReplayBuilder` (my realism knobs still flow
+via `LiveCitySource`→`LiveCityConfig`; verified `gateRadius=1.50`). Diagnostics (`--live-city-yieldtrace/
+yielddump`) kept. `SceneGen.BuildLiveCityDemo` is now dead (unused) — can be removed later.
+
+**VIEWER — click-to-identify (owner ask):** the feature existed in template.js but was inert because the
+unified builder never emitted `vehIds`. Now `ScenePayload.VehIds` (per-slot real vehicle id from
+`IReplicationSource.Names`) is populated by `VizReplayBuilder`; template.js ring recoloured amber. Click a car
+→ amber ring + `__vehN` id (same names the yieldtrace prints → click maps straight to the diagnostic).
+
+**NEXT:** owner reviews the 10x clickable replay (`--live-city-demo`, `LIVECITY_PEDS=1600`); reports any
+`__vehN` still misbehaving. Then: the ORCA velocity-preserving follow-up, and/or defect #3/#4 (task #25).
 
 ## 4b. DEFECT #1 — original analysis trail (superseded by §4; kept for context)
 **Faithful `--live-city-yielddump 200` (100 s):** 152 raw "car within 2.5 m of a crossing-ped" →
