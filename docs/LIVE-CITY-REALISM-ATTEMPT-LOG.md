@@ -270,3 +270,31 @@ ORCA-feed ON → 5 (0 fast) but throughput 418 (✗). Shipped = ORCA OFF.
 `CrossingYield_HoldsUnderHighPedDensity_NoMassDriveThrough` (10x nose-in ≤12). All 25 LiveCity tests green.
 **OPEN (owner):** the ORCA narrow-corridor residual (3 at 10x) — do the velocity-preserving ORCA footprint
 next, or accept? Also: merge main's viz-unification + add click-to-mark-a-car to the viewer (owner asks).
+
+### DEFECT #1 — MID-JUNCTION ORCA drive-throughs (owner: "fast cars drive through ORCA peds in the middle of the junction, not braking")
+Owner repro `__veh24`/`__veh22`. New diagnostic `--live-city-orcatrace [steps] [carId]` tracks ORCA
+drive-throughs ANYWHERE (the yieldtrace only saw crossing polygons, so it MISSED mid-junction ones on the
+walking-area). Finding: every ORCA drive-through is on an **INTERNAL (':') junction lane**, bound by
+**junctionYield(10)** not the crowd-brake. Focus-dump of `__veh22`: it slows for the ORCA ped on the approach
+lane, then on entering the internal lane RE-ACCELERATES through it (junctionYield takes over; the 0.3 m ORCA
+footprint slips the corridor gate because the short/curved internal-lane projection misjudges the ped's
+lateral offset). Discs near = 35–78 (< 256, so NOT truncation).
+
+**Fix: `InflatedFootprintSource`** wraps `HighPowerFootprints`, inflating each ORCA disc's VEHICLE-FACING
+radius by `OrcaFootprintExtraRadius` (env `LIVECITY_ORCA_RADIUS`), **velocity PRESERVED** (car follows a
+walking ORCA ped, no dead stop → no throughput cliff). ORCA-ORCA avoidance uses the real physics radius
+(separate path) → unchanged. Parity-inert (Sim.LiveCity/CrowdSource only; Sim.Core untouched → 657/4 + bench
+`D96213B7BB4021A7` verified). Focus-dump at r=0.6: `__veh22` now brakes (binder=13) at t=25.5 with the ped
+still 8.3 m away — **preventive slowing from far out** (exactly the owner's ask), and it no longer
+drives through.
+
+**A/B sweep (extra radius vs 1x throughput / 10x ORCA drive-through):** r=0.4→634/0-fast; **r=0.6→684/0-total**
+(all ORCA drive-throughs gone AND throughput UP from 490); r=0.8→372 (cliff). **Shipped default r=0.6.**
+DenseFlow + crossing-yield guards green; LiveCity 25/25.
+
+### Viz delivery + duration
+- `--live-city-demo <out> [steps]` now takes an optional duration (owner: "make it 3x longer" to watch
+  low-power peds reach the next junction). 480 steps = 240 s.
+- **Delivery cap = 30 MiB** (SendUserFile). 10x density × 160 steps ≈ 29.8 MiB (just fits); 10x × 480 steps =
+  97 MiB (REJECTED). For long replays drop density (3x-duration at ~2x density ≈ 27 MiB). Can also lower
+  RenderHz to shrink (player Catmull-Rom interpolates, stays smooth).
