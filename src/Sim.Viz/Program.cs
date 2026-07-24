@@ -402,13 +402,11 @@ internal static class Program
             var wit = new Dictionary<Sim.Core.VehicleHandle, (double Spd, byte Binder, double HalfW)>();
             foreach (var w in sim.WitnessAuthoritative()) wit[w.Handle] = (w.Speed, w.Binder, 0);
 
+            // ON a crossing == inside an actual crossing polygon (not the loose centroid circle, which for
+            // these large junction polys spans ~9 m and flags peds on the sidewalk).
             var onCross = new List<(int Id, double X, double Y, Sim.LiveCity.PedRegime Reg)>();
             foreach (var p in snap.Peds)
-                foreach (var (cx, cy, hw) in crossings)
-                {
-                    var dx = p.X - cx; var dy = p.Y - cy;
-                    if ((dx * dx) + (dy * dy) <= (hw + 0.5) * (hw + 0.5)) { onCross.Add((p.Id, p.X, p.Y, p.Regime)); break; }
-                }
+                if (sim.IsOnCrossingPolygon(p.X, p.Y)) onCross.Add((p.Id, p.X, p.Y, p.Regime));
 
             foreach (var c in snap.Cars)
             {
@@ -484,13 +482,17 @@ internal static class Program
             var a = new List<double>(xs); a.Sort();
             return a[a.Count / 2];
         }
+        double Min(List<double> xs) { var m = double.PositiveInfinity; foreach (var x in xs) if (x < m) m = x; return m; }
+        double Max(List<double> xs) { var m = double.NegativeInfinity; foreach (var x in xs) if (x > m) m = x; return m; }
         var latMed = Median(onsetLat);
         double corrMed = Median(onsetCorridorHalf);
         // how many onsets fired with the ped already deep in the corridor (|lat| within 80% of the edge)?
         long lateGate = 0;
         for (var i = 0; i < onsetLat.Count; i++) if (onsetLat[i] <= onsetCorridorHalf[i]) lateGate++;
 
+        var hws = new List<double>(); foreach (var (_, _, hw) in crossings) hws.Add(hw);
         Console.WriteLine($"LIVECITY-YIELDTRACE: steps={steps} ({steps * dt:F0}s) passenger vType decel={DecelComf}/emerg={DecelEmerg} width=1.8 len=5");
+        Console.WriteLine($"  crossings={crossings.Count} halfExtent(m): min={Min(hws):F2} median={Median(hws):F2} max={Max(hws):F2}");
         Console.WriteLine($"  crowd-brake ONSET events total={onsetTotal}  with an in-path crossing-ped ahead={onsetWithPed}");
         Console.WriteLine($"  at onset: |lat| median={latMed:F2} m  vs corridor-half median={corrMed:F2} m  "
             + $"(ped INSIDE corridor at onset: {lateGate}/{onsetWithPed})");
@@ -502,6 +504,8 @@ internal static class Program
             + $"neverBraked={noseNoBrake}  |  car ACCELERATING during nose-in={noseAccelerating}");
         Console.WriteLine($"    nosed-over ped REGIME: lowPowerWalking={noseRegLowWalk}  highPower/ORCA={noseRegHigh}  paused={noseRegPaused}");
         Console.WriteLine($"    nosed-over ped IN occupancy feed: fed={noseFed}  NOT-fed(invisible to cars)={noseNotFed}");
+        Console.WriteLine($"  THROUGHPUT: carArrivedTotal={sim.ArrivedTotal} peakOccupiedCrossings={sim.PeakOccupiedCrossings} "
+            + $"gateRadius={cfg.CrossingGateRadius:F2} gatePaused={cfg.GatePausedPedsOnCrossing}");
         Console.WriteLine("  worst onsets (brake first engaged here):");
         foreach (var w in onsetWorst)
             Console.WriteLine($"    car={w.Car} spd={w.Spd:F1} along={w.Along:F1} |lat|={w.Lat:F2} corridorHalf={w.CorrHalf:F2} emergStopDist={w.StopE:F1}");

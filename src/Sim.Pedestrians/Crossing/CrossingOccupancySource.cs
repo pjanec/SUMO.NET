@@ -128,6 +128,21 @@ public sealed class CrossingOccupancySource : ICrowdFootprintSource
         }
     }
 
+    // Diagnostic: is world point (x,y) inside ANY watched crossing polygon (independent of occupancy/feed)?
+    // Lets a yield analysis tell a ped genuinely ON a crossing apart from one merely near a junction.
+    public bool IsInsideAnyCrossing(double x, double y)
+    {
+        var p = new Vec2(x, y);
+        for (var ci = 0; ci < _crossings.Length; ci++)
+        {
+            ref readonly var c = ref _crossings[ci];
+            if (x < c.MinX || x > c.MaxX || y < c.MinY || y > c.MaxY) continue;
+            if (PointInPolygon(p, c.Verts)) return true;
+        }
+
+        return false;
+    }
+
     public int QueryNear(double x, double y, double radius, Span<WorldDisc> into)
     {
         if (_occupiedCount == 0)

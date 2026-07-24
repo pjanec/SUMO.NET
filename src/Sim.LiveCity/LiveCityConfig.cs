@@ -53,6 +53,23 @@ public sealed class LiveCityConfig
     // Overridable via LIVECITY_YIELD (0 = off).
     public bool YieldEnabled { get; set; } = true;
 
+    // realism #1/#2 (docs/LIVE-CITY-REALISM-1-2-DESIGN.md): the CrossingOccupancySource gate-disc radius.
+    // The stock 0.3 m point disc only enters a car's ~1.2 m wheel-path corridor when the crossing ped is
+    // nearly in front -> the car noses in (too late to stop a 5 m body). A larger footprint ("the ped
+    // occupies this patch of the zebra") makes the car brake for a ped on the crossing ahead earlier AND
+    // opens the longitudinal gap sooner, while staying lane-LOCAL: at 1.5 m the corridor half is
+    // egoHalf+r = 0.9+1.5 = 2.4 m < the 4 m lane spacing, so it does NOT bleed onto adjacent lanes.
+    // 0.3 = stock behaviour. Overridable via LIVECITY_GATE_RADIUS. Only the demo path; goldens/bench drive
+    // the Engine directly with CrowdSource null, so this is parity-inert.
+    public double CrossingGateRadius { get; set; } = 1.5;
+
+    // realism #1/#2 fix (A): also feed low-power peds that are PAUSED on a crossing (AnimTag != Walk) to the
+    // occupancy gate, not just walking ones. A ped standing on a crosswalk is MORE reason to yield; the stock
+    // WalkAnimTag-only filter dropped them entirely -> cars drove over standing peds (the biggest nose-in
+    // bucket). The crossing polygon test still restricts discs to peds actually ON a crossing. false =
+    // stock (walking-only). Overridable via LIVECITY_GATE_PAUSED (0 = off).
+    public bool GatePausedPedsOnCrossing { get; set; } = true;
+
     // docs/LIVE-CITY-15-YIELD-TIMEOUT-DESIGN.md: after this many seconds waiting at a junction, a car
     // forces its gap through APPROACHING cross-traffic (impatience) instead of yielding forever -- the
     // "driver who didn't notice the gap, then recovers" behaviour. 0 = off (SUMO-parity). Only affects
@@ -169,6 +186,17 @@ public sealed class LiveCityConfig
         }
 
         cfg.YieldEnabled = Environment.GetEnvironmentVariable("LIVECITY_YIELD") != "0";
+
+        if (double.TryParse(Environment.GetEnvironmentVariable("LIVECITY_GATE_RADIUS"), out var gateR) && gateR > 0.0)
+        {
+            cfg.CrossingGateRadius = gateR;
+        }
+
+        var gatePausedEnv = Environment.GetEnvironmentVariable("LIVECITY_GATE_PAUSED");
+        if (gatePausedEnv != null)
+        {
+            cfg.GatePausedPedsOnCrossing = gatePausedEnv != "0";
+        }
 
         if (double.TryParse(Environment.GetEnvironmentVariable("LIVECITY_YIELDTIMEOUT"), out var yto) && yto >= 0.0)
         {

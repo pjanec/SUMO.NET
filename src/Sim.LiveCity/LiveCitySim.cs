@@ -225,7 +225,7 @@ public sealed class LiveCitySim : IDisposable
         _lcZoneY = pocketCentre.Y;
         _lcZoneR = promoteRadius;
 
-        _crossingOccupancy = new Sim.Pedestrians.Crossing.CrossingOccupancySource(cropCrossingPolys, pedRadius: 0.3);
+        _crossingOccupancy = new Sim.Pedestrians.Crossing.CrossingOccupancySource(cropCrossingPolys, pedRadius: cfg.CrossingGateRadius);
 
         // ---- cars: real Engine on the full net; a dense LOCAL flow on the crop's drivable edges ----
         _engine = new Engine();
@@ -472,15 +472,23 @@ public sealed class LiveCitySim : IDisposable
         _demand.Step(_now, dt, _field, NoEntities);
         var tNext = _now + dt;
 
-        // (c) gather this tick's WALKING low-power ped positions.
+        // (c) gather this tick's low-power ped positions for the crossing-occupancy gate. realism #1/#2 fix
+        // (A): include peds PAUSED on a crossing (AnimTag != Walk), not just walking ones -- a ped standing on
+        // a crosswalk is more reason to yield, and dropping them was the biggest car-drives-over-ped bucket.
+        // The occupancy source's polygon test still restricts discs to peds actually ON a crossing, so feeding
+        // an idle ped standing on the SIDEWALK costs one bbox reject and marks nothing. ORCA (promoted) peds
+        // are excluded here -- they gate cars via HighPowerFootprints already.
         _movingLowPowerPositions.Clear();
         foreach (var id in _demand.LiveIds)
         {
-            if (_manager.ModelOf(id) != PedDrModel.FreeKinematic
-                && _manager.AnimTagOf(id, tNext) == ActivityTimeline.WalkAnimTag)
+            if (_manager.ModelOf(id) == PedDrModel.FreeKinematic) continue;
+            if (!_cfg.GatePausedPedsOnCrossing
+                && _manager.AnimTagOf(id, tNext) != ActivityTimeline.WalkAnimTag)
             {
-                _movingLowPowerPositions.Add(_manager.PositionOf(id, tNext));
+                continue;   // stock behaviour: walking low-power peds only
             }
+
+            _movingLowPowerPositions.Add(_manager.PositionOf(id, tNext));
         }
 
         // (d) refresh the crossing-occupancy gate from the current walking peds.
@@ -571,6 +579,10 @@ public sealed class LiveCitySim : IDisposable
     // over ped was actually in the feed (corridor-gate miss) or absent from it (feed gap).
     public bool IsOccupancyMarkedAt(double x, double y, double radius = 0.5)
         => _crossingOccupancy.QueryNear(x, y, radius, _gateProbeScratch) > 0;
+
+    // #realism-1 diagnostic: is world point (x,y) actually INSIDE a crossing polygon (independent of the
+    // occupancy feed)? Distinguishes a ped genuinely on a crosswalk from one merely near a junction.
+    public bool IsOnCrossingPolygon(double x, double y) => _crossingOccupancy.IsInsideAnyCrossing(x, y);
 
     // Increment once per occupied crossing disc that has at least one car within 10 m braking (Speed <
     // 2.0 m/s) beside it -- the "car stopped for a ped on a crosswalk" proxy. A ped's own moving-low-power
