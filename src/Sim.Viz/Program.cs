@@ -75,6 +75,7 @@ internal static class Program
             "--live-city" => RunLiveCity(args),
             "--live-city-demo" => RunLiveCityDemo(args),
             "--live-city-yielddump" => RunLiveCityYieldDump(args),
+            "--live-city-yieldtrace" => RunLiveCityYieldTrace(args),
             "--ped-remote" => RunPedRemote(args),
             "--ped-subarea-fcd" => RunPedSubareaFcd(args),
             "--ped-weave-csv" => RunPedWeaveCsv(args),
@@ -353,6 +354,157 @@ internal static class Program
         Console.WriteLine($"  => in-path MOVING near-misses are the real defect-#1 yield failures; beside/stopped are benign/handled.");
         foreach (var w in worst)
             Console.WriteLine($"  worst: car={w.Car} spd={w.Spd:F1} along={w.Along:F1} lat={w.Lat:F2} ped={w.Ped} @({w.Cx:F0},{w.Cy:F0})");
+        return 0;
+    }
+
+    // DEFECT-#1 brake-TIMING verification (the late-trigger hypothesis). Runs the REAL LiveCitySim and, for
+    // every car approaching a ped on a crossing, uses the ENGINE-AUTHORITATIVE binder tag (Binder==13 ==
+    // CrowdLongitudinalConstraint bound this car) to detect the exact tick the crowd-brake FIRST engages.
+    // At that brake-onset it records: the ped's lateral offset relative to the car's path (tests the narrow
+    // wheel-path corridor gate directly -- does onset cluster at the corridor EDGE?), the car's authoritative
+    // speed, and the longitudinal gap -> min stopping distance (emergency & comfortable) vs gap == whether the
+    // nose-in is PHYSICALLY FORCED (car cannot stop in time once the brake finally sees the ped). Also counts
+    // "nose-in" ticks (ped at/under the moving car's front bumper). Diagnostic-only; parity untouched.
+    private static int RunLiveCityYieldTrace(string[] args)
+    {
+        var steps = args.Length >= 2 && int.TryParse(args[1], out var s) ? s : 200;
+        var cfg = Sim.LiveCity.LiveCityConfig.ForRepoRoot(RepoRoot());
+        using var sim = new Sim.LiveCity.LiveCitySim(cfg);
+        var dt = cfg.Dt;
+        var crossings = sim.CrossingCentroids;
+        const double PedR = 0.3, Lookahead = 30.0, LatWide = 5.0;
+        const double DecelEmerg = 9.0, DecelComf = 4.5;   // LiveCitySim uses default passenger vType (decel=4.5, emerg=9)
+
+        var prev = new Dictionary<Sim.Core.VehicleHandle, (double X, double Y)>();
+        var prevBinder = new Dictionary<Sim.Core.VehicleHandle, byte>();
+        // brake-onset events (crowd-brake first engaged) that HAD an in-path crossing-ped ahead
+        var onsetLat = new List<double>();          // |lat| of nearest in-path ped at onset
+        var onsetCorridorHalf = new List<double>(); // that car's corridor half-width (egoHalf + PedR)
+        long onsetTotal = 0, onsetWithPed = 0;
+        long forcedEmerg = 0, forcedComf = 0;       // at onset: stopping dist > gap (can't stop)
+        var onsetWorst = new List<(string Car, double Spd, double Along, double Lat, double CorrHalf, double StopE)>();
+        // nose-in ticks: a MOVING car with a crossing-ped at/under its front bumper
+        long noseIn = 0, noseInFast = 0;
+        var noseSpeeds = new List<double>();
+        // release-lunge test: was the crowd-brake ON in a recent prior tick, then released, just before this
+        // nose-in? (the corridor gate lets go as the ped walks out the far side, and the car re-accelerates).
+        var lastBrakeStep = new Dictionary<Sim.Core.VehicleHandle, int>();
+        long noseAfterRelease = 0, noseWhileBraking = 0, noseNoBrake = 0;
+        long noseAccelerating = 0;   // car SPED UP vs previous tick during the nose-in (lunge signature)
+        long noseRegLowWalk = 0, noseRegHigh = 0, noseRegPaused = 0;   // regime of the ped nosed-over
+        long noseFed = 0, noseNotFed = 0;   // was the nosed-over ped actually in the occupancy feed this tick?
+        var prevSpeed = new Dictionary<Sim.Core.VehicleHandle, double>();
+
+        for (var step = 0; step < steps; step++)
+        {
+            sim.Step();
+            var snap = sim.Sample();
+            var wit = new Dictionary<Sim.Core.VehicleHandle, (double Spd, byte Binder, double HalfW)>();
+            foreach (var w in sim.WitnessAuthoritative()) wit[w.Handle] = (w.Speed, w.Binder, 0);
+
+            var onCross = new List<(int Id, double X, double Y, Sim.LiveCity.PedRegime Reg)>();
+            foreach (var p in snap.Peds)
+                foreach (var (cx, cy, hw) in crossings)
+                {
+                    var dx = p.X - cx; var dy = p.Y - cy;
+                    if ((dx * dx) + (dy * dy) <= (hw + 0.5) * (hw + 0.5)) { onCross.Add((p.Id, p.X, p.Y, p.Regime)); break; }
+                }
+
+            foreach (var c in snap.Cars)
+            {
+                if (!prev.TryGetValue(c.Handle, out var pp)) continue;   // need a motion direction
+                var fx = c.X - pp.X; var fy = c.Y - pp.Y;
+                var fn = Math.Sqrt((fx * fx) + (fy * fy));
+                var spd = wit.TryGetValue(c.Handle, out var wv) ? wv.Spd : fn / dt;
+                var binder = wv.Binder;
+                var prevB = prevBinder.TryGetValue(c.Handle, out var pb) ? pb : (byte)0;
+                var halfW = c.Width * 0.5;
+                var corrHalf = halfW + PedR;                            // the engine's corridor half-width
+                var halfLen = c.Length * 0.5;
+
+                // nearest in-path crossing-ped AHEAD (motion frame), plus a bumper-contact check
+                if (fn > 1e-3)
+                {
+                    var ux = fx / fn; var uy = fy / fn;
+                    var bestAlong = double.PositiveInfinity; var bestLat = 0.0; var havePed = false;
+                    foreach (var (pid, px, py, reg) in onCross)
+                    {
+                        var vx = px - c.X; var vy = py - c.Y;
+                        var along = (vx * ux) + (vy * uy);
+                        var lat = Math.Abs((vx * (-uy)) + (vy * ux));
+                        if (along <= 0 || along > Lookahead || lat > LatWide) continue;
+                        if (along < bestAlong) { bestAlong = along; bestLat = lat; havePed = true; }
+                        // nose-in: ped at/under a MOVING car's front bumper, laterally within the body
+                        if (spd > 0.5 && along < halfLen + PedR && lat < halfW + PedR)
+                        {
+                            noseIn++; noseSpeeds.Add(spd); if (spd >= 4.0) noseInFast++;
+                            // brake-state context for this nose-in
+                            if (binder == 13) noseWhileBraking++;
+                            else if (lastBrakeStep.TryGetValue(c.Handle, out var lb) && step - lb <= 6) noseAfterRelease++;
+                            else noseNoBrake++;
+                            if (prevSpeed.TryGetValue(c.Handle, out var ps) && spd > ps + 0.05) noseAccelerating++;
+                            if (reg == Sim.LiveCity.PedRegime.LowPowerWalking) noseRegLowWalk++;
+                            else if (reg == Sim.LiveCity.PedRegime.HighPower) noseRegHigh++;
+                            else noseRegPaused++;
+                            if (sim.IsOccupancyMarkedAt(px, py)) noseFed++; else noseNotFed++;
+                        }
+                    }
+
+                    // brake-onset = rising edge of the crowd-brake binder (13)
+                    if (binder == 13 && prevB != 13)
+                    {
+                        onsetTotal++;
+                        if (havePed)
+                        {
+                            onsetWithPed++;
+                            onsetLat.Add(bestLat); onsetCorridorHalf.Add(corrHalf);
+                            var stopE = spd * spd / (2.0 * DecelEmerg);
+                            var stopC = spd * spd / (2.0 * DecelComf);
+                            var reach = bestAlong - halfLen;            // gap from front bumper to ped
+                            if (stopE > reach) forcedEmerg++;
+                            if (stopC > reach) forcedComf++;
+                            if (onsetWorst.Count < 14)
+                                onsetWorst.Add((c.Name, spd, bestAlong, bestLat, corrHalf, stopE));
+                        }
+                    }
+                }
+
+                if (binder == 13) lastBrakeStep[c.Handle] = step;
+                prevBinder[c.Handle] = binder;
+                prevSpeed[c.Handle] = spd;
+            }
+
+            prev.Clear();
+            foreach (var c in snap.Cars) prev[c.Handle] = (c.X, c.Y);
+        }
+
+        double Median(List<double> xs)
+        {
+            if (xs.Count == 0) return double.NaN;
+            var a = new List<double>(xs); a.Sort();
+            return a[a.Count / 2];
+        }
+        var latMed = Median(onsetLat);
+        double corrMed = Median(onsetCorridorHalf);
+        // how many onsets fired with the ped already deep in the corridor (|lat| within 80% of the edge)?
+        long lateGate = 0;
+        for (var i = 0; i < onsetLat.Count; i++) if (onsetLat[i] <= onsetCorridorHalf[i]) lateGate++;
+
+        Console.WriteLine($"LIVECITY-YIELDTRACE: steps={steps} ({steps * dt:F0}s) passenger vType decel={DecelComf}/emerg={DecelEmerg} width=1.8 len=5");
+        Console.WriteLine($"  crowd-brake ONSET events total={onsetTotal}  with an in-path crossing-ped ahead={onsetWithPed}");
+        Console.WriteLine($"  at onset: |lat| median={latMed:F2} m  vs corridor-half median={corrMed:F2} m  "
+            + $"(ped INSIDE corridor at onset: {lateGate}/{onsetWithPed})");
+        Console.WriteLine($"  FORCED nose-in at onset (stop-dist > bumper-gap): emergency-brake {forcedEmerg}/{onsetWithPed}  "
+            + $"comfort-brake {forcedComf}/{onsetWithPed}");
+        Console.WriteLine($"  NOSE-IN ticks (ped under a moving car's bumper) = {noseIn} (fast>=4m/s={noseInFast}); "
+            + $"median nose speed={Median(noseSpeeds):F1} m/s");
+        Console.WriteLine($"    brake-state at nose-in: whileBraking={noseWhileBraking}  <=3s-AFTER-release={noseAfterRelease}  "
+            + $"neverBraked={noseNoBrake}  |  car ACCELERATING during nose-in={noseAccelerating}");
+        Console.WriteLine($"    nosed-over ped REGIME: lowPowerWalking={noseRegLowWalk}  highPower/ORCA={noseRegHigh}  paused={noseRegPaused}");
+        Console.WriteLine($"    nosed-over ped IN occupancy feed: fed={noseFed}  NOT-fed(invisible to cars)={noseNotFed}");
+        Console.WriteLine("  worst onsets (brake first engaged here):");
+        foreach (var w in onsetWorst)
+            Console.WriteLine($"    car={w.Car} spd={w.Spd:F1} along={w.Along:F1} |lat|={w.Lat:F2} corridorHalf={w.CorrHalf:F2} emergStopDist={w.StopE:F1}");
         return 0;
     }
 

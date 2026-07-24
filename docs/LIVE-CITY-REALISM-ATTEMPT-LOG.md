@@ -172,3 +172,49 @@ the brake triggers late → the car noses in. A human yields for a ped ANYWHERE 
 NEXT: instrument WHEN the brake first engages vs the ped's lateral offset (confirm late-trigger), + confirm
 these peds are on GREEN (batch metric said ~97% ped-on-green). THEN design (likely: brake for a ped anywhere
 on a crossing polygon ahead, not just the wheel corridor — demo-gated, parity-safe).
+
+### DEFECT #1 — brake-TIMING trace (`--live-city-yieldtrace`) — the late-trigger hypothesis is REFUTED; the real cause is a FEED problem
+New engine-AUTHORITATIVE diagnostic `Sim.Viz --live-city-yieldtrace <steps>` (real `LiveCitySim`; uses
+`WitnessAuthoritative().Binder` — **Binder==13 == `CrowdLongitudinalConstraint` bound this car** — to catch
+the exact tick the crowd-brake first engages, + `LiveCitySim.IsOccupancyMarkedAt(x,y)` to test feed
+membership). Corrected two things first: the demo cars are the **default passenger vType** (`Engine.cs:265`
+`DefineVType{VClass="passenger"}` → width 1.8, len 5, **decel 4.5 / emergencyDecel 9**), NOT the army vTypes
+in `scenario.rou.xml` (those are unused by `LiveCitySim`, which spawns its own demand).
+
+**Run (400 steps = 200 s):**
+- crowd-brake ONSET events = 17 (13 with an in-path crossing-ped ahead). At onset `|lat|` median 1.79 m vs
+  corridor-half 1.20 m. **FORCED nose-in at onset (stop-dist > gap) = 1/13** even at COMFORT braking → once
+  the brake engages the car can almost always stop. So the late-trigger does NOT force the nose-in.
+- **NOSE-IN ticks (ped within 0.3 m of a MOVING car's front) = 19** (fast≥4 m/s = 4; median 2.7 m/s).
+- **brake-state at nose-in: neverBraked = 18/19** (crowd-brake never engaged for that car), whileBraking=1,
+  after-release=0; car ACCELERATING during nose-in = 7/19. ⇒ **NOT a late-trigger and NOT a release-lunge —
+  for the nosed-over peds the crowd-brake never fires at all.** Since a nose-in means the ped is INSIDE the
+  1.2 m corridor at that tick, the only explanation is **the ped disc is not in the CrowdSource.**
+- **nosed-over ped REGIME: paused = 9, lowPowerWalking = 8, ORCA = 2.** Feed membership: **fed = 8,
+  NOT-fed = 11.**
+
+**ROOT CAUSE (two compounding, both FEED-SIDE → `Sim.LiveCity`/`Sim.Pedestrians`, parity-safe, no engine edit):**
+- **(A) FEED GAP — 9/19 (paused peds).** `LiveCitySim.Step` gathers `_movingLowPowerPositions` with
+  `ModelOf(id)!=FreeKinematic && AnimTagOf(id)==WalkAnimTag` (`LiveCitySim.cs:479`). A low-power ped that
+  PAUSES on a crossing (demand has `PauseProbability=0.15`, `PauseAnimTag="idle"`, 2–5 s) fails the
+  `WalkAnimTag` test → not fed to `CrossingOccupancySource` → **invisible to cars** (also not ORCA, so not in
+  `HighPowerFootprints` either). This IS defect #2, and it is the biggest single bucket of defect #1. A
+  stopped ped on a crosswalk is MORE reason to yield, not less.
+- **(B) POINT-DISC vs NARROW CORRIDOR — 8/19 (walking peds).** `CrossingOccupancySource.Update`
+  (`CrossingOccupancySource.cs:125`) marks a **0.3 m point disc at the ped's exact position** (vel 0). The
+  car's corridor gate then only reacts when that tiny disc enters `|Δlat| < egoHalf+0.3 = 1.2 m` — i.e. when
+  the crossing ped is nearly in front → too late for a 5 m body to stop short. A human yields for a ped
+  anywhere on the crossing width ahead. Fix direction: gate the OCCUPIED CROSSING (span its width across the
+  approaching lane / enlarge the disc), not a moving 0.3 m point.
+- **(residual) 2/19 ORCA** — a footprint/promotion-timing edge (ped promoted/around demotion); minor, revisit
+  with defects #3/#4.
+
+**Conclusion:** the owner's report ("cars don't care, they go over the peds") is VINDICATED, not over-counted
+— ~58 % of nose-ins are peds the cars genuinely cannot perceive. Defects #1 and #2 are ONE root cause: the
+crossing-occupancy feed is incomplete (drops paused peds) and impoverished (a 0.3 m point, not the occupied
+crossing). Both fixes live entirely on the feed side; the engine's `CrowdLongitudinalConstraint` is correct
+and stays untouched (parity intact). NEXT: write the design doc for the two feed fixes (A: include on-crossing
+non-walking low-power peds; B: gate the crossing span, demo-gated), get owner agreement, then implement +
+verify by re-running `--live-city-yieldtrace` (nose-in → ~0) and an HTML replay.
+
+Diagnostic tooling committed (parity-inert): `Sim.Viz --live-city-yieldtrace`, `LiveCitySim.IsOccupancyMarkedAt`.

@@ -565,6 +565,13 @@ public sealed class LiveCitySim : IDisposable
 
     private readonly WorldDisc[] _gateProbeScratch = new WorldDisc[4];
 
+    // #realism-1 diagnostic: is world point (x,y) currently a marked occupied-crossing gate disc (i.e. is a
+    // ped there being fed to the vehicle CrowdSource this tick)? A tiny-radius self-query returns >=1 iff that
+    // exact point was gated. Read-only; used by the car-vs-crossing-ped yield trace to tell whether a nosed-
+    // over ped was actually in the feed (corridor-gate miss) or absent from it (feed gap).
+    public bool IsOccupancyMarkedAt(double x, double y, double radius = 0.5)
+        => _crossingOccupancy.QueryNear(x, y, radius, _gateProbeScratch) > 0;
+
     // Increment once per occupied crossing disc that has at least one car within 10 m braking (Speed <
     // 2.0 m/s) beside it -- the "car stopped for a ped on a crosswalk" proxy. A ped's own moving-low-power
     // position is confirmed to actually BE an occupied-crossing gate disc via crossingOccupancy's public
