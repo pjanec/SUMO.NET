@@ -346,6 +346,22 @@ public sealed class LiveCitySim : IDisposable
         return (uint)(z ^ (z >> 31));
     }
 
+    // #15 per-area realism LOD (docs/LIVE-CITY-15-PER-AREA-LOD-DESIGN.md): a car at (x,y) is LOW realism for
+    // lane changing iff it is strictly OUTSIDE the high-realism pocket (distance from the pocket centre >
+    // promoteRadius). A non-positive radius disables the gate (all cars high realism). Pure function of
+    // position => deterministic, order-independent; unit-tested directly.
+    public static bool IsLowRealismLaneChangePos(double x, double y, double pocketX, double pocketY, double promoteRadius)
+    {
+        if (promoteRadius <= 0.0)
+        {
+            return false;
+        }
+
+        var dx = x - pocketX;
+        var dy = y - pocketY;
+        return (dx * dx) + (dy * dy) > promoteRadius * promoteRadius;
+    }
+
     // Advances the coupled sim by one tick (Dt seconds, per LiveCityConfig.Dt), then publishes the
     // resulting frame onto both wires. Reproduces SceneGen.BuildLiveCity's per-tick order exactly:
     // (a) spawn cars up to the cap on crop drivable edges -> (b) step the ped demand -> (c) gather this
@@ -396,6 +412,25 @@ public sealed class LiveCitySim : IDisposable
         // (d) refresh the crossing-occupancy gate from the current walking peds.
         _crossingOccupancy.Update(_movingLowPowerPositions);
         if (_crossingOccupancy.OccupiedCount > PeakOccupiedCrossings) PeakOccupiedCrossings = _crossingOccupancy.OccupiedCount;
+
+        // (d2) #15 per-area realism LOD (docs/LIVE-CITY-15-PER-AREA-LOD-DESIGN.md): classify each live car's
+        // lane-change realism from its PREVIOUS-step position vs the static high-realism pocket, BEFORE the
+        // engine steps. Only under cooperative LC (otherwise the global cheap-swap path already applies to
+        // all). A car inside the pocket cooperates (no pure-lateral float, into-occupied vetoes on); a car
+        // outside takes the cheap flow-preserving swap (float permitted -- distant/unobserved). Cars not yet
+        // in the previous snapshot (spawned this step) stay high-realism (cooperative) by default. Pure
+        // function of the frozen previous snapshot + the static pocket => deterministic, order-independent.
+        // Never runs on a golden (parity/bench drive Engine directly, not LiveCitySim) => flag stays false.
+        if (_cfg.CooperativeLaneChange && HighRealismPromoteRadius > 0.0)
+        {
+            for (var i = 0; i < _lastSnapshot.Count; i++)
+            {
+                var low = IsLowRealismLaneChangePos(
+                    _lastSnapshot.PosX[i], _lastSnapshot.PosY[i],
+                    HighRealismPocketX, HighRealismPocketY, HighRealismPromoteRadius);
+                _engine.SetLowRealismLaneChange(_lastSnapshot.Handles[i], low);
+            }
+        }
 
         // (e) step the engine -- its CrowdSource query now sees the current gates + promoted peds.
         _engine.Step();

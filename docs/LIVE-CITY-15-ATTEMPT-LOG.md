@@ -1124,3 +1124,39 @@ bigger is NOT better here; 15 m sits comfortably below the cliff with the best r
 **Gotcha logged:** a `dotnet run --no-build` after a config-DEFAULT change ran a STALE assembly and reported
 the old number (44) -- always re-run without `--no-build` (or rebuild) when a source DEFAULT changed, not
 just when an env override changed.
+
+---
+
+# FOLLOW-UP: automatic per-area realism LOD gate (SHIPPED)
+
+**Owner requirement** (recorded earlier in this log): cooperative LC should be a PER-AREA realism knob under
+the global switch — HIGH realism (observed) never cheats (cooperative + no float); LOW realism
+(distant/unobserved) auto-falls-back to the cheap pure-lateral swap for perf. Keyed on the ped-side LOD split.
+
+**Design:** `docs/LIVE-CITY-15-PER-AREA-LOD-DESIGN.md`. Seam chosen: a per-vehicle flag
+`VehicleRuntime.LowRealismLaneChange` (default false), the four cooperative/veto gating sites route through
+`CooperativeLcFor(v) = CooperativeInformFollower && !v.LowRealismLaneChange`, and the host
+(`LiveCitySim.Step`) sets the flag each step from the car's previous-snapshot position vs the static
+high-realism pocket (the SAME `InterestField` pocket the peds use, promote 70 m), via
+`Engine.SetLowRealismLaneChange`. New (unclassified) cars default to high realism.
+
+**Determinism/parity:** the flag defaults false and the host only sets it (demo). Goldens drive the Engine
+directly, never `LiveCitySim`, so the flag is never set on any golden ⇒ every gating site byte-identical.
+Classification is a pure fn of the frozen previous snapshot + a static pocket ⇒ order-independent.
+
+**Verified first-hand:**
+- Parity **657/4** byte-identical (after T1 the engine-only change; re-confirmed after T2). Bench hash
+  `D96213B7BB4021A7`, parallel==single.
+- Demo flow HEALTHY: arrivals climb to **1022** (between full-coop 1068 and full-cheap ~1000, as expected for
+  a blend), stoppedFrac oscillates 0.11–0.68, NO gridlock.
+- `LIVECITY-LCSWAP keepRight stop 0 → 571`: the pure-lateral float now occurs again, but ONLY for cars
+  OUTSIDE the pocket (low realism) — logically guaranteed by (flag=true ⇔ outside pocket, unit-tested) +
+  (gating on the flag, parity-proven). `coopAdvice` stays > 0 (cooperation still fires for cars INSIDE).
+- Tests: `Sim.LiveCity.Tests` **22 passed** incl. `PerAreaLod_Classification_IsPurePositionPredicate`
+  (boundary/inside/outside/disabled/determinism) and `PerAreaLod_OverAFewMinutes_PocketSplitsThePopulation`
+  (the real coupled sim puts some cars inside AND some outside the pocket — the split is non-trivial).
+
+**FOLLOW-UP (open, owner decision in the design doc):** the pocket is a STATIC crop-centre anchor (matches
+peds). To make the high-realism zone track where the viewer is actually looking, register a moving
+Camera/EntityAttached `InterestSource` and switch the car predicate to `_field.Query(pos).AnyWithinPromote`
+so cars and peds share one interest model. Also: the car radius (currently the ped promote 70 m) is tunable.

@@ -59,13 +59,18 @@ In priority order:
    flow unchanged (arrivals 1085→1068, stoppedFrac 0.34), parity 657/4 + hash `D96213B7BB4021A7`. Survivors
    are required moving forward+lateral queue-joins at the must-merge point (owner-permitted). Env knobs:
    `LIVECITY_MERGEGAP`, `LIVECITY_MERGEDEFER`. Design: `LIVE-CITY-15-INTO-OCCUPIED-DESIGN.md`.
-2. **Automatic per-area realism LOD gate.** Cooperative LC is currently a GLOBAL flag. Owner requirement
-   (documented, attempt log "OWNER REQUIREMENT ... per-area LOD"): when globally ON, each area's realism
-   LOD should AUTO-decide per car — HIGH realism (on-screen) = cooperative + no float; LOW realism
-   (distant/off-screen) = auto-fallback to the cheap swap for perf. Key it on the ped-side
-   `InterestField`/`PedLodManager`/`Sim.Pedestrians.Lod` split. `useCoop = globalCoopEnabled &&
-   areaIsHighRealism(car)`; the keep-right guard follows `useCoop`. Must stay deterministic (pure fn of
-   frozen start-of-step state).
+2. **DONE — Automatic per-area realism LOD gate.** Cooperative LC / into-occupied vetoes / keep-right float
+   guard are now PER-CAR: `useCoop(v) = CooperativeInformFollower && !v.LowRealismLaneChange` (engine helper
+   `CooperativeLcFor`). The host (`LiveCitySim.Step`) classifies each live car from its previous-snapshot
+   position vs the static high-realism pocket (`IsLowRealismLaneChangePos`, promote 70 m) and sets the
+   per-vehicle flag via `Engine.SetLowRealismLaneChange` BEFORE the engine step. Inside the pocket =
+   cooperative + no float; outside = cheap swap (float permitted, distant/unobserved). Deterministic (pure fn
+   of frozen position + static pocket). Demo-gated: `LowRealismLaneChange` defaults false and goldens drive
+   the Engine directly (never `LiveCitySim`), so parity **657/4** byte-identical + hash `D96213B7BB4021A7`.
+   Verified: flow healthy (arrivals 1022, no gridlock), `keepRight stop 0→571` (floats outside pocket),
+   `coopAdvice > 0` (cooperation inside pocket); `Sim.LiveCity.Tests` 22 passed (2 new). Design:
+   `LIVE-CITY-15-PER-AREA-LOD-DESIGN.md`. FOLLOW-UP: tie the interest source to a moving camera/avatar
+   (currently a static crop-centre pocket) so the high-realism zone tracks where the viewer is looking.
 3. **DONE — Liveness/throughput regression TEST.** `tests/Sim.LiveCity.Tests/LiveCitySimTests.cs`
    → `DenseFlow_OverAThousandSeconds_KeepsDischarging_NoGridlock`. Headless, no-SUMO, deterministic: runs
    the coupled sim 2000 steps (1000 s) with the shipped dense-flow config PINNED (immune to `LIVECITY_*`

@@ -253,6 +253,68 @@ public class LiveCitySimTests
             $"GRIDLOCK: late stopped fraction {lateStoppedFrac:F2} pinned high (healthy ~0.35, frozen ~1.0)");
     }
 
+    // #15 per-area realism LOD (docs/LIVE-CITY-15-PER-AREA-LOD-DESIGN.md), T2 success condition: the
+    // classification predicate is a pure function of position -- inside the pocket radius => HIGH realism
+    // (false), strictly outside => LOW realism (true), on the boundary => high (<=), and a non-positive
+    // radius disables the gate (all high realism). Same inputs => same output (determinism).
+    [Fact]
+    public void PerAreaLod_Classification_IsPurePositionPredicate()
+    {
+        const double px = 100.0, py = 200.0, r = 70.0;
+
+        // Inside the pocket -> high realism (not low).
+        Assert.False(LiveCitySim.IsLowRealismLaneChangePos(px, py, px, py, r));                 // centre
+        Assert.False(LiveCitySim.IsLowRealismLaneChangePos(px + 50.0, py, px, py, r));          // well inside
+        // On the boundary (distance == radius) -> high realism (strict >).
+        Assert.False(LiveCitySim.IsLowRealismLaneChangePos(px + r, py, px, py, r));
+        // Outside the pocket -> low realism.
+        Assert.True(LiveCitySim.IsLowRealismLaneChangePos(px + r + 0.01, py, px, py, r));
+        Assert.True(LiveCitySim.IsLowRealismLaneChangePos(px + 200.0, py + 200.0, px, py, r));
+        // Disabled gate (radius <= 0) -> everyone high realism.
+        Assert.False(LiveCitySim.IsLowRealismLaneChangePos(px + 999.0, py, px, py, 0.0));
+        // Determinism: identical inputs -> identical output.
+        Assert.Equal(
+            LiveCitySim.IsLowRealismLaneChangePos(px + 80.0, py + 10.0, px, py, r),
+            LiveCitySim.IsLowRealismLaneChangePos(px + 80.0, py + 10.0, px, py, r));
+    }
+
+    // #15 per-area LOD, T2 end-to-end: after stepping the real coupled sim, EVERY live car's classification
+    // (recomputed from its current render position vs the sim's own exposed pocket) partitions the population
+    // -- some cars inside the pocket (high realism), some outside (low) -- proving the pocket actually splits
+    // the dense flow rather than trivially classifying all one way. (The engine-side flag itself is set from
+    // the previous snapshot; this asserts the predicate + pocket wiring, not the one-step-stale flag value.)
+    [Fact]
+    public void PerAreaLod_OverAFewMinutes_PocketSplitsThePopulation()
+    {
+        using var sim = new LiveCitySim(MakeConfig(yield: true));
+
+        for (var i = 0; i < 240; i++) // 120 s -- long enough to spread cars across and beyond the pocket
+        {
+            sim.Step();
+        }
+
+        var snap = sim.Sample();
+        Assert.True(snap.Cars.Count > 0, "expected live cars to classify");
+
+        var inside = 0;
+        var outside = 0;
+        foreach (var c in snap.Cars)
+        {
+            if (LiveCitySim.IsLowRealismLaneChangePos(c.X, c.Y, sim.HighRealismPocketX, sim.HighRealismPocketY, sim.HighRealismPromoteRadius))
+            {
+                outside++;
+            }
+            else
+            {
+                inside++;
+            }
+        }
+
+        Assert.True(sim.HighRealismPromoteRadius > 0.0, "expected a positive pocket radius");
+        Assert.True(outside > 0, $"expected some LOW-realism (outside-pocket) cars, got {outside} of {snap.Cars.Count}");
+        Assert.True(inside > 0, $"expected some HIGH-realism (inside-pocket) cars, got {inside} of {snap.Cars.Count}");
+    }
+
     [Fact]
     public void YieldOnVsOff_ProduceDifferentCoupling_AndYieldOnIsPositive()
     {

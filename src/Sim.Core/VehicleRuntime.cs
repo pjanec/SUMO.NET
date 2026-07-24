@@ -184,6 +184,15 @@ internal sealed class VehicleRuntime
     // Engine.CoordinatedLaneChange is on, so it stays +Infinity (inert, byte-identical) by default.
     public double CoopSpeedAdvice = double.PositiveInfinity;
 
+    // #15 per-area realism LOD (docs/LIVE-CITY-15-PER-AREA-LOD-DESIGN.md). When true, THIS vehicle is in a
+    // LOW-realism area (distant/unobserved) and its lane changing takes the cheap flow-preserving path: the
+    // cooperative informFollower, the into-occupied vetoes, and the stopped keep-right float guard are all
+    // skipped for it (identical to CooperativeInformFollower being off, but per-car). The host sets it each
+    // step from the car's position vs the demo's static high-realism pocket; every parity/bench golden leaves
+    // it false (and the global cooperative flags off), so all gating sites are byte-identical there. A pure
+    // function of frozen start-of-step position => order-independent => serial==parallel preserved.
+    public bool LowRealismLaneChange;
+
     // C2-ii: SUMO's MSLCM_LC2013::myLookAheadSpeed -- a stateful per-vehicle "how fast have I
     // recently been driving" estimate feeding the STRATEGIC lane-change look-ahead distance
     // (laDist, MSLCM_LC2013.cpp:1227-1239) and the keep-right STAY guard's own laDist term.

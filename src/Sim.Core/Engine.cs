@@ -2756,6 +2756,21 @@ public sealed partial class Engine : IEngine
         return true;
     }
 
+    // #15 per-area realism LOD (docs/LIVE-CITY-15-PER-AREA-LOD-DESIGN.md): the host sets each live vehicle's
+    // lane-change realism from its position vs the demo interest pocket, BEFORE Engine.Step. When low, the
+    // vehicle takes the cheap flow-preserving lane-change path (see CooperativeLcFor). No-op on every golden
+    // (the host never calls this). Returns false for an unresolvable handle.
+    public bool SetLowRealismLaneChange(VehicleHandle handle, bool lowRealism)
+    {
+        if (!TryResolveActive(handle, out var v))
+        {
+            return false;
+        }
+
+        v.LowRealismLaneChange = lowRealism;
+        return true;
+    }
+
     private NetworkRouter Router() => _router ??= new NetworkRouter(_network!);
 
     private bool TryResolveActive(VehicleHandle handle, out VehicleRuntime v)
@@ -10633,7 +10648,7 @@ public sealed partial class Engine : IEngine
                 // accumulator keeps building and retries once the spot is no longer occupied). Gated on
                 // CooperativeInformFollower (high realism); inert on goldens (MergeStoppedMinGap 0).
                 if (IsTargetLaneSafe(v, neighLead, neighFollow, dt) && !TargetLaneBlockedByObstacle(v, leftLane, time, dt) && !IsTargetLaneOverlapped(v, leftLane.Handle, postMoveNeighbors, dt)
-                    && !(CooperativeInformFollower && WouldCutInAheadOfStoppedFollower(v, neighFollow, dt)))
+                    && !(CooperativeLcFor(v) && WouldCutInAheadOfStoppedFollower(v, neighFollow, dt)))
                 {
                     RecordLaneChangeCommit(1, v, neighLead, neighFollow, bypassesMinSpeed: false); // #15 float analysis (speed-gain left)
                     targetLaneId = leftLane.Id;
@@ -10641,7 +10656,7 @@ public sealed partial class Engine : IEngine
                     speedGainProbability = 0.0; // :1063/1080 resetState() on committed change.
                 }
                 else if (CoordinatedLaneChange
-                    && CooperativeInformFollower
+                    && CooperativeLcFor(v)
                     && neighFollow is not null
                     && !IsTargetLaneSafe(v, null, neighFollow, dt))
                 {
@@ -10910,11 +10925,12 @@ public sealed partial class Engine : IEngine
             // coop OFF = low realism = the cheap flow-preserving pure-lateral swap restored (this guard
             // inert). Inert on every golden regardless (CooperativeInformFollower AND LaneChangeMinSpeed
             // both off there) -> byte-identical.
-            if ((!CooperativeInformFollower || LaneChangeMinSpeed <= 0.0 || v.Kinematics.Speed >= LaneChangeMinSpeed)
+            if ((!CooperativeLcFor(v) || LaneChangeMinSpeed <= 0.0 || v.Kinematics.Speed >= LaneChangeMinSpeed)
                 && IsTargetLaneSafe(v, neighLead, neighFollowKr, dt) && !IsTargetLaneOverlapped(v, rightLane.Handle, neighbors, dt)
                 // #15 into-occupied: keep-right is discretionary -- don't return to the right lane by cutting
                 // in tight ahead of a STOPPED follower there; ego stays put and keeps flowing. Inert on goldens.
-                && !(CooperativeInformFollower && WouldCutInAheadOfStoppedFollower(v, neighFollowKr, dt)))
+                // #15 per-area LOD: only in a HIGH-realism area (CooperativeLcFor) -- low realism = cheap swap.
+                && !(CooperativeLcFor(v) && WouldCutInAheadOfStoppedFollower(v, neighFollowKr, dt)))
             {
                 // D5: deliberately kept INLINE, NOT routed through the command buffer. The caller
                 // (DecideSpeedGainChanges) re-reads `v.LaneHandle` immediately after this call
@@ -11480,7 +11496,7 @@ public sealed partial class Engine : IEngine
         // URGENCY-GATED relaxation (MergeStoppedStrategicDeferDist>0): defer a strategic tight cut-in while
         // ego still has ample usable distance (>the knob) to merge more cleanly downstream; allow it once
         // urgent (usableDist<=knob) so ego can never strand. Off by default (knob 0 => the safe shipped state).
-        var deferStrategicCutIn = CoordinatedLaneChange && CooperativeInformFollower
+        var deferStrategicCutIn = CoordinatedLaneChange && CooperativeLcFor(v)
             && MergeStoppedStrategicDeferDist > 0.0 && usableDist > MergeStoppedStrategicDeferDist
             && WouldCutInAheadOfStoppedFollower(v, neighFollow, dt);
         if (!IsTargetLaneSafe(v, neighLead, neighFollow, dt) || TargetLaneBlockedByObstacle(v, neighborLane, time, dt) || IsTargetLaneOverlapped(v, neighborLane.Handle, neighbors, dt) || deferStrategicCutIn)
@@ -11499,7 +11515,7 @@ public sealed partial class Engine : IEngine
             // steps -- the up-front fluent sort AND the extreme stop-and-wait, same code path. Gated
             // behind CoordinatedLaneChange && CooperativeInformFollower so it is inert by default (no
             // golden exercises either flag) -- see CooperativeInformFollower's own header comment.
-            if (CoordinatedLaneChange && CooperativeInformFollower
+            if (CoordinatedLaneChange && CooperativeLcFor(v)
                 && neighFollow is not null
                 && IsTargetLaneSafe(v, neighLead, null, dt)
                 && !IsTargetLaneSafe(v, null, neighFollow, dt))
@@ -11620,6 +11636,14 @@ public sealed partial class Engine : IEngine
         var gap = (ego.Kinematics.Pos - ego.VType.Length) - neighFollow.VType.MinGap - neighFollow.Kinematics.Pos;
         return gap < MergeStoppedMinGap;
     }
+
+    // #15 per-area realism LOD (docs/LIVE-CITY-15-PER-AREA-LOD-DESIGN.md): cooperative lane changing (the
+    // informFollower + the into-occupied vetoes + the stopped keep-right float guard) applies to a car ONLY
+    // where it is in a HIGH-realism area. A LOW-realism car (v.LowRealismLaneChange, set by the host from the
+    // car's position vs the demo's interest pocket) takes the cheap flow-preserving path -- identical to the
+    // global CooperativeInformFollower being off, but per-car. Inert on every golden (LowRealismLaneChange
+    // false AND CooperativeInformFollower off) => byte-identical.
+    private bool CooperativeLcFor(VehicleRuntime v) => CooperativeInformFollower && !v.LowRealismLaneChange;
 
     // LANE-CHANGE-OVERLAP (docs/LANE-CHANGE-OVERLAP-DESIGN.md §3 Stage 1): SUMO's checkChange
     // LCA_OVERLAPPING block (MSLaneChanger.cpp:767/780 -- a change is blocked when neighFollow.second < 0
