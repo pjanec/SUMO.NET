@@ -1,5 +1,3 @@
-using System.Text.Json;
-using System.Text.Json.Serialization;
 using Sim.Core;
 using Sim.Harness;
 using Sim.Ingest;
@@ -48,6 +46,8 @@ internal static class Program
             Console.Error.WriteLine("       Sim.Viz --ped-weave-city <outPath>");
             Console.Error.WriteLine("       Sim.Viz --ped-dense-city <outPath>");
             Console.Error.WriteLine("       Sim.Viz --live-city <outPath>");
+            Console.Error.WriteLine("       Sim.Viz --live-city-demo <outPath>   (FAITHFUL: real LiveCitySim + LiveCityConfig)");
+            Console.Error.WriteLine("       Sim.Viz --engine-replay <scenarioDir> <outPath>   (REAL deterministic engine run, DR-smoothed)");
             Console.Error.WriteLine("       Sim.Viz --ped-remote <outPath>");
             Console.Error.WriteLine("       Sim.Viz --ped-subarea-fcd <outPath.fcd.xml> [--dial d] [--seconds s] [--box <dir>]");
             return args.Length == 0 ? 2 : 0;
@@ -72,6 +72,8 @@ internal static class Program
             "--ped-weave-city" => RunPedScene(args, "--ped-weave-city", SceneGen.BuildWeaveCity),
             "--ped-dense-city" => RunPedDenseCity(args),
             "--live-city" => RunLiveCity(args),
+            "--live-city-demo" => RunLiveCityDemo(args),
+            "--engine-replay" => RunEngineReplay(args),
             "--ped-remote" => RunPedRemote(args),
             "--ped-subarea-fcd" => RunPedSubareaFcd(args),
             "--ped-weave-csv" => RunPedWeaveCsv(args),
@@ -273,6 +275,149 @@ internal static class Program
     // yield signal -- how often a car is nearly stopped (<0.5 m/s) right next to a ped-occupied crosswalk,
     // plus the minimum such car speed. A non-trivial yield count + a ~0 min speed IS the "cars stop for
     // crossing peds" proof (complements the screenshot).
+    private static int RunLiveCityDemo(string[] args)
+    {
+        if (args.Length < 2)
+        {
+            Console.Error.WriteLine("error: --live-city-demo requires an output path");
+            return 2;
+        }
+
+        var outPath = args[1];
+        using var source = new LiveCitySource(RepoRoot());
+        var opts = new VizReplayOptions(
+            "Live-city DEMO (faithful, DR-smoothed): cars + peds, real LiveCityConfig",
+            "The ACTUAL live-city demo sim (LiveCitySim + LiveCityConfig -- same net, demand and params as "
+            + "the City3D/raylib demo: cooperative lane change, per-area realism LOD gate, crossing-occupancy "
+            + "yield), with the SAME dead-reckoning reconstruction the 2D/3D viewers use -- vehicles via "
+            + "DrClock + KinematicReconstructor (center + emitted heading + upcoming-lane look-ahead: "
+            + "continuous junction arcs, no facet-snaps), peds via PedRemoteReconstructor (analytic playout, "
+            + "no tick kink). Grey = low-power ped, orange = promoted full-ORCA, yellow = paused; boxes = "
+            + "cars. A fix verified in this replay transfers directly to the demo.");
+        var scene = VizReplayBuilder.Build(source, opts);
+        var payload = new ReplayData(new[] { scene });
+        if (!WriteHtml(payload, scene.Name, outPath))
+        {
+            return 2;
+        }
+
+        var crossings = new List<(double X, double Y, double HalfW)>();
+        if (scene.Network is not null)
+        {
+            foreach (var c in scene.Network.Crossings)
+            {
+                if (c.Center.Length < 2) continue;
+                double sx = 0, sy = 0;
+                var n = c.Center.Length / 2;
+                for (var p = 0; p < n; p++) { sx += c.Center[p * 2]; sy += c.Center[p * 2 + 1]; }
+                crossings.Add((sx / n, sy / n, c.Width / 2.0));
+            }
+        }
+
+        int maxCars = 0, maxPeds = 0, maxHigh = 0, nearCollision = 0, pedOnCrossingSamples = 0;
+        var minCarSpeedNearOccupied = double.PositiveInfinity;
+        var frameDt = scene.Dt > 0 ? scene.Dt : 1.0;
+        for (var f = 0; f < scene.Frames.Length; f++)
+        {
+            var frame = scene.Frames[f];
+            var cars = 0;
+            foreach (var vv in frame.V) if (vv is not null) cars++;
+            if (cars > maxCars) maxCars = cars;
+
+            var peds = 0; var high = 0;
+            foreach (var d in frame.D)
+            {
+                if (d is null) continue;
+                peds++;
+                if (d.Length >= 4 && (int)d[3] == SceneGen.KindPedHighPower) high++;
+            }
+            if (peds > maxPeds) maxPeds = peds;
+            if (high > maxHigh) maxHigh = high;
+            if (crossings.Count == 0) continue;
+
+            foreach (var d in frame.D)
+            {
+                if (d is null || d.Length < 2) continue;
+                var onCrossing = false;
+                double ocx = 0, ocy = 0;
+                foreach (var (cx, cy, hw) in crossings)
+                {
+                    var dx = d[0] - cx; var dy = d[1] - cy;
+                    if (dx * dx + dy * dy <= (hw + 1.0) * (hw + 1.0)) { onCrossing = true; ocx = cx; ocy = cy; break; }
+                }
+                if (!onCrossing) continue;
+                pedOnCrossingSamples++;
+                foreach (var vv in frame.V)
+                {
+                    if (vv is null) continue;
+                    var dx = vv[0] - d[0]; var dy = vv[1] - d[1];
+                    if (dx * dx + dy * dy <= 2.5 * 2.5) { nearCollision++; break; }
+                }
+                if (f > 0)
+                {
+                    var prev = scene.Frames[f - 1].V; var curr = frame.V;
+                    for (var j = 0; j < curr.Length; j++)
+                    {
+                        var cc = curr[j];
+                        if (cc is null || j >= prev.Length || prev[j] is null) continue;
+                        var dxc = cc[0] - ocx; var dyc = cc[1] - ocy;
+                        if (dxc * dxc + dyc * dyc > 7.0 * 7.0) continue;
+                        var pc = prev[j]!;
+                        var sp = Math.Sqrt((cc[0] - pc[0]) * (cc[0] - pc[0]) + (cc[1] - pc[1]) * (cc[1] - pc[1])) / frameDt;
+                        if (sp < minCarSpeedNearOccupied) minCarSpeedNearOccupied = sp;
+                    }
+                }
+            }
+        }
+
+        var minStr = double.IsPositiveInfinity(minCarSpeedNearOccupied) ? "n/a" : $"{minCarSpeedNearOccupied:F2}";
+        var size = new FileInfo(outPath).Length;
+        Console.WriteLine(
+            $"wrote {outPath}  ({size} bytes)  frames={scene.Frames.Length} view={scene.View[0]},{scene.View[1]}..{scene.View[2]},{scene.View[3]} "
+            + $"crossings={crossings.Count} maxCars={maxCars} maxPeds={maxPeds} maxHighPower={maxHigh}");
+        Console.WriteLine(
+            $"  FAITHFUL(real LiveCitySim): near-collision(car within 2.5m of a ped ON a crossing)={nearCollision} "
+            + $"over pedOnCrossingSamples={pedOnCrossingSamples}; minCarSpeedNearOccupiedCrossing={minStr} m/s");
+        return 0;
+    }
+
+    // T3 (docs/VIZ-UNIFICATION-DESIGN.md): render the REAL deterministic engine run on a scenario dir
+    // (net+rou+sumocfg), DR-smoothed through the one shared VizReplayBuilder. Same trajectory the
+    // committed golden.fcd.xml encodes for this scenario, shown reconstructed (not raw FCD playback).
+    private static int RunEngineReplay(string[] args)
+    {
+        if (args.Length < 3)
+        {
+            Console.Error.WriteLine("error: --engine-replay requires <scenarioDir> <outPath>");
+            return 2;
+        }
+
+        var scenarioDir = args[1];
+        var outPath = args[2];
+        using var source = new EngineScenarioSource(scenarioDir);
+        var name = Path.GetFileName(Path.TrimEndingDirectorySeparator(scenarioDir));
+        var opts = new VizReplayOptions(
+            $"Engine replay: {name}",
+            "The real deterministic SumoSharp engine run on this scenario (net + demand + sumocfg), "
+            + "dead-reckoning-reconstructed for smooth display (vehicle center + emitted heading + "
+            + "upcoming-lane look-ahead) via the shared VizReplayBuilder -- the same trajectory the "
+            + "committed golden encodes, shown smooth instead of raw FCD.",
+            RenderHz: 10.0,
+            Steps: source.Steps);
+        var scene = VizReplayBuilder.Build(source, opts);
+        var payload = new ReplayData(new[] { scene });
+        if (!WriteHtml(payload, scene.Name, outPath))
+        {
+            return 2;
+        }
+
+        var size = new FileInfo(outPath).Length;
+        Console.WriteLine(
+            $"wrote {outPath}  ({size} bytes)  scenario={name} steps={source.Steps} frames={scene.Frames.Length} "
+            + $"view={scene.View[0]},{scene.View[1]}..{scene.View[2]},{scene.View[3]}");
+        return 0;
+    }
+
     private static int RunLiveCity(string[] args)
     {
         if (args.Length < 2)
@@ -2210,36 +2355,10 @@ internal static class Program
     // ---------------------------------------------------------------------------------------
     // Shared HTML writer: serialize the payload and inject it + the template JS into template.html.
     // ---------------------------------------------------------------------------------------
+    // Thin wrapper over the shared VizHtml.Write (the single inject glue). Templates sit next to the
+    // built exe (Sim.Viz.csproj copies them), which is VizHtml's default dir -- so behavior is unchanged.
     private static bool WriteHtml(ReplayData payload, string title, string outPath)
-    {
-        var jsonOptions = new JsonSerializerOptions
-        {
-            PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
-            DefaultIgnoreCondition = JsonIgnoreCondition.Never,
-            WriteIndented = false,
-        };
-        var json = JsonSerializer.Serialize(payload, jsonOptions);
-
-        var templateDir = AppContext.BaseDirectory;
-        var templateHtmlPath = Path.Combine(templateDir, "template.html");
-        var templateJsPath = Path.Combine(templateDir, "template.js");
-        if (!File.Exists(templateHtmlPath) || !File.Exists(templateJsPath))
-        {
-            Console.Error.WriteLine(
-                $"error: template files not found next to the built exe ({templateHtmlPath}, {templateJsPath})");
-            return false;
-        }
-
-        var html = File.ReadAllText(templateHtmlPath);
-        var js = File.ReadAllText(templateJsPath);
-
-        html = html.Replace("__SCENARIO_NAME__", title);
-        html = html.Replace("/*REPLAY_DATA*/", json);
-        html = html.Replace("/*TEMPLATE_JS*/", js);
-
-        File.WriteAllText(outPath, html);
-        return true;
-    }
+        => VizHtml.Write(payload, title, outPath);
 
     private static string? SingleFile(string dir, string pattern)
     {

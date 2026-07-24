@@ -78,17 +78,33 @@ try() {
 # fresh) and never leaves the scenarios/ tree modified.
 
 # demo_golden <scenarioDir> <slug>
-# Sim.Viz reads the scenario's committed golden.fcd.xml directly.
+# Renders the REAL deterministic engine run on the scenario (net + demand + sumocfg), DR-smoothed via
+# --engine-replay (VIZ-UNIFICATION T3/T4) straight into the site dir -- no scenario-dir round-trip.
+# Replaces the old raw golden.fcd.xml playback: the engine is deterministic, so this reproduces the
+# certified golden trajectory bit-for-bit, but shown smooth (junction arcs, glide lane changes) instead
+# of steppy. DR improvements to KinematicReconstructor now reach this page for free.
 demo_golden() {
   local d="$1" slug="$2"
-  run src/Sim.Viz "$d"
-  cp "$d/replay.html" "$SITE/$slug.html"
-  restore_replay "$d"
+  run src/Sim.Viz --engine-replay "$d" "$SITE/$slug.html"
 }
 
 # demo_run <scenarioDir> <slug>
-# Sim.Run generates a fresh engine.fcd.xml, then Sim.Viz renders it.
+# Same DR-smoothed real-engine render as demo_golden (via --engine-replay). Formerly: Sim.Run ->
+# engine.fcd.xml -> Sim.Viz --fcd. Kept as a distinct name so the curated rows below stay
+# self-documenting (a demo whose golden is an aggregate-parity reference, not a stored FCD).
 demo_run() {
+  local d="$1" slug="$2"
+  run src/Sim.Viz --engine-replay "$d" "$SITE/$slug.html"
+}
+
+# demo_run_fcd <scenarioDir> <slug>
+# The legacy raw-FCD render path (Sim.Run -> engine.fcd.xml -> Sim.Viz --fcd), retained ONLY for the
+# large "City scale" demos. At hundreds-to-~1000 concurrent vehicles the DR-smoothed --engine-replay
+# page (10 Hz reconstruction over 500-700 s) is hundreds of MB, and individual junction arcs are
+# invisible among the specks -- the smoothing buys nothing visible but breaks the mobile/Pages size
+# budget. Those pages showcase aggregate flow at scale, not per-vehicle turn smoothness, so raw FCD is
+# the right tradeoff here (documented deviation -- see docs/VIZ-UNIFICATION-STATUS.md).
+demo_run_fcd() {
   local d="$1" slug="$2"
   run src/Sim.Run "$d"
   run src/Sim.Viz "$d" --fcd "$d/engine.fcd.xml"
@@ -161,11 +177,15 @@ demo_ped() {
 }
 
 # demo_livecity <slug>
-# The combined live-city demo (--live-city): dense cars + a weaving crowd on the demo-city downtown hero
-# block, with cars yielding to pedestrians promoted onto crossings. Self-contained; no scenario-dir round-trip.
+# The combined live-city demo, now via --live-city-demo (VIZ-UNIFICATION T2/T5): the REAL LiveCitySim +
+# LiveCityConfig driven through the ONE shared VizReplayBuilder -- cars DR-reconstructed (DrClock +
+# KinematicReconstructor: continuous junction arcs) AND peds reconstructed off the ped wire
+# (PedRemoteReconstructor: analytic, no caterpillar), both first-class. Routes the flagship car+ped
+# coupling scene through the same builder every other demo now uses, so DR improvements reach it too.
+# (Was --live-city, a lighter hand-rolled scene with raw-ish motion.) Self-contained; no round-trip.
 demo_livecity() {
   local slug="$1"
-  run src/Sim.Viz --live-city "$SITE/$slug.html"
+  run src/Sim.Viz --live-city-demo "$SITE/$slug.html"
 }
 
 # demo_static <srcHtml> <slug>
@@ -359,13 +379,13 @@ try warm-start "Warm-start snapshot" \
 # City scale
 try city-town "Scaled town (~30 vehicles)" \
   "A 3x3-grid town at ~30 concurrent vehicles — engine run rendered against the SUMO aggregate-parity reference." \
-  "City scale" demo_run scenarios/_bench/city-30 city-town
+  "City scale" demo_run_fcd scenarios/_bench/city-30 city-town
 try city-multilane "Large multilane city (~400 vehicles)" \
   "A larger organic multilane city network under ~400 concurrent vehicles." \
-  "City scale" demo_run scenarios/_bench/city-organic-L2 city-multilane
+  "City scale" demo_run_fcd scenarios/_bench/city-organic-L2 city-multilane
 try city-signalized "Signalized city (~1000 vehicles)" \
   "A mixed signalized city network at ~1000 concurrent vehicles, exercising traffic lights at city scale." \
-  "City scale" demo_run scenarios/_bench/city-mixed-1k city-signalized
+  "City scale" demo_run_fcd scenarios/_bench/city-mixed-1k city-signalized
 
 # --- summary ---------------------------------------------------------------------------------
 
