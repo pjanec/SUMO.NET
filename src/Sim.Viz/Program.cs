@@ -1,5 +1,3 @@
-using System.Text.Json;
-using System.Text.Json.Serialization;
 using Sim.Core;
 using Sim.Harness;
 using Sim.Ingest;
@@ -49,6 +47,7 @@ internal static class Program
             Console.Error.WriteLine("       Sim.Viz --ped-dense-city <outPath>");
             Console.Error.WriteLine("       Sim.Viz --live-city <outPath>");
             Console.Error.WriteLine("       Sim.Viz --live-city-demo <outPath>   (FAITHFUL: real LiveCitySim + LiveCityConfig)");
+            Console.Error.WriteLine("       Sim.Viz --engine-replay <scenarioDir> <outPath>   (REAL deterministic engine run, DR-smoothed)");
             Console.Error.WriteLine("       Sim.Viz --ped-remote <outPath>");
             Console.Error.WriteLine("       Sim.Viz --ped-subarea-fcd <outPath.fcd.xml> [--dial d] [--seconds s] [--box <dir>]");
             return args.Length == 0 ? 2 : 0;
@@ -76,6 +75,7 @@ internal static class Program
             "--live-city-demo" => RunLiveCityDemo(args),
             "--live-city-yielddump" => RunLiveCityYieldDump(args),
             "--live-city-yieldtrace" => RunLiveCityYieldTrace(args),
+            "--engine-replay" => RunEngineReplay(args),
             "--ped-remote" => RunPedRemote(args),
             "--ped-subarea-fcd" => RunPedSubareaFcd(args),
             "--ped-weave-csv" => RunPedWeaveCsv(args),
@@ -277,10 +277,6 @@ internal static class Program
     // yield signal -- how often a car is nearly stopped (<0.5 m/s) right next to a ped-occupied crosswalk,
     // plus the minimum such car speed. A non-trivial yield count + a ~0 min speed IS the "cars stop for
     // crossing peds" proof (complements the screenshot).
-    // FAITHFUL live-city replay: renders the REAL demo host (LiveCitySim + LiveCityConfig), so a realism fix
-    // verified here transfers directly to the City3D/raylib demo (owner: "same settings/data/params, no
-    // cheating"). Realism metrics are recomputed at the payload level (independent of BuildLiveCity's Last*
-    // statics): near-collision = a (frame x ped-on-crossing) with a car within 2.5 m -- the defect-#1 repro.
     // #realism-1 ANALYSIS (not a replay): run the REAL LiveCitySim and CLASSIFY every car-vs-crossing-ped
     // near-collision from raw authoritative Sample() states -- to localize defect #1 (cars ignore peds on
     // crossings). Key distinction the 2.5 m proximity metric can't make: is the car actually driving AT a ped
@@ -529,7 +525,17 @@ internal static class Program
         }
 
         var outPath = args[1];
-        var scene = SceneGen.BuildLiveCityDemo(RepoRoot());
+        using var source = new LiveCitySource(RepoRoot());
+        var opts = new VizReplayOptions(
+            "Live-city DEMO (faithful, DR-smoothed): cars + peds, real LiveCityConfig",
+            "The ACTUAL live-city demo sim (LiveCitySim + LiveCityConfig -- same net, demand and params as "
+            + "the City3D/raylib demo: cooperative lane change, per-area realism LOD gate, crossing-occupancy "
+            + "yield), with the SAME dead-reckoning reconstruction the 2D/3D viewers use -- vehicles via "
+            + "DrClock + KinematicReconstructor (center + emitted heading + upcoming-lane look-ahead: "
+            + "continuous junction arcs, no facet-snaps), peds via PedRemoteReconstructor (analytic playout, "
+            + "no tick kink). Grey = low-power ped, orange = promoted full-ORCA, yellow = paused; boxes = "
+            + "cars. A fix verified in this replay transfers directly to the demo.");
+        var scene = VizReplayBuilder.Build(source, opts);
         var payload = new ReplayData(new[] { scene });
         if (!WriteHtml(payload, scene.Name, outPath))
         {
@@ -613,6 +619,43 @@ internal static class Program
         Console.WriteLine(
             $"  FAITHFUL(real LiveCitySim): near-collision(car within 2.5m of a ped ON a crossing)={nearCollision} "
             + $"over pedOnCrossingSamples={pedOnCrossingSamples}; minCarSpeedNearOccupiedCrossing={minStr} m/s");
+        return 0;
+    }
+
+    // T3 (docs/VIZ-UNIFICATION-DESIGN.md): render the REAL deterministic engine run on a scenario dir
+    // (net+rou+sumocfg), DR-smoothed through the one shared VizReplayBuilder. Same trajectory the
+    // committed golden.fcd.xml encodes for this scenario, shown reconstructed (not raw FCD playback).
+    private static int RunEngineReplay(string[] args)
+    {
+        if (args.Length < 3)
+        {
+            Console.Error.WriteLine("error: --engine-replay requires <scenarioDir> <outPath>");
+            return 2;
+        }
+
+        var scenarioDir = args[1];
+        var outPath = args[2];
+        using var source = new EngineScenarioSource(scenarioDir);
+        var name = Path.GetFileName(Path.TrimEndingDirectorySeparator(scenarioDir));
+        var opts = new VizReplayOptions(
+            $"Engine replay: {name}",
+            "The real deterministic SumoSharp engine run on this scenario (net + demand + sumocfg), "
+            + "dead-reckoning-reconstructed for smooth display (vehicle center + emitted heading + "
+            + "upcoming-lane look-ahead) via the shared VizReplayBuilder -- the same trajectory the "
+            + "committed golden encodes, shown smooth instead of raw FCD.",
+            RenderHz: 10.0,
+            Steps: source.Steps);
+        var scene = VizReplayBuilder.Build(source, opts);
+        var payload = new ReplayData(new[] { scene });
+        if (!WriteHtml(payload, scene.Name, outPath))
+        {
+            return 2;
+        }
+
+        var size = new FileInfo(outPath).Length;
+        Console.WriteLine(
+            $"wrote {outPath}  ({size} bytes)  scenario={name} steps={source.Steps} frames={scene.Frames.Length} "
+            + $"view={scene.View[0]},{scene.View[1]}..{scene.View[2]},{scene.View[3]}");
         return 0;
     }
 
@@ -2553,36 +2596,10 @@ internal static class Program
     // ---------------------------------------------------------------------------------------
     // Shared HTML writer: serialize the payload and inject it + the template JS into template.html.
     // ---------------------------------------------------------------------------------------
+    // Thin wrapper over the shared VizHtml.Write (the single inject glue). Templates sit next to the
+    // built exe (Sim.Viz.csproj copies them), which is VizHtml's default dir -- so behavior is unchanged.
     private static bool WriteHtml(ReplayData payload, string title, string outPath)
-    {
-        var jsonOptions = new JsonSerializerOptions
-        {
-            PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
-            DefaultIgnoreCondition = JsonIgnoreCondition.Never,
-            WriteIndented = false,
-        };
-        var json = JsonSerializer.Serialize(payload, jsonOptions);
-
-        var templateDir = AppContext.BaseDirectory;
-        var templateHtmlPath = Path.Combine(templateDir, "template.html");
-        var templateJsPath = Path.Combine(templateDir, "template.js");
-        if (!File.Exists(templateHtmlPath) || !File.Exists(templateJsPath))
-        {
-            Console.Error.WriteLine(
-                $"error: template files not found next to the built exe ({templateHtmlPath}, {templateJsPath})");
-            return false;
-        }
-
-        var html = File.ReadAllText(templateHtmlPath);
-        var js = File.ReadAllText(templateJsPath);
-
-        html = html.Replace("__SCENARIO_NAME__", title);
-        html = html.Replace("/*REPLAY_DATA*/", json);
-        html = html.Replace("/*TEMPLATE_JS*/", js);
-
-        File.WriteAllText(outPath, html);
-        return true;
-    }
+        => VizHtml.Write(payload, title, outPath);
 
     private static string? SingleFile(string dir, string pattern)
     {
